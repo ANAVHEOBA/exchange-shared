@@ -13,16 +13,19 @@ use modules::swap::swap_routes;
 use services::jwt::JwtService;
 use services::rate_limit::{create_rate_limiter, RateLimitLayer};
 use services::security::security_headers;
+use services::redis_cache::RedisService;
 
 pub struct AppState {
     pub db: DbPool,
+    pub redis: RedisService, // Changed from redis::Client
     pub http_client: reqwest::Client,
     pub jwt_service: JwtService,
 }
 
-pub async fn create_app(db: DbPool, jwt_service: JwtService) -> Router {
+pub async fn create_app(db: DbPool, redis: RedisService, jwt_service: JwtService) -> Router {
     let state = Arc::new(AppState {
         db,
+        redis,
         http_client: reqwest::Client::new(),
         jwt_service,
     });

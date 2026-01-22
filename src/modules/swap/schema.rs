@@ -124,14 +124,17 @@ pub struct PairResponse {
 #[derive(Debug, Deserialize)]
 pub struct RatesQuery {
     pub from: String,
+    pub network_from: String,
     pub to: String,
+    pub network_to: String,
     pub amount: f64,
     pub rate_type: Option<RateType>,
     pub provider: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
 pub enum RateType {
     Fixed,
     Floating,
@@ -143,7 +146,7 @@ impl Default for RateType {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RateResponse {
     pub provider: String,
     pub provider_name: String,
@@ -157,16 +160,51 @@ pub struct RateResponse {
     pub total_fee: f64,
     pub rate_type: RateType,
     pub kyc_required: bool,
+    pub kyc_rating: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eta_minutes: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RatesResponse {
+    pub trade_id: String, // Trocador trade ID
     pub from: String,
+    pub network_from: String,
     pub to: String,
+    pub network_to: String,
     pub amount: f64,
     pub rates: Vec<RateResponse>,
+}
+
+// Trocador's internal rate response
+#[derive(Debug, Deserialize)]
+pub struct TrocadorQuote {
+    pub provider: String,
+    pub amount_to: String, // String in Trocador JSON
+    pub min_amount: Option<f64>,
+    pub max_amount: Option<f64>,
+    pub kycrating: Option<String>,
+    pub waste: Option<String>, // String in Trocador JSON
+    pub eta: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrocadorQuotesWrapper {
+    pub markup: bool,
+    pub quotes: Vec<TrocadorQuote>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrocadorRatesResponse {
+    pub trade_id: String,
+    pub ticker_from: String,
+    pub network_from: String,
+    pub ticker_to: String,
+    pub network_to: String,
+    pub amount_from: f64,
+    pub provider: String,
+    pub amount_to: f64,
+    pub quotes: TrocadorQuotesWrapper,
 }
 
 // =============================================================================
@@ -176,7 +214,9 @@ pub struct RatesResponse {
 #[derive(Debug, Deserialize)]
 pub struct EstimateRequest {
     pub from: String,
+    pub network_from: String,
     pub to: String,
+    pub network_to: String,
     pub amount: f64,
     pub provider: String,
     #[serde(default)]
@@ -205,8 +245,11 @@ pub struct EstimateResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSwapRequest {
+    pub trade_id: Option<String>, // ID from new_rate
     pub from: String,
+    pub network_from: String,
     pub to: String,
+    pub network_to: String,
     pub amount: f64,
     pub provider: String,
     pub recipient_address: String,
@@ -240,6 +283,28 @@ pub struct CreateSwapResponse {
     pub is_sandbox: bool,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+}
+
+// Trocador's internal trade response
+#[derive(Debug, Deserialize)]
+pub struct TrocadorTradeResponse {
+    pub trade_id: String,
+    pub status: String,
+    pub ticker_from: String,
+    pub network_from: String,
+    pub ticker_to: String,
+    pub network_to: String,
+    pub amount_from: f64,
+    pub amount_to: f64,
+    pub provider: String,
+    pub address_provider: String,
+    pub address_provider_memo: Option<String>,
+    pub address_user: String,
+    pub address_user_memo: Option<String>,
+    pub refund_address: Option<String>,
+    pub refund_address_memo: Option<String>,
+    pub id_provider: Option<String>,
+    pub date: Option<String>,
 }
 
 // =============================================================================

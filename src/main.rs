@@ -1,3 +1,5 @@
+use exchange_shared::config::{environment::Config, init_db};
+use exchange_shared::services::{jwt::JwtService, redis_cache::RedisService};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -12,14 +14,19 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let db = exchange_shared::config::init_db().await;
+    // Load configuration
+    let config = Config::from_env().expect("Failed to load environment configuration");
+
+    let db = init_db().await;
     tracing::info!("Connected to MySQL");
 
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .expect("JWT_SECRET must be set");
-    let jwt_service = exchange_shared::services::jwt::JwtService::new(jwt_secret);
+    // Initialize Redis Service
+    let redis_service = RedisService::new(&config.redis_url);
+    tracing::info!("Connected to Redis");
 
-    let app = exchange_shared::create_app(db, jwt_service).await;
+    let jwt_service = JwtService::new(config.jwt_secret);
+
+    let app = exchange_shared::create_app(db, redis_service, jwt_service).await;
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     tracing::info!("Server running on http://localhost:3000");

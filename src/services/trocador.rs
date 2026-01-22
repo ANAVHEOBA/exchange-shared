@@ -1,6 +1,6 @@
 use reqwest::Client;
 
-use crate::modules::swap::schema::{TrocadorCurrency, TrocadorProvider};
+use crate::modules::swap::schema::{TrocadorCurrency, TrocadorProvider, TrocadorTradeResponse};
 
 /// Trocador API client
 /// Handles all communication with Trocador.app API
@@ -98,5 +98,141 @@ impl TrocadorClient {
             .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
 
         Ok(providers)
+    }
+
+    /// Get rates from Trocador (new_rate)
+    pub async fn get_rates(
+        &self,
+        ticker_from: &str,
+        network_from: &str,
+        ticker_to: &str,
+        network_to: &str,
+        amount: f64,
+    ) -> Result<crate::modules::swap::schema::TrocadorRatesResponse, TrocadorError> {
+        let url = format!("{}/new_rate", self.base_url);
+        
+        let params = [
+            ("ticker_from", ticker_from.to_string()),
+            ("network_from", network_from.to_string()),
+            ("ticker_to", ticker_to.to_string()),
+            ("network_to", network_to.to_string()),
+            ("amount_from", amount.to_string()),
+            ("best_only", "false".to_string()),
+        ];
+
+        let response = self
+            .client
+            .get(&url)
+            .header("API-Key", &self.api_key)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+             let error_text = response.text().await.unwrap_or_default();
+             return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        let rates_response: crate::modules::swap::schema::TrocadorRatesResponse = response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
+
+        Ok(rates_response)
+    }
+
+    /// Create a new trade on Trocador (new_trade)
+    pub async fn create_trade(
+        &self,
+        trade_id: Option<&str>,
+        ticker_from: &str,
+        network_from: &str,
+        ticker_to: &str,
+        network_to: &str,
+        amount: f64,
+        address: &str,
+        refund: Option<&str>,
+        provider: &str,
+        fixed: bool,
+    ) -> Result<TrocadorTradeResponse, TrocadorError> {
+        let url = format!("{}/new_trade", self.base_url);
+
+        let mut params = vec![
+            ("ticker_from", ticker_from.to_string()),
+            ("network_from", network_from.to_string()),
+            ("ticker_to", ticker_to.to_string()),
+            ("network_to", network_to.to_string()),
+            ("amount_from", amount.to_string()),
+            ("address", address.to_string()),
+            ("provider", provider.to_string()),
+            ("fixed", fixed.to_string()),
+        ];
+
+        if let Some(id) = trade_id {
+            params.push(("id", id.to_string()));
+        }
+
+        if let Some(r) = refund {
+            params.push(("refund", r.to_string()));
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .header("API-Key", &self.api_key)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        let trade_response: TrocadorTradeResponse = response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
+
+        Ok(trade_response)
+    }
+
+    /// Get trade status from Trocador (trade)
+    pub async fn get_trade_status(&self, trade_id: &str) -> Result<TrocadorTradeResponse, TrocadorError> {
+        let url = format!("{}/trade", self.base_url);
+        
+        let params = [("id", trade_id.to_string())];
+
+        let response = self
+            .client
+            .get(&url)
+            .header("API-Key", &self.api_key)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        let trade_response: TrocadorTradeResponse = response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
+
+        Ok(trade_response)
     }
 }

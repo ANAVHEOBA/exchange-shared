@@ -56,6 +56,8 @@ async fn test_filter_currencies_by_ticker_btc() {
     response.assert_status_ok();
 
     let currencies: Vec<Value> = response.json();
+    let networks: Vec<String> = currencies.iter().map(|c| c["network"].as_str().unwrap().to_string()).collect();
+    println!("BTC networks: {:?}", networks);
 
     // BTC exists on multiple networks (Mainnet, BEP20, Lightning, SOL, Optimism)
     assert!(
@@ -81,7 +83,7 @@ async fn test_filter_currencies_by_ticker_btc() {
     assert!(has_mainnet, "Missing Bitcoin Mainnet");
 
     // Should have Bitcoin Lightning (check case-insensitively)
-    let has_lightning = currencies
+    let _has_lightning = currencies
         .iter()
         .any(|c| c["network"].as_str().unwrap().to_lowercase().contains("lightning"));
     // Note: Lightning network might not always be available, so just check we have multiple networks
@@ -313,6 +315,8 @@ async fn test_currency_minimum_maximum_values() {
     response.assert_status_ok();
 
     let currencies: Vec<Value> = response.json();
+    let networks: Vec<String> = currencies.iter().map(|c| c["network"].as_str().unwrap().to_string()).collect();
+    println!("XMR networks: {:?}", networks);
     assert!(!currencies.is_empty(), "Should have XMR results");
 
     let xmr = &currencies[0];
@@ -412,24 +416,19 @@ async fn test_currency_name_completeness() {
 
     // Try both "Mainnet" and "MAINNET" since Trocador uses uppercase
     let response = server
-        .get("/swap/currencies?ticker=eth&network=MAINNET")
+        .get("/swap/currencies?ticker=eth")
         .await;
     
-    let currencies: Vec<Value> = if response.status_code().is_success() {
-        response.json()
-    } else {
-        // Try with regular case
-        let response2 = server.get("/swap/currencies?ticker=eth&network=Mainnet").await;
-        response2.json()
-    };
+    response.assert_status_ok();
+    let currencies: Vec<Value> = response.json();
+    for c in &currencies {
+        println!("ETH variant: ticker={}, network={}, name={}", c["ticker"], c["network"], c["name"]);
+    }
     
     // ETH might be on different network, just check we got some ETH variant
     if currencies.is_empty() {
-        // Try without network filter
-        let response3 = server.get("/swap/currencies?ticker=eth").await;
-        let all_eth: Vec<Value> = response3.json();
-        assert!(!all_eth.is_empty(), "Should have at least one ETH variant");
-        return; // Skip name check if no mainnet ETH
+        assert!(!currencies.is_empty(), "Should have at least one ETH variant");
+        return;
     }
 
     let eth = &currencies[0];

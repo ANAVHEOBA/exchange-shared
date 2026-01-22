@@ -9,18 +9,41 @@ use crate::AppState;
 use super::crud::{SwapCrud};
 use super::schema::{
     CurrenciesQuery, CurrencyResponse, ProvidersQuery, ProviderResponse, SwapErrorResponse,
+    CreateSwapRequest, CreateSwapResponse,
 };
 use crate::services::trocador::TrocadorClient;
+use crate::modules::auth::interface::OptionalUser;
+
+// ... (existing handlers)
 
 // =============================================================================
-// GET /swap/currencies - List all currencies
+// POST /swap/create - Create a new swap
 // =============================================================================
+
+pub async fn create_swap(
+    State(state): State<Arc<AppState>>,
+    user: OptionalUser,
+    Json(payload): Json<CreateSwapRequest>,
+) -> Result<(StatusCode, Json<CreateSwapResponse>), (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
+
+    let response = crud.create_swap(&payload, user.0.map(|u| u.id)).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
+            super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+
+    Ok((StatusCode::CREATED, Json(response)))
+}
 
 pub async fn get_currencies(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CurrenciesQuery>,
 ) -> Result<Json<Vec<CurrencyResponse>>, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone());
+    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
 
     // Check if we need to sync from Trocador
     let should_sync = crud.should_sync_currencies().await.unwrap_or(true);
@@ -64,7 +87,7 @@ pub async fn get_providers(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProvidersQuery>,
 ) -> Result<Json<Vec<ProviderResponse>>, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone());
+    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
 
     // Check if we need to sync from Trocador
     let should_sync = crud.should_sync_providers().await.unwrap_or(true);
@@ -96,4 +119,24 @@ pub async fn get_providers(
         .collect();
 
     Ok(Json(responses))
+}
+
+// =============================================================================
+// GET /swap/rates - Get live rates from all providers
+// =============================================================================
+
+pub async fn get_rates(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<super::schema::RatesQuery>,
+) -> Result<Json<super::schema::RatesResponse>, (StatusCode, Json<super::schema::SwapErrorResponse>)> {
+    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
+
+    let response = crud.get_rates(&query).await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(super::schema::SwapErrorResponse::new(e.to_string())),
+        )
+    })?;
+
+    Ok(Json(response))
 }

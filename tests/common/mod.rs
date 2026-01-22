@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use exchange_shared::services::redis_cache::RedisService;
 use sqlx::{MySql, Pool};
 
 // Allow dead_code for utilities used by other test files
@@ -32,7 +33,10 @@ impl TestContext {
             .unwrap_or_else(|_| "test-secret-key-for-testing-only".to_string());
         let jwt_service = exchange_shared::services::jwt::JwtService::new(jwt_secret);
 
-        let app = exchange_shared::create_app(db.clone(), jwt_service).await;
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        let redis_service = RedisService::new(&redis_url);
+
+        let app = exchange_shared::create_app(db.clone(), redis_service, jwt_service).await;
         let server = TestServer::new(app).expect("Failed to create test server");
 
         Self { server, db }

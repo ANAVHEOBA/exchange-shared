@@ -1,2 +1,7 @@
 mod common;
-mod swap;
+mod swap {
+    pub mod currencies_test;
+    pub mod providers_test;
+    pub mod rates_test;
+    pub mod create_test;
+}

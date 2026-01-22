@@ -4,6 +4,7 @@ use std::env;
 /// Loads and validates environment variables
 pub struct Config {
     pub database_url: String,
+    pub redis_url: String,
     pub jwt_secret: String,
     pub trocador_api_key: String,
 }
@@ -15,6 +16,8 @@ impl Config {
         let database_url = env::var("DATABASE_URL")
             .map_err(|_| "DATABASE_URL must be set".to_string())?;
 
+        let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+
         let jwt_secret = env::var("JWT_SECRET")
             .map_err(|_| "JWT_SECRET must be set".to_string())?;
 
@@ -23,6 +26,7 @@ impl Config {
 
         Ok(Self {
             database_url,
+            redis_url,
             jwt_secret,
             trocador_api_key,
         })
