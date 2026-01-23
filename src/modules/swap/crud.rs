@@ -572,6 +572,228 @@ impl SwapCrud {
     }
 
     // =========================================================================
+    // SWAP STATUS
+    // =========================================================================
+
+    /// Get swap status by ID
+    /// 1. Look up swap in database by local swap_id
+    /// 2. Get provider_swap_id (Trocador's trade_id)
+    /// 3. Call Trocador API to get latest status
+    /// 4. Update local database with new status
+    /// 5. Return status to user
+    pub async fn get_swap_status(
+        &self,
+        swap_id: &str,
+    ) -> Result<super::schema::SwapStatusResponse, SwapError> {
+        // 1. Get swap from database - cast DECIMAL to DOUBLE for f64 compatibility
+        let swap = sqlx::query!(
+            r#"
+            SELECT id, user_id, provider_id, provider_swap_id,
+                   from_currency, from_network, to_currency, to_network,
+                   CAST(amount AS DOUBLE) as "amount!: f64",
+                   CAST(estimated_receive AS DOUBLE) as "estimated_receive!: f64",
+                   CAST(actual_receive AS DOUBLE) as "actual_receive: f64",
+                   CAST(rate AS DOUBLE) as "rate!: f64",
+                   CAST(network_fee AS DOUBLE) as "network_fee!: f64",
+                   CAST(provider_fee AS DOUBLE) as "provider_fee!: f64",
+                   CAST(platform_fee AS DOUBLE) as "platform_fee!: f64",
+                   CAST(total_fee AS DOUBLE) as "total_fee!: f64",
+                   deposit_address, deposit_extra_id,
+                   recipient_address, recipient_extra_id,
+                   refund_address, refund_extra_id,
+                   tx_hash_in, tx_hash_out,
+                   status as "status!: super::schema::SwapStatus",
+                   rate_type as "rate_type!: super::schema::RateType",
+                   is_sandbox, error,
+                   expires_at, completed_at, created_at, updated_at
+            FROM swaps
+            WHERE id = ?
+            "#,
+            swap_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| SwapError::DatabaseError(e.to_string()))?
+        .ok_or(SwapError::SwapNotFound)?;
+
+        // 2. If we have a provider_swap_id, fetch latest status from Trocador
+        if let Some(ref trocador_id) = swap.provider_swap_id {
+            let api_key = std::env::var("TROCADOR_API_KEY")
+                .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
+
+            let trocador_client = TrocadorClient::new(api_key);
+
+            // Call Trocador API with retry logic
+            match self.call_trocador_with_retry(|| async {
+                trocador_client.get_trade_status(trocador_id).await
+            }).await {
+                Ok(trocador_status) => {
+                    // 3. Map Trocador status to our internal status
+                    let new_status = self.map_trocador_status(&trocador_status.status);
+                    
+                    // 4. Update database if status changed
+                    if new_status != swap.status {
+                        self.update_swap_status(
+                            swap_id,
+                            &new_status,
+                            trocador_status.amount_to,
+                            None, // tx_hash_in from Trocador if available
+                            None, // tx_hash_out from Trocador if available
+                        ).await?;
+
+                        // Log status change to history
+                        self.log_status_change(swap_id, &new_status, None).await?;
+                    }
+
+                    // 5. Return updated status
+                    return Ok(super::schema::SwapStatusResponse {
+                        swap_id: swap.id.clone(),
+                        provider: swap.provider_id.clone(),
+                        provider_swap_id: swap.provider_swap_id.clone(),
+                        status: new_status.clone(),
+                        from: swap.from_currency.clone(),
+                        to: swap.to_currency.clone(),
+                        amount: swap.amount,
+                        deposit_address: swap.deposit_address.clone(),
+                        deposit_extra_id: swap.deposit_extra_id.clone(),
+                        recipient_address: swap.recipient_address.clone(),
+                        recipient_extra_id: swap.recipient_extra_id.clone(),
+                        rate: swap.rate,
+                        estimated_receive: swap.estimated_receive,
+                        actual_receive: Some(trocador_status.amount_to),
+                        network_fee: swap.network_fee,
+                        total_fee: swap.total_fee,
+                        rate_type: swap.rate_type.clone(),
+                        is_sandbox: swap.is_sandbox != 0,
+                        tx_hash_in: swap.tx_hash_in.clone(),
+                        tx_hash_out: swap.tx_hash_out.clone(),
+                        error: swap.error.clone(),
+                        created_at: swap.created_at,
+                        updated_at: Utc::now(),
+                        expires_at: swap.expires_at,
+                        completed_at: if new_status == super::schema::SwapStatus::Completed {
+                            Some(Utc::now())
+                        } else {
+                            swap.completed_at
+                        },
+                    });
+                }
+                Err(e) => {
+                    // If Trocador API fails, return cached status from database
+                    tracing::warn!("Failed to fetch status from Trocador for swap {}: {}", swap_id, e);
+                }
+            }
+        }
+
+        // 6. Return status from database (if no provider_swap_id or Trocador call failed)
+        Ok(super::schema::SwapStatusResponse {
+            swap_id: swap.id,
+            provider: swap.provider_id,
+            provider_swap_id: swap.provider_swap_id,
+            status: swap.status,
+            from: swap.from_currency,
+            to: swap.to_currency,
+            amount: swap.amount,
+            deposit_address: swap.deposit_address,
+            deposit_extra_id: swap.deposit_extra_id,
+            recipient_address: swap.recipient_address,
+            recipient_extra_id: swap.recipient_extra_id,
+            rate: swap.rate,
+            estimated_receive: swap.estimated_receive,
+            actual_receive: swap.actual_receive,
+            network_fee: swap.network_fee,
+            total_fee: swap.total_fee,
+            rate_type: swap.rate_type,
+            is_sandbox: swap.is_sandbox != 0,
+            tx_hash_in: swap.tx_hash_in,
+            tx_hash_out: swap.tx_hash_out,
+            error: swap.error,
+            created_at: swap.created_at,
+            updated_at: swap.updated_at,
+            expires_at: swap.expires_at,
+            completed_at: swap.completed_at,
+        })
+    }
+
+    /// Map Trocador status string to our SwapStatus enum
+    fn map_trocador_status(&self, trocador_status: &str) -> super::schema::SwapStatus {
+        match trocador_status {
+            "new" | "waiting" => super::schema::SwapStatus::Waiting,
+            "confirming" => super::schema::SwapStatus::Confirming,
+            "exchanging" => super::schema::SwapStatus::Exchanging,
+            "sending" => super::schema::SwapStatus::Sending,
+            "finished" | "paid partially" => super::schema::SwapStatus::Completed,
+            "failed" | "halted" => super::schema::SwapStatus::Failed,
+            "refunded" => super::schema::SwapStatus::Refunded,
+            "expired" => super::schema::SwapStatus::Expired,
+            _ => super::schema::SwapStatus::Waiting,
+        }
+    }
+
+    /// Update swap status in database
+    async fn update_swap_status(
+        &self,
+        swap_id: &str,
+        status: &super::schema::SwapStatus,
+        actual_receive: f64,
+        tx_hash_in: Option<String>,
+        tx_hash_out: Option<String>,
+    ) -> Result<(), SwapError> {
+        let completed_at = if *status == super::schema::SwapStatus::Completed {
+            Some(Utc::now())
+        } else {
+            None
+        };
+
+        sqlx::query(
+            r#"
+            UPDATE swaps
+            SET status = ?,
+                actual_receive = ?,
+                tx_hash_in = COALESCE(?, tx_hash_in),
+                tx_hash_out = COALESCE(?, tx_hash_out),
+                completed_at = COALESCE(?, completed_at),
+                updated_at = NOW()
+            WHERE id = ?
+            "#
+        )
+        .bind(status)
+        .bind(actual_receive)
+        .bind(tx_hash_in)
+        .bind(tx_hash_out)
+        .bind(completed_at)
+        .bind(swap_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Log status change to swap_status_history table
+    async fn log_status_change(
+        &self,
+        swap_id: &str,
+        status: &super::schema::SwapStatus,
+        message: Option<String>,
+    ) -> Result<(), SwapError> {
+        sqlx::query(
+            r#"
+            INSERT INTO swap_status_history (swap_id, status, message, created_at)
+            VALUES (?, ?, ?, NOW())
+            "#
+        )
+        .bind(swap_id)
+        .bind(status)
+        .bind(message)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    // =========================================================================
     // RETRY LOGIC FOR RATE LIMITING
     // =========================================================================
 

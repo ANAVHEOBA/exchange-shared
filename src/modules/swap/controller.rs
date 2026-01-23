@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, Path},
     http::StatusCode,
     Json,
 };
@@ -9,7 +9,7 @@ use crate::AppState;
 use super::crud::{SwapCrud};
 use super::schema::{
     CurrenciesQuery, CurrencyResponse, ProvidersQuery, ProviderResponse, SwapErrorResponse,
-    CreateSwapRequest, CreateSwapResponse,
+    CreateSwapRequest, CreateSwapResponse, SwapStatusResponse,
 };
 use crate::services::trocador::TrocadorClient;
 use crate::modules::auth::interface::OptionalUser;
@@ -136,6 +136,29 @@ pub async fn get_rates(
             StatusCode::BAD_GATEWAY,
             Json(super::schema::SwapErrorResponse::new(e.to_string())),
         )
+    })?;
+
+    Ok(Json(response))
+}
+
+// =============================================================================
+// GET /swap/:id - Get swap status by ID
+// =============================================================================
+
+pub async fn get_swap_status(
+    State(state): State<Arc<AppState>>,
+    Path(swap_id): Path<String>,
+) -> Result<Json<SwapStatusResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
+
+    let response = crud.get_swap_status(&swap_id).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::SwapNotFound => StatusCode::NOT_FOUND,
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
     })?;
 
     Ok(Json(response))
