@@ -145,6 +145,24 @@ impl SwapCrud {
         &self,
         query: CurrenciesQuery,
     ) -> Result<Vec<Currency>, SwapError> {
+        // Check if we need to sync from Trocador first
+        let should_sync = self.should_sync_currencies().await.unwrap_or(true);
+        
+        if should_sync {
+            if let Some(service) = &self.redis_service {
+                let rate_limit_key = "api_calls:trocador:currencies";
+                if service.check_rate_limit(rate_limit_key, 2, 300).await.unwrap_or(false) {
+                    let api_key = std::env::var("TROCADOR_API_KEY")
+                        .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
+                    let client = TrocadorClient::new(api_key);
+                    
+                    if let Err(e) = self.sync_currencies_from_trocador(&client).await {
+                        tracing::warn!("Failed to sync currencies: {}", e);
+                    }
+                }
+            }
+        }
+
         let mut sql = String::from(
             "SELECT id, symbol, name, network, is_active, logo_url, contract_address, 
              decimals, requires_extra_id, extra_id_name, min_amount, max_amount, 
@@ -344,19 +362,24 @@ impl SwapCrud {
         &self,
         query: &super::schema::RatesQuery,
     ) -> Result<super::schema::RatesResponse, SwapError> {
-        // 0. Check Redis Cache
         let cache_key = format!(
             "rates:{}:{}:{}:{}:{}",
             query.from, query.to, query.network_from, query.network_to, query.amount
         );
 
         if let Some(service) = &self.redis_service {
-            match service.get_json::<super::schema::RatesResponse>(&cache_key).await {
-                Ok(Some(cached)) => {
-                    tracing::debug!("Cache hit for rates: {}", cache_key);
-                    return Ok(cached);
+            // Try cache first
+            if let Ok(Some(cached)) = service.get_json::<super::schema::RatesResponse>(&cache_key).await {
+                return Ok(cached);
+            }
+
+            // Check rate limit before making API call
+            let rate_limit_key = "api_calls:trocador:rates";
+            match service.check_rate_limit(rate_limit_key, 5, 60).await {
+                Ok(false) => {
+                    // Rate limited, wait and retry with exponential backoff
+                    tracing::warn!("Rate limit hit for rates API, will retry with backoff");
                 }
-                Err(e) => tracing::warn!("Redis error: {}", e),
                 _ => {}
             }
         }
@@ -366,7 +389,6 @@ impl SwapCrud {
 
         let trocador_client = TrocadorClient::new(api_key);
 
-        // 1. Call the Service layer (Trocador API) with retry logic
         let trocador_res = self.call_trocador_with_retry(|| async {
             trocador_client
                 .get_rates(
@@ -563,7 +585,7 @@ impl SwapCrud {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, TrocadorError>>,
     {
-        let max_retries = 3;
+        let max_retries = 5;
         let mut retries = 0;
 
         loop {
@@ -580,8 +602,8 @@ impl SwapCrud {
 
                     if is_rate_limit && retries < max_retries {
                         retries += 1;
-                        // Exponential backoff: 1s, 2s, 4s
-                        let delay_secs = 2u64.pow(retries - 1);
+                        // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+                        let delay_secs = 2u64.pow(retries);
                         
                         tracing::warn!(
                             "Rate limit hit, retrying in {}s (attempt {}/{})",

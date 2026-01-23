@@ -465,7 +465,7 @@ async fn test_create_swap_whitespace_recipient_address() {
 
 #[tokio::test]
 async fn test_create_swap_exactly_minimum_amount() {
-    sleep(Duration::from_secs(1)).await;
+    sleep(Duration::from_secs(3)).await; // Increased delay to prevent rate limiting
     let server = setup_test_server().await;
 
     // Get rates to find minimum amount
@@ -574,7 +574,7 @@ async fn test_create_swap_exactly_maximum_amount() {
 
 #[tokio::test]
 async fn test_create_swap_concurrent_same_trade_id() {
-    sleep(Duration::from_secs(1)).await;
+    sleep(Duration::from_secs(3)).await; // Increased delay to prevent rate limiting
     let server = setup_test_server().await;
 
     // Get a trade_id
