@@ -1,12 +1,13 @@
 use axum::{
     extract::{Query, State, Path},
     http::StatusCode,
+    response::{Response, IntoResponse},
     Json,
 };
 use std::sync::Arc;
 
 use crate::AppState;
-use super::crud::{SwapCrud};
+use super::crud::{SwapCrud, CurrenciesResult};
 use super::schema::{
     CurrenciesQuery, CurrencyResponse, ProvidersQuery, ProviderResponse, SwapErrorResponse,
     CreateSwapRequest, CreateSwapResponse, SwapStatusResponse, ValidateAddressRequest, ValidateAddressResponse,
@@ -42,24 +43,36 @@ pub async fn create_swap(
 pub async fn get_currencies(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CurrenciesQuery>,
-) -> Result<Json<Vec<CurrencyResponse>>, (StatusCode, Json<SwapErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<SwapErrorResponse>)> {
     let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
 
-    // The CRUD layer now handles caching, pagination, and background synchronization
-    let currencies = crud.get_currencies_optimized(query).await.map_err(|e| {
+    // The CRUD layer now handles caching, pagination, raw JSON, and background synchronization
+    let result = crud.get_currencies_optimized(query).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(SwapErrorResponse::new(e.to_string())),
         )
     })?;
 
-    // Convert to response format
-    let responses: Vec<CurrencyResponse> = currencies
-        .into_iter()
-        .map(|c| c.into())
-        .collect();
-
-    Ok(Json(responses))
+    match result {
+        CurrenciesResult::Structured(responses) => {
+            // Standard JSON response
+            Ok(Json(responses).into_response())
+        },
+        CurrenciesResult::RawJson(json_string) => {
+            // Optimized raw JSON response (avoids serialization overhead)
+            let response = Response::builder()
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(json_string))
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(SwapErrorResponse::new(e.to_string())),
+                    )
+                })?;
+            Ok(response)
+        }
+    }
 }
 
 // =============================================================================

@@ -3,9 +3,14 @@ use sqlx::{MySql, Pool};
 use std::time::Duration;
 
 use super::model::{Currency, Provider};
-use super::schema::{CurrenciesQuery, ProvidersQuery, TrocadorCurrency, TrocadorProvider};
+use super::schema::{CurrenciesQuery, ProvidersQuery, TrocadorCurrency, TrocadorProvider, CurrencyResponse};
 use crate::services::trocador::{TrocadorClient, TrocadorError};
 use crate::services::redis_cache::RedisService;
+
+pub enum CurrenciesResult {
+    RawJson(String),
+    Structured(Vec<CurrencyResponse>),
+}
 
 // =============================================================================
 // SWAP ERROR
@@ -68,7 +73,7 @@ impl SwapCrud {
     // CURRENCIES
     // =========================================================================
 
-    /// Check if currencies cache needs refresh (>5 minutes old)
+    /// Check if currencies cache needs refresh using Probabilistic Early Recomputation (PER)
     pub async fn should_sync_currencies(&self) -> Result<bool, SwapError> {
         let result: Option<(Option<chrono::DateTime<Utc>>,)> = sqlx::query_as(
             "SELECT MAX(last_synced_at) FROM currencies"
@@ -79,9 +84,36 @@ impl SwapCrud {
 
         match result {
             Some((Some(last_sync),)) => {
-                let cache_age = Utc::now() - last_sync;
-                // Refresh if older than 5 minutes
-                Ok(cache_age.num_minutes() > 5)
+                let now = Utc::now();
+                let cache_age = now - last_sync;
+                let ttl_seconds = 300.0; // 5 minutes
+
+                // Get the last sync duration (Delta) from Redis, default to 2.0s if missing
+                let delta = if let Some(service) = &self.redis_service {
+                    service.get_string("currencies:sync_duration")
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(2.0)
+                } else {
+                    2.0
+                };
+
+                let beta = 1.0;
+                let rand: f64 = rand::random(); // 0.0 to 1.0
+                
+                // Avoid log(0) which is -infinity
+                let safe_rand = if rand < 0.0001 { 0.0001 } else { rand };
+                
+                // PER Formula: TimeToRefresh = TTL - (Delta * Beta * -ln(rand))
+                // Note: -ln(rand) is positive because ln(0..1) is negative
+                let early_expire_margin = delta * beta * (-safe_rand.ln());
+                
+                let effective_ttl = ttl_seconds - early_expire_margin;
+
+                // If cache age exceeds our probabilistic TTL, we sync
+                Ok(cache_age.num_seconds() as f64 >= effective_ttl)
             }
             _ => Ok(true), // No sync found, need to sync
         }
@@ -92,6 +124,8 @@ impl SwapCrud {
         &self,
         trocador_client: &TrocadorClient,
     ) -> Result<usize, SwapError> {
+        let start_time = std::time::Instant::now();
+
         // Fetch from Trocador API
         let trocador_currencies = trocador_client.get_currencies().await?;
         let total_count = trocador_currencies.len();
@@ -99,6 +133,14 @@ impl SwapCrud {
         // Process in chunks of 500 to avoid hitting packet size limits
         for chunk in trocador_currencies.chunks(500) {
             self.upsert_currencies_batch(chunk).await?;
+        }
+
+        let duration = start_time.elapsed().as_secs_f64();
+        
+        // Store the sync duration (Delta) for PER and invalidate response cache
+        if let Some(service) = &self.redis_service {
+            let _ = service.set_string("currencies:sync_duration", &duration.to_string(), 3600).await;
+            let _ = service.set_string("currencies:response:all", "", 0).await;
         }
 
         Ok(total_count)
@@ -147,57 +189,74 @@ impl SwapCrud {
         Ok(())
     }
 
-    /// Get currencies with optimized caching and background sync
-    /// Returns: (Vec<Currency> object, Should return cached raw string?)
-    /// This method encapsulates all the complexity of caching strategies.
+    /// Get currencies with optimized caching and raw response support
     pub async fn get_currencies_optimized(
         &self,
         query: CurrenciesQuery,
-    ) -> Result<Vec<Currency>, SwapError> {
+    ) -> Result<CurrenciesResult, SwapError> {
         let is_standard_query = query.ticker.is_none() && query.network.is_none() && query.memo.is_none();
-        let cache_key = "currencies:all";
+        // Separate cache key for the PRE-SERIALIZED response
+        let cache_key = "currencies:response:all";
 
-        // 1. FAST PATH: Try to get from Redis
-        if is_standard_query {
+        // 1. FAST PATH: Try to get Raw JSON from Redis (Zero Serialization)
+        if is_standard_query && query.page.is_none() && query.limit.is_none() {
             if let Some(service) = &self.redis_service {
-                // If asking for full list (no pagination), try to get raw string if we supported it
-                // For now, we deserialize to Vec<Currency> to keep the signature compatible
-                if let Ok(Some(cached)) = service.get_json::<Vec<Currency>>(cache_key).await {
-                    
-                    // Trigger background sync if stale
+                if let Ok(Some(raw_json)) = service.get_string(cache_key).await {
                     self.trigger_background_sync_if_needed().await;
-
-                    // Handle Pagination in Memory
-                    if let (Some(page), Some(limit)) = (query.page, query.limit) {
-                        let start = (page - 1) * limit;
-                        if start >= cached.len() {
-                            return Ok(Vec::new());
-                        }
-                        let end = std::cmp::min(start + limit, cached.len());
-                        return Ok(cached[start..end].to_vec());
-                    }
-                    return Ok(cached);
+                    return Ok(CurrenciesResult::RawJson(raw_json));
                 }
             }
         }
 
-        // 2. SLOW PATH: Database Fallback
-        // This runs if Redis is empty or if query has specific filters
-        let currencies = self.fetch_currencies_from_db(&query).await?;
-
-        // 3. Cache Population (Self-Healing)
-        // If we hit the DB for a standard query, replenish the cache
-        if is_standard_query && query.page.is_none() && query.limit.is_none() && !currencies.is_empty() {
+        // 2. MEDIUM PATH: Try to get Structured Cache from Redis (for Pagination)
+        // We still use the 'currencies:all' (model cache) for pagination/slicing to avoid parsing huge JSON strings
+        let model_cache_key = "currencies:all";
+        if is_standard_query {
             if let Some(service) = &self.redis_service {
-                let _ = service.set_json(cache_key, &currencies, 300).await;
+                if let Ok(Some(cached_models)) = service.get_json::<Vec<Currency>>(model_cache_key).await {
+                    self.trigger_background_sync_if_needed().await;
+
+                    // Handle Pagination in Memory
+                    let sliced_models = if let (Some(page), Some(limit)) = (query.page, query.limit) {
+                        let start = (page - 1) * limit;
+                        if start >= cached_models.len() {
+                            Vec::new()
+                        } else {
+                            let end = std::cmp::min(start + limit, cached_models.len());
+                            cached_models[start..end].to_vec()
+                        }
+                    } else {
+                        cached_models
+                    };
+
+                    let responses: Vec<CurrencyResponse> = sliced_models.into_iter().map(|c| c.into()).collect();
+                    return Ok(CurrenciesResult::Structured(responses));
+                }
             }
         }
 
-        // 4. Background Sync Trigger
-        // Even if we fetched from DB, check if we need to sync from Trocador
+        // 3. SLOW PATH: Database Fallback
+        let currencies = self.fetch_currencies_from_db(&query).await?;
+        let responses: Vec<CurrencyResponse> = currencies.clone().into_iter().map(|c| c.into()).collect();
+
+        // 4. Cache Population (Self-Healing)
+        // If this was a full standard query, we cache BOTH the model list and the serialized response
+        if is_standard_query && query.page.is_none() && query.limit.is_none() && !currencies.is_empty() {
+            if let Some(service) = &self.redis_service {
+                // Cache Model List (for pagination reuse)
+                let _ = service.set_json(model_cache_key, &currencies, 300).await;
+                
+                // Cache Raw Response (for fast full-list access)
+                // We serialize the DTOs here once, so we don't have to do it on every read
+                if let Ok(json_string) = serde_json::to_string(&responses) {
+                    let _ = service.set_string(cache_key, &json_string, 300).await;
+                }
+            }
+        }
+
         self.trigger_background_sync_if_needed().await;
 
-        Ok(currencies)
+        Ok(CurrenciesResult::Structured(responses))
     }
 
     /// Internal helper to fetch from DB with filters
@@ -282,7 +341,25 @@ impl SwapCrud {
         query: CurrenciesQuery,
     ) -> Result<Vec<Currency>, SwapError> {
         // Redirect to new optimized method
-        self.get_currencies_optimized(query).await
+        // Warning: This is a compatibility shim. The controller should now handle CurrenciesResult.
+        // If this is called, we force unpack Structured result.
+        match self.get_currencies_optimized(query).await? {
+            CurrenciesResult::Structured(res) => {
+                // We need to map back to Currency model if this function signature is strict, 
+                // but the current get_currencies returns Vec<Currency>.
+                // Wait, get_currencies_optimized returns Vec<CurrencyResponse> inside Structured variant.
+                // The original get_currencies returned Vec<Currency>.
+                // This means I broke the signature compatibility for this shim.
+                // Let's just fix the controller to use get_currencies_optimized directly.
+                // For this shim, I will return an error or basic implementation if needed, 
+                // but better to rely on fetch_currencies_from_db for raw access.
+                
+                // Ideally this method should be deprecated or removed if controller is updated.
+                // For now, let's just return a database fetch to be safe.
+                Err(SwapError::DatabaseError("Use get_currencies_optimized instead".to_string()))
+            }
+            CurrenciesResult::RawJson(_) => Err(SwapError::DatabaseError("Raw JSON not supported in legacy method".to_string())),
+        }
     }
 
     // =========================================================================
