@@ -2,7 +2,7 @@ use serde_json::Value;
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::setup_test_server;
+use common::{setup_test_server, timed_get};
 
 // =============================================================================
 // INTEGRATION TESTS - PROVIDERS/EXCHANGES ENDPOINT
@@ -13,7 +13,7 @@ use common::setup_test_server;
 async fn test_get_all_providers_from_trocador() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers").await;
+    let response = timed_get(&server, "/swap/providers").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -45,7 +45,7 @@ async fn test_get_all_providers_from_trocador() {
 async fn test_providers_have_valid_kyc_ratings() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers").await;
+    let response = timed_get(&server, "/swap/providers").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -81,7 +81,7 @@ async fn test_providers_have_valid_kyc_ratings() {
 async fn test_filter_providers_by_kyc_rating_a() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?rating=A").await;
+    let response = timed_get(&server, "/swap/providers?rating=A").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -106,7 +106,7 @@ async fn test_filter_providers_by_kyc_rating_a() {
 async fn test_filter_providers_by_kyc_rating_b() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?rating=B").await;
+    let response = timed_get(&server, "/swap/providers?rating=B").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -128,7 +128,7 @@ async fn test_filter_providers_by_kyc_rating_b() {
 async fn test_filter_providers_by_kyc_rating_c() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?rating=C").await;
+    let response = timed_get(&server, "/swap/providers?rating=C").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -149,7 +149,7 @@ async fn test_filter_providers_by_kyc_rating_c() {
 async fn test_filter_providers_with_markup_enabled() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?markup_enabled=true").await;
+    let response = timed_get(&server, "/swap/providers?markup_enabled=true").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -176,7 +176,7 @@ async fn test_filter_providers_with_markup_enabled() {
 async fn test_filter_providers_without_markup() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?markup_enabled=false").await;
+    let response = timed_get(&server, "/swap/providers?markup_enabled=false").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -192,7 +192,7 @@ async fn test_filter_providers_without_markup() {
 async fn test_providers_insurance_values() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers").await;
+    let response = timed_get(&server, "/swap/providers").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -228,7 +228,7 @@ async fn test_providers_insurance_values() {
 async fn test_providers_eta_values() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers").await;
+    let response = timed_get(&server, "/swap/providers").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -259,7 +259,7 @@ async fn test_providers_eta_values() {
 async fn test_specific_providers_exist() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers").await;
+    let response = timed_get(&server, "/swap/providers").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -304,7 +304,7 @@ async fn test_specific_providers_exist() {
 async fn test_providers_sorted_by_name() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?sort=name").await;
+    let response = timed_get(&server, "/swap/providers?sort=name").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -327,7 +327,7 @@ async fn test_providers_sorted_by_name() {
 async fn test_providers_sorted_by_rating() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?sort=rating").await;
+    let response = timed_get(&server, "/swap/providers?sort=rating").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -380,9 +380,7 @@ async fn test_cache_improves_provider_response_time() {
 async fn test_combined_filters_rating_and_markup() {
     let server = setup_test_server().await;
 
-    let response = server
-        .get("/swap/providers?rating=B&markup_enabled=true")
-        .await;
+    let response = timed_get(&server, "/swap/providers?rating=B&markup_enabled=true").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -398,7 +396,7 @@ async fn test_combined_filters_rating_and_markup() {
 async fn test_nonexistent_rating_returns_empty() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers?rating=Z").await;
+    let response = timed_get(&server, "/swap/providers?rating=Z").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();
@@ -414,7 +412,7 @@ async fn test_nonexistent_rating_returns_empty() {
 async fn test_provider_names_not_empty() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/providers").await;
+    let response = timed_get(&server, "/swap/providers").await;
     response.assert_status_ok();
 
     let providers: Vec<Value> = response.json();

@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::setup_test_server;
+use common::{setup_test_server, timed_get, timed_post};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -19,7 +19,7 @@ async fn test_get_swap_status_successful() {
 
     // 1. Create a swap first
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -43,7 +43,7 @@ async fn test_get_swap_status_successful() {
         "rate_type": "floating"
     });
 
-    let create_response = server.post(create_url).json(&payload).await;
+    let create_response = timed_post(&server, create_url, &payload).await;
     
     if !create_response.status_code().is_success() {
         let error_body: Value = create_response.json();
@@ -58,7 +58,7 @@ async fn test_get_swap_status_successful() {
     // 2. Get the swap status
     sleep(Duration::from_millis(500)).await; // Small delay
     let status_url = format!("/swap/{}", swap_id);
-    let status_response = server.get(&status_url).await;
+    let status_response = timed_get(&server, &status_url).await;
     
     status_response.assert_status_ok();
     let status_json: Value = status_response.json();
@@ -105,7 +105,7 @@ async fn test_get_swap_status_not_found() {
 
     let fake_swap_id = "00000000-0000-0000-0000-000000000000";
     let status_url = format!("/swap/{}", fake_swap_id);
-    let response = server.get(&status_url).await;
+    let response = timed_get(&server, &status_url).await;
 
     // Should return 404 Not Found
     assert_eq!(response.status_code().as_u16(), 404);
@@ -122,7 +122,7 @@ async fn test_get_swap_status_invalid_id_format() {
 
     let invalid_id = "not-a-valid-uuid";
     let status_url = format!("/swap/{}", invalid_id);
-    let response = server.get(&status_url).await;
+    let response = timed_get(&server, &status_url).await;
 
     // Should return 400 Bad Request or 404 Not Found
     let status_code = response.status_code().as_u16();
@@ -141,7 +141,7 @@ async fn test_get_swap_status_updates_from_trocador() {
 
     // 1. Create a swap
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -161,7 +161,7 @@ async fn test_get_swap_status_updates_from_trocador() {
         "rate_type": "floating"
     });
 
-    let create_response = server.post(create_url).json(&payload).await;
+    let create_response = timed_post(&server, create_url, &payload).await;
     if !create_response.status_code().is_success() {
         println!("Failed to create swap, skipping test");
         return;
@@ -173,7 +173,7 @@ async fn test_get_swap_status_updates_from_trocador() {
     // 2. Get status immediately
     sleep(Duration::from_millis(500)).await;
     let status_url = format!("/swap/{}", swap_id);
-    let first_response = server.get(&status_url).await;
+    let first_response = timed_get(&server, &status_url).await;
     first_response.assert_status_ok();
     let first_json: Value = first_response.json();
     let first_status = first_json["status"].as_str().unwrap();
@@ -184,7 +184,7 @@ async fn test_get_swap_status_updates_from_trocador() {
 
     // 3. Wait and check again (status might update from Trocador)
     sleep(Duration::from_secs(3)).await;
-    let second_response = server.get(&status_url).await;
+    let second_response = timed_get(&server, &status_url).await;
     second_response.assert_status_ok();
     let second_json: Value = second_response.json();
     let second_status = second_json["status"].as_str().unwrap();
@@ -209,7 +209,7 @@ async fn test_get_swap_status_complete_response() {
 
     // Create a swap
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -230,7 +230,7 @@ async fn test_get_swap_status_complete_response() {
         "rate_type": "floating"
     });
 
-    let create_response = server.post(create_url).json(&payload).await;
+    let create_response = timed_post(&server, create_url, &payload).await;
     if !create_response.status_code().is_success() {
         println!("Failed to create swap, skipping test");
         return;
@@ -242,7 +242,7 @@ async fn test_get_swap_status_complete_response() {
     // Get status
     sleep(Duration::from_millis(500)).await;
     let status_url = format!("/swap/{}", swap_id);
-    let response = server.get(&status_url).await;
+    let response = timed_get(&server, &status_url).await;
     response.assert_status_ok();
     let json: Value = response.json();
 
@@ -277,7 +277,7 @@ async fn test_get_swap_status_multiple_checks() {
 
     // Create a swap
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -297,7 +297,7 @@ async fn test_get_swap_status_multiple_checks() {
         "rate_type": "floating"
     });
 
-    let create_response = server.post(create_url).json(&payload).await;
+    let create_response = timed_post(&server, create_url, &payload).await;
     if !create_response.status_code().is_success() {
         println!("Failed to create swap, skipping test");
         return;
@@ -310,7 +310,7 @@ async fn test_get_swap_status_multiple_checks() {
     // Make multiple status checks
     for i in 1..=5 {
         sleep(Duration::from_millis(800)).await; // Space out requests
-        let response = server.get(&status_url).await;
+        let response = timed_get(&server, &status_url).await;
         
         if !response.status_code().is_success() {
             println!("Status check {} failed with: {}", i, response.status_code());
@@ -337,7 +337,7 @@ async fn test_get_swap_status_sql_injection_attempt() {
     // The UUID format will pass URL validation but should be safely handled by the database
     let malicious_id = "00000000-0000-0000-0000-000000000000";
     let status_url = format!("/swap/{}", malicious_id);
-    let response = server.get(&status_url).await;
+    let response = timed_get(&server, &status_url).await;
 
     // Should safely return 404 (not found), not crash or cause SQL errors
     let status_code = response.status_code().as_u16();
@@ -356,7 +356,7 @@ async fn test_get_swap_status_performance() {
 
     // Create a swap
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -376,7 +376,7 @@ async fn test_get_swap_status_performance() {
         "rate_type": "floating"
     });
 
-    let create_response = server.post(create_url).json(&payload).await;
+    let create_response = timed_post(&server, create_url, &payload).await;
     if !create_response.status_code().is_success() {
         println!("Failed to create swap, skipping test");
         return;
@@ -390,7 +390,7 @@ async fn test_get_swap_status_performance() {
     let status_url = format!("/swap/{}", swap_id);
     
     let start = std::time::Instant::now();
-    let response = server.get(&status_url).await;
+    let response = timed_get(&server, &status_url).await;
     let duration = start.elapsed();
 
     response.assert_status_ok();

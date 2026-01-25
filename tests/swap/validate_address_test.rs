@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::setup_test_server;
+use common::{setup_test_server, timed_post};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -24,7 +24,7 @@ async fn test_validate_address_valid_btc() {
         "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
     
     let json: Value = response.json();
@@ -50,7 +50,7 @@ async fn test_validate_address_invalid_btc() {
         "address": "INVALID_BTC_ADDRESS_12345"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
     
     let json: Value = response.json();
@@ -74,7 +74,7 @@ async fn test_validate_address_valid_xmr() {
         "address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
     
     let json: Value = response.json();
@@ -98,7 +98,7 @@ async fn test_validate_address_valid_eth() {
         "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // ETH validation might fail if Trocador doesn't support this exact network name
     // So we just verify we get a proper response structure
@@ -124,7 +124,7 @@ async fn test_validate_address_invalid_eth() {
         "address": "0xINVALID"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // Similar to above, just verify we get a response
     if response.status_code().is_success() {
@@ -149,7 +149,7 @@ async fn test_validate_address_valid_ltc() {
         "address": "LTC1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"  // Valid LTC bech32 address
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // LTC address validation might fail if format is wrong, so we check both cases
     if response.status_code().is_success() {
@@ -173,7 +173,7 @@ async fn test_validate_address_missing_ticker() {
         "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // Should return 400 Bad Request or 422 Unprocessable Entity
     let status = response.status_code().as_u16();
@@ -191,7 +191,7 @@ async fn test_validate_address_missing_network() {
         "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     let status = response.status_code().as_u16();
     assert!(status >= 400 && status < 500, "Should return client error for missing network");
@@ -208,7 +208,7 @@ async fn test_validate_address_missing_address() {
         "network": "Mainnet"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     let status = response.status_code().as_u16();
     assert!(status >= 400 && status < 500, "Should return client error for missing address");
@@ -227,7 +227,7 @@ async fn test_validate_address_empty_address() {
         "address": ""
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // Should either return 400 or return valid: false
     if response.status_code().is_success() {
@@ -251,7 +251,7 @@ async fn test_validate_address_whitespace_address() {
         "address": "   "
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -274,7 +274,7 @@ async fn test_validate_address_unsupported_coin() {
         "address": "some_address_here"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // Should return error or valid: false
     if response.status_code().is_success() {
@@ -299,7 +299,7 @@ async fn test_validate_address_wrong_network() {
         "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // Should return error or valid: false
     if response.status_code().is_success() {
@@ -323,7 +323,7 @@ async fn test_validate_address_case_insensitive_ticker() {
         "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     // Should work regardless of case
     if response.status_code().is_success() {
@@ -346,7 +346,7 @@ async fn test_validate_address_very_long_address() {
         "address": long_address
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -367,7 +367,7 @@ async fn test_validate_address_special_characters() {
         "address": "bc1q!@#$%^&*()"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -390,7 +390,7 @@ async fn test_validate_address_multiple_rapid_calls() {
             "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
         });
 
-        let response = server.post(validate_url).json(&payload).await;
+        let response = timed_post(&server, validate_url, &payload).await;
         
         if !response.status_code().is_success() {
             println!("Validation {} failed with: {}", i, response.status_code());
@@ -421,7 +421,7 @@ async fn test_validate_address_performance() {
     });
 
     let start = std::time::Instant::now();
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     let duration = start.elapsed();
 
     response.assert_status_ok();
@@ -449,7 +449,7 @@ async fn test_validate_address_xrp_with_tag() {
         "address": "rEb8TK3gBgk5auZkwc6sHnwrGVJH8DuaLh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -471,7 +471,7 @@ async fn test_validate_address_response_structure() {
         "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
     });
 
-    let response = server.post(validate_url).json(&payload).await;
+    let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
     
     let json: Value = response.json();

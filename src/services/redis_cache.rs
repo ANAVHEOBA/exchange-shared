@@ -68,6 +68,49 @@ impl RedisService {
         }
     }
 
+    // Distributed Lock: Set key only if it doesn't exist
+    pub async fn try_lock(&self, key: &str, ttl_seconds: u64) -> Result<bool, String> {
+        let mut conn = self.client.get_multiplexed_async_connection()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // SET key value NX EX ttl
+        // Returns OK if set, Null if not set
+        let result: Option<String> = redis::cmd("SET")
+            .arg(key)
+            .arg("locked")
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_seconds)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e: redis::RedisError| e.to_string())?;
+
+        Ok(result.is_some())
+    }
+
+    pub async fn set_string(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<(), String> {
+        let mut conn = self.client.get_multiplexed_async_connection()
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        conn.set_ex(key, value, ttl_seconds)
+            .await
+            .map_err(|e: redis::RedisError| e.to_string())
+    }
+
+    pub async fn get_string(&self, key: &str) -> Result<Option<String>, String> {
+        let mut conn = self.client.get_multiplexed_async_connection()
+            .await
+            .map_err(|e| e.to_string())?;
+            
+        let result: Option<String> = conn.get(key)
+            .await
+            .map_err(|e: redis::RedisError| e.to_string())?;
+
+        Ok(result)
+    }
+
     // Cache with deduplication
     pub async fn get_or_set_json<T, F, Fut>(&self, key: &str, ttl_seconds: u64, fetch_fn: F) -> Result<T, String>
     where

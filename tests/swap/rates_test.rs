@@ -2,7 +2,7 @@ use serde_json::Value;
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::setup_test_server;
+use common::{setup_test_server, timed_get};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -19,7 +19,7 @@ async fn test_get_rates_successful() {
     // BTC -> XMR (Standard Swap)
     let url = "/swap/rates?from=btc&to=xmr&amount=0.01&network_from=Mainnet&network_to=Mainnet";
     
-    let response = server.get(url).await;
+    let response = timed_get(&server, url).await;
     
     // If this fails with 500, it might be because the endpoint isn't implemented yet, 
     // but this is the integration test defining the behavior.
@@ -67,7 +67,7 @@ async fn test_get_rates_sorted_by_best_price() {
     
     // BTC -> ETH (Likely multiple providers)
     let url = "/swap/rates?from=btc&to=eth&amount=0.01&network_from=Mainnet&network_to=ERC20";
-    let response = server.get(url).await;
+    let response = timed_get(&server, url).await;
     response.assert_status_ok();
 
     let json: Value = response.json();
@@ -95,7 +95,7 @@ async fn test_get_rates_minimum_amount_validation() {
     // Extremely small amount that should be below limits
     let url = "/swap/rates?from=btc&to=xmr&amount=0.00000001&network_from=Mainnet&network_to=Mainnet";
     
-    let response = server.get(url).await;
+    let response = timed_get(&server, url).await;
     
     // Expecting either 400 Bad Request or a structured error response
     // Trocador API might return valid response but empty quotes, or an error.
@@ -122,7 +122,7 @@ async fn test_get_rates_invalid_pair() {
     // Invalid ticker
     let url = "/swap/rates?from=INVALIDCOIN&to=xmr&amount=0.1&network_from=Mainnet&network_to=Mainnet";
     
-    let response = server.get(url).await;
+    let response = timed_get(&server, url).await;
     
     // Should fail
     assert!(
@@ -139,7 +139,7 @@ async fn test_get_rates_missing_params() {
     // Missing 'to' and 'amount'
     let url = "/swap/rates?from=btc";
     
-    let response = server.get(url).await;
+    let response = timed_get(&server, url).await;
     
     // Axum should reject this automatically
     assert_eq!(response.status_code(), 400);
@@ -151,7 +151,7 @@ async fn test_get_rates_includes_network_fees() {
     let server = setup_test_server().await;
 
     let url = "/swap/rates?from=btc&to=eth&amount=0.01&network_from=Mainnet&network_to=ERC20";
-    let response = server.get(url).await;
+    let response = timed_get(&server, url).await;
     response.assert_status_ok();
 
     let json: Value = response.json();

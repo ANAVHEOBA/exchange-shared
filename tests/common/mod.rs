@@ -85,3 +85,22 @@ pub async fn setup_test_server() -> TestServer {
     let ctx = TestContext::new().await;
     ctx.server
 }
+
+// Helper to measure and print request duration
+#[allow(dead_code)]
+pub async fn timed_get(server: &TestServer, path: &str) -> axum_test::TestResponse {
+    let start = std::time::Instant::now();
+    let response = server.get(path).await;
+    let duration = start.elapsed();
+    println!("⏱️ GET {} took {:?}", path, duration);
+    response
+}
+
+#[allow(dead_code)]
+pub async fn timed_post<T: serde::Serialize>(server: &TestServer, path: &str, body: &T) -> axum_test::TestResponse {
+    let start = std::time::Instant::now();
+    let response = server.post(path).json(body).await;
+    let duration = start.elapsed();
+    println!("⏱️ POST {} took {:?}", path, duration);
+    response
+}

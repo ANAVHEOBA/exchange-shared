@@ -2,7 +2,7 @@ use serde_json::Value;
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::setup_test_server;
+use common::{setup_test_server, timed_get};
 
 
 // =============================================================================
@@ -14,7 +14,7 @@ use common::setup_test_server;
 async fn test_get_all_currencies_from_trocador() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/currencies").await;
+    let response = timed_get(&server, "/swap/currencies").await;
 
     // Should return 200 OK
     response.assert_status_ok();
@@ -571,4 +571,36 @@ async fn test_concurrent_requests_handling() {
     // All should return same count
     assert!(results.iter().all(|&r| r == results[0]));
     assert!(results[0] >= 4, "Should have multiple BTC variants");
+}
+
+#[tokio::test]
+async fn test_pagination_performance_is_under_50ms() {
+    let server = setup_test_server().await;
+
+    // 1. Warm up the cache (Blocking / First Run)
+    let _ = server.get("/swap/currencies?limit=1").await;
+
+    // 2. Measure "Hot" Performance with Pagination (Real user scenario)
+    // Requesting just 20 items (a standard mobile app page size)
+    let start = std::time::Instant::now();
+    let response = timed_get(&server, "/swap/currencies?limit=20&page=1").await;
+    let duration = start.elapsed();
+
+    response.assert_status_ok();
+    let currencies: Vec<Value> = response.json();
+
+    println!("🚀 Pagination Performance (20 items): {:?}", duration);
+
+    // This should be extremely fast (< 50ms) because:
+    // 1. Data is in Redis/DB
+    // 2. We are not serializing 2,600 items (1MB JSON)
+    // 3. We are not deserializing 2,600 items
+    assert!(
+        duration.as_millis() < 50,
+        "Response took {:?} which is > 50ms. Optimization failed.",
+        duration
+    );
+
+    assert!(!currencies.is_empty());
+    assert!(currencies.len() <= 20);
 }

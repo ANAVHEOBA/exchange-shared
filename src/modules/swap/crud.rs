@@ -94,75 +94,114 @@ impl SwapCrud {
     ) -> Result<usize, SwapError> {
         // Fetch from Trocador API
         let trocador_currencies = trocador_client.get_currencies().await?;
+        let total_count = trocador_currencies.len();
 
-        let mut synced_count = 0;
-
-        // Upsert each currency
-        for trocador_currency in trocador_currencies {
-            self.upsert_currency_from_trocador(&trocador_currency).await?;
-            synced_count += 1;
+        // Process in chunks of 500 to avoid hitting packet size limits
+        for chunk in trocador_currencies.chunks(500) {
+            self.upsert_currencies_batch(chunk).await?;
         }
 
-        Ok(synced_count)
+        Ok(total_count)
     }
 
-    /// Upsert a single currency from Trocador data
-    async fn upsert_currency_from_trocador(
+    /// Upsert a batch of currencies
+    async fn upsert_currencies_batch(
         &self,
-        trocador_currency: &TrocadorCurrency,
+        currencies: &[TrocadorCurrency],
     ) -> Result<(), SwapError> {
-        sqlx::query(
-            r#"
-            INSERT INTO currencies (
+        if currencies.is_empty() {
+            return Ok(());
+        }
+
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO currencies (
                 symbol, name, network, is_active, logo_url,
                 requires_extra_id, min_amount, max_amount, last_synced_at
-            )
-            VALUES (?, ?, ?, TRUE, ?, ?, ?, ?, NOW())
-            ON DUPLICATE KEY UPDATE
+            ) "
+        );
+
+        query_builder.push_values(currencies, |mut b, currency| {
+            b.push_bind(&currency.ticker)
+             .push_bind(&currency.name)
+             .push_bind(&currency.network)
+             .push("TRUE") // is_active
+             .push_bind(&currency.image)
+             .push_bind(currency.memo)
+             .push_bind(currency.minimum)
+             .push_bind(currency.maximum)
+             .push("NOW()");
+        });
+
+        query_builder.push(
+            " ON DUPLICATE KEY UPDATE
                 name = VALUES(name),
                 logo_url = VALUES(logo_url),
                 min_amount = VALUES(min_amount),
                 max_amount = VALUES(max_amount),
-                last_synced_at = NOW()
-            "#
-        )
-        .bind(&trocador_currency.ticker)
-        .bind(&trocador_currency.name)
-        .bind(&trocador_currency.network)
-        .bind(&trocador_currency.image)
-        .bind(trocador_currency.memo)
-        .bind(trocador_currency.minimum)
-        .bind(trocador_currency.maximum)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
+                last_synced_at = VALUES(last_synced_at)"
+        );
+
+        let query = query_builder.build();
+        query.execute(&self.pool).await.map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Get currencies from database with optional filtering
-    pub async fn get_currencies(
+    /// Get currencies with optimized caching and background sync
+    /// Returns: (Vec<Currency> object, Should return cached raw string?)
+    /// This method encapsulates all the complexity of caching strategies.
+    pub async fn get_currencies_optimized(
         &self,
         query: CurrenciesQuery,
     ) -> Result<Vec<Currency>, SwapError> {
-        // Check if we need to sync from Trocador first
-        let should_sync = self.should_sync_currencies().await.unwrap_or(true);
-        
-        if should_sync {
+        let is_standard_query = query.ticker.is_none() && query.network.is_none() && query.memo.is_none();
+        let cache_key = "currencies:all";
+
+        // 1. FAST PATH: Try to get from Redis
+        if is_standard_query {
             if let Some(service) = &self.redis_service {
-                let rate_limit_key = "api_calls:trocador:currencies";
-                if service.check_rate_limit(rate_limit_key, 2, 300).await.unwrap_or(false) {
-                    let api_key = std::env::var("TROCADOR_API_KEY")
-                        .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
-                    let client = TrocadorClient::new(api_key);
+                // If asking for full list (no pagination), try to get raw string if we supported it
+                // For now, we deserialize to Vec<Currency> to keep the signature compatible
+                if let Ok(Some(cached)) = service.get_json::<Vec<Currency>>(cache_key).await {
                     
-                    if let Err(e) = self.sync_currencies_from_trocador(&client).await {
-                        tracing::warn!("Failed to sync currencies: {}", e);
+                    // Trigger background sync if stale
+                    self.trigger_background_sync_if_needed().await;
+
+                    // Handle Pagination in Memory
+                    if let (Some(page), Some(limit)) = (query.page, query.limit) {
+                        let start = (page - 1) * limit;
+                        if start >= cached.len() {
+                            return Ok(Vec::new());
+                        }
+                        let end = std::cmp::min(start + limit, cached.len());
+                        return Ok(cached[start..end].to_vec());
                     }
+                    return Ok(cached);
                 }
             }
         }
 
+        // 2. SLOW PATH: Database Fallback
+        // This runs if Redis is empty or if query has specific filters
+        let currencies = self.fetch_currencies_from_db(&query).await?;
+
+        // 3. Cache Population (Self-Healing)
+        // If we hit the DB for a standard query, replenish the cache
+        if is_standard_query && query.page.is_none() && query.limit.is_none() && !currencies.is_empty() {
+            if let Some(service) = &self.redis_service {
+                let _ = service.set_json(cache_key, &currencies, 300).await;
+            }
+        }
+
+        // 4. Background Sync Trigger
+        // Even if we fetched from DB, check if we need to sync from Trocador
+        self.trigger_background_sync_if_needed().await;
+
+        Ok(currencies)
+    }
+
+    /// Internal helper to fetch from DB with filters
+    async fn fetch_currencies_from_db(&self, query: &CurrenciesQuery) -> Result<Vec<Currency>, SwapError> {
         let mut sql = String::from(
             "SELECT id, symbol, name, network, is_active, logo_url, contract_address, 
              decimals, requires_extra_id, extra_id_name, min_amount, max_amount, 
@@ -171,7 +210,6 @@ impl SwapCrud {
              WHERE is_active = TRUE"
         );
 
-        // Build query based on filters
         let mut sql_parts = Vec::new();
 
         if let Some(ref ticker) = query.ticker {
@@ -193,12 +231,58 @@ impl SwapCrud {
 
         sql.push_str(" ORDER BY symbol, network");
 
-        let currencies = sqlx::query_as::<_, Currency>(&sql)
+        if let (Some(page), Some(limit)) = (query.page, query.limit) {
+            let offset = (page - 1) * limit;
+            sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+        }
+
+        sqlx::query_as::<_, Currency>(&sql)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
+            .map_err(|e| SwapError::DatabaseError(e.to_string()))
+    }
 
-        Ok(currencies)
+    /// Triggers the background sync process if the cache is stale
+    async fn trigger_background_sync_if_needed(&self) {
+        if let Ok(true) = self.should_sync_currencies().await {
+            if let Some(redis) = &self.redis_service {
+                let redis = redis.clone();
+                let pool = self.pool.clone();
+                
+                tokio::spawn(async move {
+                    if let Ok(true) = redis.try_lock("lock:sync_currencies", 60).await {
+                        tracing::info!("Acquired sync lock, starting background update...");
+                        let api_key = std::env::var("TROCADOR_API_KEY").unwrap_or_default();
+                        if !api_key.is_empty() {
+                            let client = TrocadorClient::new(api_key);
+                            let bg_crud = SwapCrud::new(pool, Some(redis.clone()));
+                            
+                            match bg_crud.sync_currencies_from_trocador(&client).await {
+                                Ok(count) => {
+                                    tracing::info!("Background sync complete. Updated {} currencies.", count);
+                                    // Invalidate/Update cache immediately after sync
+                                    // This requires fetching fresh data and setting it
+                                    // For simplicity, we just let the next read repopulate or TTL expire
+                                    // But optimally, we would:
+                                    // let fresh = bg_crud.fetch_currencies_from_db(&Default::default()).await...;
+                                    // redis.set_json("currencies:all", &fresh, 300).await...;
+                                },
+                                Err(e) => tracing::error!("Background sync failed: {}", e),
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Get currencies from database with optional filtering
+    pub async fn get_currencies(
+        &self,
+        query: CurrenciesQuery,
+    ) -> Result<Vec<Currency>, SwapError> {
+        // Redirect to new optimized method
+        self.get_currencies_optimized(query).await
     }
 
     // =========================================================================

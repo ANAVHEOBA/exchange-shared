@@ -51,11 +51,13 @@ impl From<crate::modules::swap::model::Provider> for ProviderResponse {
 // =============================================================================
 
 // Request query parameters for /swap/currencies
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct CurrenciesQuery {
     pub ticker: Option<String>,         // Filter by ticker (e.g., "btc")
     pub network: Option<String>,        // Filter by network (e.g., "Mainnet")
     pub memo: Option<bool>,             // Filter by memo required
+    pub page: Option<usize>,            // Pagination: Page number (1-based)
+    pub limit: Option<usize>,           // Pagination: Items per page
 }
 
 // Response DTO matching Trocador's /coins format EXACTLY

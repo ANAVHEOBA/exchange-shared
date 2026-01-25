@@ -45,25 +45,8 @@ pub async fn get_currencies(
 ) -> Result<Json<Vec<CurrencyResponse>>, (StatusCode, Json<SwapErrorResponse>)> {
     let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()));
 
-    // Check if we need to sync from Trocador
-    let should_sync = crud.should_sync_currencies().await.unwrap_or(true);
-
-    if should_sync {
-        // Get API key from environment
-        let api_key = std::env::var("TROCADOR_API_KEY").unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let trocador_client = TrocadorClient::new(api_key);
-            
-            // Sync in background, don't fail request if sync fails
-            if let Err(e) = crud.sync_currencies_from_trocador(&trocador_client).await {
-                tracing::warn!("Failed to sync currencies from Trocador: {}", e);
-            }
-        }
-    }
-
-    // Get currencies from database (cache)
-    let currencies = crud.get_currencies(query).await.map_err(|e| {
+    // The CRUD layer now handles caching, pagination, and background synchronization
+    let currencies = crud.get_currencies_optimized(query).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(SwapErrorResponse::new(e.to_string())),

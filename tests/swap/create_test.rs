@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::setup_test_server;
+use common::{setup_test_server, timed_post, timed_get};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -19,7 +19,7 @@ async fn test_create_swap_successful() {
     // 1. First, get a rate to generate a trade_id
     // BTC -> XMR
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -46,7 +46,7 @@ async fn test_create_swap_successful() {
         "rate_type": "floating"
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Check for success (200 OK or 201 Created)
     if response.status_code() != 200 && response.status_code() != 201 {
@@ -88,7 +88,7 @@ async fn test_create_swap_without_trade_id_should_fail() {
         // "trade_id" missing - should cause API error
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Trocador API should reject requests without trade_id
     // Expect 400 Bad Request or 500 Internal Server Error (from external API)
@@ -117,7 +117,7 @@ async fn test_create_swap_invalid_address() {
         "rate_type": "floating"
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
 
     // Trocador should reject this
     assert!(response.status_code().as_u16() >= 400);
@@ -140,7 +140,7 @@ async fn test_create_swap_small_amount() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail
     assert!(response.status_code().as_u16() >= 400);
@@ -153,7 +153,7 @@ async fn test_create_swap_fixed_rate() {
 
     // 1. First, get rates to obtain a trade_id
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -184,7 +184,7 @@ async fn test_create_swap_fixed_rate() {
         "rate_type": "fixed"
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Fixed rate might not be available for all providers/pairs
     // Accept success or client error (400) if fixed rate not supported
@@ -222,7 +222,7 @@ async fn test_create_swap_invalid_refund_address() {
         "refund_address": "INVALID_REFUND_ADDRESS" 
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail validation
     assert!(response.status_code().as_u16() >= 400);
@@ -244,7 +244,7 @@ async fn test_create_swap_unsupported_pair() {
         "recipient_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should likely fail as "No trade to be made"
     assert!(response.status_code().as_u16() >= 400);
@@ -266,7 +266,7 @@ async fn test_create_swap_amount_too_high() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail
     assert!(response.status_code().as_u16() >= 400);
@@ -291,7 +291,7 @@ async fn test_create_swap_missing_memo_for_xrp() {
         // Missing recipient_extra_id
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Our implementation might default to "0" or fail. Trocador says "Use '0' for no memo".
     // If our code doesn't handle this, it might fail.
@@ -315,7 +315,7 @@ async fn test_create_swap_invalid_provider() {
 
     // Get a valid trade_id first
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -333,7 +333,7 @@ async fn test_create_swap_invalid_provider() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail with 400 or 500 error
     assert!(response.status_code().as_u16() >= 400);
@@ -355,7 +355,7 @@ async fn test_create_swap_wrong_network_for_currency() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail - invalid network for currency
     assert!(response.status_code().as_u16() >= 400);
@@ -378,7 +378,7 @@ async fn test_create_swap_expired_trade_id() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail with error about invalid/expired trade_id
     assert!(response.status_code().as_u16() >= 400);
@@ -391,7 +391,7 @@ async fn test_create_swap_rate_type_mismatch() {
 
     // Get a floating rate quote
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -411,7 +411,7 @@ async fn test_create_swap_rate_type_mismatch() {
         "rate_type": "fixed" // Request fixed when we got floating quote
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // May succeed (if provider supports both) or fail (if strict validation)
     // Just verify we get a valid response
@@ -435,7 +435,7 @@ async fn test_create_swap_empty_recipient_address() {
         "recipient_address": "", // Empty address
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail validation
     assert!(response.status_code().as_u16() >= 400);
@@ -457,7 +457,7 @@ async fn test_create_swap_whitespace_recipient_address() {
         "recipient_address": "   ", // Whitespace only
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should fail validation
     assert!(response.status_code().as_u16() >= 400);
@@ -470,7 +470,7 @@ async fn test_create_swap_exactly_minimum_amount() {
 
     // Get rates to find minimum amount
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -505,7 +505,7 @@ async fn test_create_swap_exactly_minimum_amount() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should succeed at minimum amount
     let status = response.status_code();
@@ -523,7 +523,7 @@ async fn test_create_swap_exactly_maximum_amount() {
 
     // Get rates to find maximum amount
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -561,7 +561,7 @@ async fn test_create_swap_exactly_maximum_amount() {
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
-    let response = server.post(create_url).json(&payload).await;
+    let response = timed_post(&server, create_url, &payload).await;
     
     // Should succeed or fail gracefully if liquidity unavailable
     let status = response.status_code();
@@ -579,7 +579,7 @@ async fn test_create_swap_concurrent_same_trade_id() {
 
     // Get a trade_id
     let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = server.get(rate_url).await;
+    let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -599,13 +599,13 @@ async fn test_create_swap_concurrent_same_trade_id() {
     });
 
     // First swap
-    let response1 = server.post(create_url).json(&payload).await;
+    let response1 = timed_post(&server, create_url, &payload).await;
     let status1 = response1.status_code();
     
     sleep(Duration::from_millis(500)).await;
     
     // Second swap with same trade_id
-    let response2 = server.post(create_url).json(&payload).await;
+    let response2 = timed_post(&server, create_url, &payload).await;
     let status2 = response2.status_code();
     
     println!("First swap status: {}, Second swap status: {}", status1, status2);
