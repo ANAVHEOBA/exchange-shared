@@ -1,6 +1,6 @@
 # Exchange Platform
 
-A privacy-focused cryptocurrency swap aggregator built with Rust and Axum, similar to [Trocador.app](https://trocador.app). Aggregates rates from multiple exchange providers to offer users the best swap rates without requiring account creation.
+A privacy-focused cryptocurrency swap aggregator built with Rust and Axum, similar to [Trocador.app](https://trocador.app). Aggregates rates from multiple exchange providers via the Trocador API to offer users the best swap rates without requiring account creation.
 
 ## Features
 
@@ -10,6 +10,12 @@ A privacy-focused cryptocurrency swap aggregator built with Rust and Axum, simil
 - **Best Rate Selection** - Automatically sorts by best rates
 - **Fixed & Floating Rates** - Support for both rate types
 - **Swap Tracking** - Track swap status via unique swap ID
+
+### Optimization Architecture
+- **Distributed Singleflight** - coalesces concurrent requests for the same currency pair into a single upstream API call, preventing "thundering herd" issues and protecting API rate limits.
+- **Probabilistic Early Recomputation (PER)** - randomizes cache expiration for slowly changing data (like providers and currencies) to recompute values *before* they fully expire, ensuring users always see fresh data with zero latency.
+- **Raw JSON Caching** - stores pre-serialized JSON in Redis for heavy endpoints (like `/currencies`), bypassing serialization overhead for ultra-fast response times (<10ms).
+- **Background Warming** - intelligently keeps popular trading pairs "warm" in the cache.
 
 ### User Features
 - **Optional Accounts** - Create account to track swap history
@@ -30,6 +36,7 @@ A privacy-focused cryptocurrency swap aggregator built with Rust and Axum, simil
 | Language | Rust |
 | Framework | Axum |
 | Database | MySQL (SQLx) |
+| Caching | Redis |
 | Auth | JWT (jsonwebtoken) |
 | Password Hashing | Argon2id |
 | Rate Limiting | Governor |
@@ -41,6 +48,7 @@ A privacy-focused cryptocurrency swap aggregator built with Rust and Axum, simil
 
 - Rust 1.70+
 - MySQL 8.0+
+- Redis 6.0+
 - cargo
 
 ### Installation
@@ -62,6 +70,7 @@ Create a `.env` file in the project root:
 # Database
 DATABASE_URL=mysql://user:password@localhost:3306/exchange_db
 TEST_DATABASE_URL=mysql://user:password@localhost:3306/exchange_test_db
+REDIS_URL=redis://localhost:6379
 
 # JWT
 JWT_SECRET=your-secret-key-min-32-characters-long
@@ -70,9 +79,8 @@ JWT_SECRET=your-secret-key-min-32-characters-long
 HOST=0.0.0.0
 PORT=3000
 
-# Exchange Provider API Keys (optional - for production)
-CHANGENOW_API_KEY=your-api-key
-CHANGELLY_API_KEY=your-api-key
+# Trocador API Key
+TROCADOR_API_KEY=your-api-key
 
 # Environment
 RUST_LOG=exchange_shared=debug,tower_http=debug
@@ -203,6 +211,8 @@ exchange-shared/
 │       ├── hashing.rs       # Argon2 password hashing
 │       ├── jwt.rs           # JWT token management
 │       ├── rate_limit.rs    # Rate limiting middleware
+│       ├── redis_cache.rs   # Redis caching service
+│       ├── trocador.rs      # Trocador API client
 │       └── security.rs      # Security headers middleware
 ├── migrations/              # SQL migrations
 ├── tests/
@@ -251,14 +261,14 @@ cargo test -- --test-threads=1
 |--------|-------|--------|
 | Auth - Register | 13 | Passing |
 | Auth - Login | 10 | Passing |
-| Swap - Currencies | 11 | Pending |
-| Swap - Pairs | 13 | Pending |
-| Swap - Rates | 26 | Pending |
-| Swap - Estimate | 22 | Pending |
-| Swap - Create | 30 | Pending |
-| Swap - Status | 18 | Pending |
-| Swap - History | 21 | Pending |
-| Swap - Providers | 20 | Pending |
+| Swap - Currencies | 11 | Passing |
+| Swap - Pairs | 13 | Passing |
+| Swap - Rates | 26 | Passing |
+| Swap - Estimate | 22 | Passing |
+| Swap - Create | 30 | Passing |
+| Swap - Status | 18 | Passing |
+| Swap - History | 21 | Passing |
+| Swap - Providers | 20 | Passing |
 
 ## Performance
 
@@ -267,7 +277,8 @@ cargo test -- --test-threads=1
 | Register | ~850ms (Argon2 hashing) |
 | Login | ~510ms (Argon2 verify) |
 | JWT Verify | <1ms |
-| Get Rates | <10s (multiple providers) |
+| Get Rates (Cached) | <10ms |
+| Get Rates (API) | ~5-10s (dependent on upstream) |
 
 ## Revenue Model
 
