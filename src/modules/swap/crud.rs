@@ -3,13 +3,18 @@ use sqlx::{MySql, Pool};
 use std::time::Duration;
 
 use super::model::{Currency, Provider};
-use super::schema::{CurrenciesQuery, ProvidersQuery, TrocadorCurrency, TrocadorProvider, CurrencyResponse};
+use super::schema::{CurrenciesQuery, ProvidersQuery, TrocadorCurrency, TrocadorProvider, CurrencyResponse, ProviderResponse};
 use crate::services::trocador::{TrocadorClient, TrocadorError};
 use crate::services::redis_cache::RedisService;
 
 pub enum CurrenciesResult {
     RawJson(String),
     Structured(Vec<CurrencyResponse>),
+}
+
+pub enum ProvidersResult {
+    RawJson(String),
+    Structured(Vec<ProviderResponse>),
 }
 
 // =============================================================================
@@ -344,7 +349,7 @@ impl SwapCrud {
         // Warning: This is a compatibility shim. The controller should now handle CurrenciesResult.
         // If this is called, we force unpack Structured result.
         match self.get_currencies_optimized(query).await? {
-            CurrenciesResult::Structured(res) => {
+            CurrenciesResult::Structured(_res) => {
                 // We need to map back to Currency model if this function signature is strict, 
                 // but the current get_currencies returns Vec<Currency>.
                 // Wait, get_currencies_optimized returns Vec<CurrencyResponse> inside Structured variant.
@@ -384,11 +389,154 @@ impl SwapCrud {
         }
     }
 
+    /// Check if providers cache needs refresh using Probabilistic Early Recomputation (PER)
+    pub async fn should_sync_providers_per(&self) -> Result<bool, SwapError> {
+        let stats_key = "providers:sync_stats";
+        
+        let stats = if let Some(service) = &self.redis_service {
+            service.get_json::<serde_json::Value>(stats_key).await.unwrap_or(None)
+        } else {
+            None
+        };
+
+        if let Some(stats) = stats {
+            let last_sync = stats["last_sync"].as_i64().unwrap_or(0);
+            let duration = stats["duration"].as_f64().unwrap_or(2.0);
+            
+            let now = Utc::now().timestamp();
+            let age = (now - last_sync) as f64;
+            let ttl = 3600.0; // 1 hour hard TTL
+            let beta = 1.0;
+            
+            // PER Formula: Refresh if time_remaining <= delta * beta * -ln(rand)
+            let time_remaining = ttl - age;
+            let rand: f64 = rand::random();
+            // Avoid log(0)
+            let safe_rand = if rand < 0.0001 { 0.0001 } else { rand };
+            let x_fetch = duration * beta * (-safe_rand.ln());
+            
+            return Ok(time_remaining <= x_fetch);
+        }
+        
+        Ok(true) // No stats, sync needed
+    }
+
+    /// Triggers the background sync process if the cache is stale (PER)
+    async fn trigger_background_provider_sync(&self) {
+        if let Ok(true) = self.should_sync_providers_per().await {
+            if let Some(redis) = &self.redis_service {
+                let redis = redis.clone();
+                let pool = self.pool.clone();
+                
+                tokio::spawn(async move {
+                    if let Ok(true) = redis.try_lock("lock:sync_providers", 60).await {
+                        tracing::info!("Acquired sync lock, starting background provider update...");
+                        let api_key = std::env::var("TROCADOR_API_KEY").unwrap_or_default();
+                        if !api_key.is_empty() {
+                            let client = TrocadorClient::new(api_key);
+                            let bg_crud = SwapCrud::new(pool, Some(redis.clone()));
+                            
+                            match bg_crud.sync_providers_from_trocador(&client).await {
+                                Ok(count) => {
+                                    tracing::info!("Background sync complete. Updated {} providers.", count);
+                                    // Cache refresh happens inside sync_providers_from_trocador
+                                },
+                                Err(e) => tracing::error!("Background sync failed: {}", e),
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Get providers with optimized caching and raw response support
+    pub async fn get_providers_optimized(
+        &self,
+        query: ProvidersQuery,
+    ) -> Result<ProvidersResult, SwapError> {
+        let is_standard_query = query.rating.is_none() && query.markup_enabled.is_none() && query.sort.is_none();
+        let cache_key = "providers:response:all";
+        let model_cache_key = "providers:all";
+
+        // 1. FAST PATH: Raw JSON (Zero Serialization)
+        if is_standard_query {
+            if let Some(service) = &self.redis_service {
+                if let Ok(Some(raw_json)) = service.get_string(cache_key).await {
+                    self.trigger_background_provider_sync().await;
+                    return Ok(ProvidersResult::RawJson(raw_json));
+                }
+            }
+        }
+
+        // 2. MEDIUM PATH: Structured Cache (In-Memory Filtering)
+        if let Some(service) = &self.redis_service {
+            if let Ok(Some(cached_models)) = service.get_json::<Vec<Provider>>(model_cache_key).await {
+                self.trigger_background_provider_sync().await;
+                
+                // Filter in memory
+                let filtered = self.filter_providers_in_memory(cached_models, &query);
+                let responses: Vec<ProviderResponse> = filtered.into_iter().map(|p| p.into()).collect();
+                return Ok(ProvidersResult::Structured(responses));
+            }
+        }
+
+        // 3. SLOW PATH: Database Fallback
+        // Note: self.get_providers(query) performs filtering in SQL.
+        // But to populate cache, we need ALL providers.
+        
+        let all_providers_query = ProvidersQuery { rating: None, markup_enabled: None, sort: None };
+        let all_providers = self.get_providers(all_providers_query).await?;
+        
+        // Populate Cache
+        let all_responses: Vec<ProviderResponse> = all_providers.clone().into_iter().map(|p| p.into()).collect();
+        
+        if let Some(service) = &self.redis_service {
+            let _ = service.set_json(model_cache_key, &all_providers, 3600).await;
+            if let Ok(json_string) = serde_json::to_string(&all_responses) {
+                let _ = service.set_string(cache_key, &json_string, 3600).await;
+            }
+        }
+        
+        // Return filtered result
+        let filtered = self.filter_providers_in_memory(all_providers, &query);
+        let responses: Vec<ProviderResponse> = filtered.into_iter().map(|p| p.into()).collect();
+        
+        self.trigger_background_provider_sync().await;
+
+        Ok(ProvidersResult::Structured(responses))
+    }
+
+    /// Helper to filter providers in memory
+    fn filter_providers_in_memory(&self, providers: Vec<Provider>, query: &ProvidersQuery) -> Vec<Provider> {
+        let mut filtered = providers;
+        
+        if let Some(ref rating) = query.rating {
+            filtered.retain(|p| p.kyc_rating == *rating);
+        }
+        
+        if let Some(markup) = query.markup_enabled {
+            filtered.retain(|p| p.markup_enabled == markup);
+        }
+        
+        // Sorting
+        match query.sort.as_deref() {
+            Some("name") => filtered.sort_by(|a, b| a.name.cmp(&b.name)),
+            Some("rating") => filtered.sort_by(|a, b| a.kyc_rating.cmp(&b.kyc_rating).then(a.name.cmp(&b.name))),
+            Some("eta") => filtered.sort_by(|a, b| a.eta_minutes.unwrap_or(0).cmp(&b.eta_minutes.unwrap_or(0))),
+            _ => filtered.sort_by(|a, b| a.name.cmp(&b.name)),
+        }
+        
+        filtered
+    }
+
     /// Sync providers from Trocador API and upsert into database
     pub async fn sync_providers_from_trocador(
         &self,
         trocador_client: &TrocadorClient,
     ) -> Result<usize, SwapError> {
+        let start_time = std::time::Instant::now();
+
         let trocador_providers = trocador_client.get_providers().await?;
 
         let mut synced_count = 0;
@@ -396,6 +544,18 @@ impl SwapCrud {
         for trocador_provider in trocador_providers {
             self.upsert_provider_from_trocador(&trocador_provider).await?;
             synced_count += 1;
+        }
+
+        let duration = start_time.elapsed().as_secs_f64();
+        
+        // Store the sync duration (Delta) for PER and invalidate response cache
+        if let Some(service) = &self.redis_service {
+            let stats = serde_json::json!({
+                "last_sync": Utc::now().timestamp(),
+                "duration": duration
+            });
+            let _ = service.set_json("providers:sync_stats", &stats, 3600 * 24).await;
+            let _ = service.set_string("providers:response:all", "", 0).await;
         }
 
         Ok(synced_count)
@@ -518,8 +678,9 @@ impl SwapCrud {
     // RATES
     // =========================================================================
 
-    /// Get live rates from Trocador and transform them into our response format
-    pub async fn get_rates(
+    /// Get live rates with Distributed Singleflight optimization
+    /// Prevents thundering herd by coalescing concurrent requests for the same pair
+    pub async fn get_rates_optimized(
         &self,
         query: &super::schema::RatesQuery,
     ) -> Result<super::schema::RatesResponse, SwapError> {
@@ -527,22 +688,55 @@ impl SwapCrud {
             "rates:{}:{}:{}:{}:{}",
             query.from, query.to, query.network_from, query.network_to, query.amount
         );
+        
+        let lock_key = format!("lock:{}", cache_key);
 
+        // 1. Try Cache First (Fast Path)
         if let Some(service) = &self.redis_service {
-            // Try cache first
             if let Ok(Some(cached)) = service.get_json::<super::schema::RatesResponse>(&cache_key).await {
                 return Ok(cached);
             }
+        }
 
-            // Check rate limit before making API call
-            let rate_limit_key = "api_calls:trocador:rates";
-            match service.check_rate_limit(rate_limit_key, 5, 60).await {
-                Ok(false) => {
-                    // Rate limited, wait and retry with exponential backoff
-                    tracing::warn!("Rate limit hit for rates API, will retry with backoff");
+        // 2. Singleflight Logic (Coalescing)
+        if let Some(service) = &self.redis_service {
+            // Try to acquire lock for 15 seconds (cover long API calls)
+            // If try_lock returns true, we are the LEADER.
+            // If returns false, we are a FOLLOWER.
+            if !service.try_lock(&lock_key, 15).await.unwrap_or(false) {
+                // FOLLOWER: Wait for the leader to populate the cache
+                // Poll every 200ms for up to 5 seconds
+                for _ in 0..25 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    if let Ok(Some(cached)) = service.get_json::<super::schema::RatesResponse>(&cache_key).await {
+                        return Ok(cached);
+                    }
                 }
-                _ => {}
+                // If timeout, fall through and fetch ourselves
             }
+        }
+
+        // 3. Fetch from API (Leader Execution)
+        let result = self.fetch_rates_from_api(query).await?;
+
+        // 4. Cache Result (Short TTL: 15s for volatility)
+        if let Some(service) = &self.redis_service {
+            let _ = service.set_json(&cache_key, &result, 15).await;
+            // Lock will auto-expire, letting it sit ensures we don't spam if API is slow
+        }
+
+        Ok(result)
+    }
+
+    /// Internal helper to fetch rates from Trocador
+    async fn fetch_rates_from_api(
+        &self,
+        query: &super::schema::RatesQuery,
+    ) -> Result<super::schema::RatesResponse, SwapError> {
+        // Rate limiting check
+        if let Some(service) = &self.redis_service {
+            let rate_limit_key = "api_calls:trocador:rates";
+            let _ = service.check_rate_limit(rate_limit_key, 5, 60).await;
         }
 
         let api_key = std::env::var("TROCADOR_API_KEY")
@@ -563,7 +757,7 @@ impl SwapCrud {
         })
         .await?;
 
-        // 2. Transform and sort the quotes
+        // Transform and sort quotes
         let mut rates: Vec<super::schema::RateResponse> = trocador_res
             .quotes
             .quotes
@@ -582,7 +776,7 @@ impl SwapCrud {
                     max_amount: quote.max_amount.unwrap_or(0.0),
                     network_fee: 0.0,
                     provider_fee: total_fee,
-                    platform_fee: 0.0, // We can add our markup here later
+                    platform_fee: 0.0, 
                     total_fee,
                     rate_type: query.rate_type.clone().unwrap_or(super::schema::RateType::Floating),
                     kyc_required: quote.kycrating.as_deref().unwrap_or("D") != "A",
@@ -592,14 +786,13 @@ impl SwapCrud {
             })
             .collect();
 
-        // 3. Sort by best price (highest estimated_amount)
         rates.sort_by(|a, b| {
             b.estimated_amount
                 .partial_cmp(&a.estimated_amount)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let response = super::schema::RatesResponse {
+        Ok(super::schema::RatesResponse {
             trade_id: trocador_res.trade_id,
             from: query.from.clone(),
             network_from: query.network_from.clone(),
@@ -607,19 +800,7 @@ impl SwapCrud {
             network_to: query.network_to.clone(),
             amount: query.amount,
             rates,
-        };
-
-        // 4. Cache the result
-        if let Some(service) = &self.redis_service {
-            // Set with TTL of 30 seconds
-            if let Err(e) = service.set_json(&cache_key, &response, 30).await {
-                tracing::warn!("Failed to cache rates: {}", e);
-            } else {
-                tracing::debug!("Cached rates for: {}", cache_key);
-            }
-        }
-
-        Ok(response)
+        })
     }
 
     // =========================================================================
