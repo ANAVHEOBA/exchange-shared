@@ -1,18 +1,18 @@
 use async_trait::async_trait;
 use axum::{
     extract::{FromRequestParts, FromRef},
-    http::request::Parts,
+    http::{request::Parts, StatusCode},
 };
 use std::sync::Arc;
 
 use crate::AppState;
-use super::model::{BackupCode, EmailVerification, PasswordReset, RefreshToken, User};
+use super::model::{BackupCode, EmailVerification, PasswordReset, RefreshToken, User as UserModel};
 
 // =============================================================================
 // EXTRACTORS
 // =============================================================================
 
-pub struct OptionalUser(pub Option<User>);
+pub struct OptionalUser(pub Option<UserModel>);
 
 impl<S> FromRequestParts<S> for OptionalUser
 where
@@ -46,6 +46,43 @@ where
     }
 }
 
+// Required User extractor (returns 401 if not authenticated)
+pub struct User(pub UserModel);
+
+impl<S> FromRequestParts<S> for User
+where
+    Arc<AppState>: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let state = Arc::from_ref(state);
+        let auth_header = parts.headers.get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .ok_or((StatusCode::UNAUTHORIZED, "Missing authorization header"))?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err((StatusCode::UNAUTHORIZED, "Invalid authorization header format"));
+        }
+
+        let token = &auth_header[7..];
+        let claims = state.jwt_service.verify_access_token(token)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid or expired token"))?;
+
+        let user_id = claims.claims.sub;
+        let crud = super::crud::UserCrud::new(state.db.clone(), &state.jwt_service);
+        let user = crud.find_by_id(&user_id).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch user"))?
+            .ok_or((StatusCode::UNAUTHORIZED, "User not found"))?;
+
+        Ok(User(user))
+    }
+}
+
 // =============================================================================
 // REPOSITORY TRAITS
 // =============================================================================
@@ -54,10 +91,10 @@ pub type AuthResult<T> = std::result::Result<T, AuthError>;
 
 #[async_trait]
 pub trait UserRepository: Send + Sync {
-    async fn create(&self, user: &User) -> AuthResult<()>;
-    async fn find_by_id(&self, id: &str) -> AuthResult<Option<User>>;
-    async fn find_by_email(&self, email: &str) -> AuthResult<Option<User>>;
-    async fn update(&self, user: &User) -> AuthResult<()>;
+    async fn create(&self, user: &UserModel) -> AuthResult<()>;
+    async fn find_by_id(&self, id: &str) -> AuthResult<Option<UserModel>>;
+    async fn find_by_email(&self, email: &str) -> AuthResult<Option<UserModel>>;
+    async fn update(&self, user: &UserModel) -> AuthResult<()>;
     async fn set_email_verified(&self, user_id: &str, verified: bool) -> AuthResult<()>;
     async fn set_two_factor(&self, user_id: &str, enabled: bool, secret: Option<&str>) -> AuthResult<()>;
     async fn update_password(&self, user_id: &str, password_hash: &str) -> AuthResult<()>;

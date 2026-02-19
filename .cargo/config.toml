@@ -1,0 +1,10 @@
+# Cargo configuration for the project
+
+# Note: Swap tests should be run with --test-threads=1 to avoid
+# overwhelming the Trocador API with concurrent requests.
+# 
+# Run swap tests with:
+#   cargo test --test swap_tests -- --test-threads=1
+#
+# Or use the convenience script:
+#   ./run_swap_tests.sh

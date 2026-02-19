@@ -1,0 +1,130 @@
+{
+  "ethereum": {
+    "chain": "ethereum",
+    "strategy": "HealthScoreBased",
+    "health_check_interval": 30,
+    "circuit_breaker_config": {
+      "failure_threshold": 0.2,
+      "min_requests": 5,
+      "timeout_seconds": 30,
+      "half_open_max_requests": 3
+    },
+    "endpoints": [
+      {
+        "url": "${ETHEREUM_RPC_URL}",
+        "priority": 1,
+        "weight": 100,
+        "timeout_ms": 5000,
+        "max_requests_per_second": 100,
+        "auth": {
+          "type": "ApiKey",
+          "key": "${ETHEREUM_API_KEY}"
+        }
+      },
+      {
+        "url": "https://eth-mainnet.public.blastapi.io",
+        "priority": 2,
+        "weight": 50,
+        "timeout_ms": 8000,
+        "max_requests_per_second": 50
+      }
+    ]
+  },
+  "polygon": {
+    "chain": "polygon",
+    "strategy": "WeightedRoundRobin",
+    "health_check_interval": 30,
+    "circuit_breaker_config": {
+      "failure_threshold": 0.2,
+      "min_requests": 5,
+      "timeout_seconds": 30,
+      "half_open_max_requests": 3
+    },
+    "endpoints": [
+      {
+        "url": "${POLYGON_RPC_URL}",
+        "priority": 1,
+        "weight": 100,
+        "timeout_ms": 5000,
+        "auth": {
+          "type": "ApiKey",
+          "key": "${POLYGON_API_KEY}"
+        }
+      }
+    ]
+  },
+  "bsc": {
+    "chain": "bsc",
+    "strategy": "LeastLatency",
+    "health_check_interval": 30,
+    "circuit_breaker_config": {
+      "failure_threshold": 0.2,
+      "min_requests": 5,
+      "timeout_seconds": 30,
+      "half_open_max_requests": 3
+    },
+    "endpoints": [
+      {
+        "url": "https://bsc-dataseed1.binance.org",
+        "priority": 1,
+        "weight": 100,
+        "timeout_ms": 5000
+      },
+      {
+        "url": "https://bsc-dataseed2.binance.org",
+        "priority": 1,
+        "weight": 100,
+        "timeout_ms": 5000
+      }
+    ]
+  },
+  "bitcoin": {
+    "chain": "bitcoin",
+    "strategy": "RoundRobin",
+    "health_check_interval": 60,
+    "circuit_breaker_config": {
+      "failure_threshold": 0.3,
+      "min_requests": 5,
+      "timeout_seconds": 60,
+      "half_open_max_requests": 3
+    },
+    "endpoints": [
+      {
+        "url": "${BITCOIN_RPC_URL}",
+        "priority": 1,
+        "weight": 100,
+        "timeout_ms": 10000,
+        "auth": {
+          "type": "Basic",
+          "username": "${BITCOIN_RPC_USER}",
+          "password": "${BITCOIN_RPC_PASS}"
+        }
+      }
+    ]
+  },
+  "solana": {
+    "chain": "solana",
+    "strategy": "HealthScoreBased",
+    "health_check_interval": 20,
+    "circuit_breaker_config": {
+      "failure_threshold": 0.2,
+      "min_requests": 5,
+      "timeout_seconds": 30,
+      "half_open_max_requests": 3
+    },
+    "endpoints": [
+      {
+        "url": "${SOLANA_RPC_URL}",
+        "priority": 1,
+        "weight": 100,
+        "timeout_ms": 5000
+      },
+      {
+        "url": "https://api.mainnet-beta.solana.com",
+        "priority": 2,
+        "weight": 50,
+        "timeout_ms": 8000
+      }
+    ]
+  }
+}

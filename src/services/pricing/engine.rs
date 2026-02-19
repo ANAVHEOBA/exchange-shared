@@ -1,4 +1,4 @@
-use crate::modules::swap::schema::{TrocadorQuote, RateResponse, RateType};
+use crate::modules::swap::schema::{TrocadorQuote, RateResponse, RateType, EstimateQuery, EstimateResponse};
 use super::strategy::{PricingStrategy, PricingContext, AdaptivePricingStrategy};
 
 pub struct PricingEngine {
@@ -91,5 +91,98 @@ impl PricingEngine {
         results.sort_by(|a, b| b.estimated_amount.partial_cmp(&a.estimated_amount).unwrap_or(std::cmp::Ordering::Equal));
         
         results
+    }
+    
+    /// Generate warnings based on trade conditions
+    pub fn generate_warnings(
+        &self,
+        amount_usd: f64,
+        slippage_pct: f64,
+        provider_count: usize,
+        spread: f64,
+    ) -> Vec<String> {
+        let mut warnings = Vec::new();
+        
+        // High slippage warning
+        if slippage_pct > 2.0 {
+            warnings.push(format!(
+                "High slippage expected: {:.2}%. Consider splitting into smaller trades.",
+                slippage_pct
+            ));
+        }
+        
+        // Large trade warning
+        if amount_usd > 10000.0 {
+            warnings.push(
+                "Large trade detected. Actual execution may vary significantly.".to_string()
+            );
+        }
+        
+        // Low liquidity warning
+        if provider_count < 2 {
+            warnings.push(
+                "Limited liquidity. Only one provider available.".to_string()
+            );
+        }
+        
+        // High volatility warning
+        if spread > 0.05 {
+            warnings.push(format!(
+                "High price variance across providers ({:.1}%). Market may be volatile.",
+                spread * 100.0
+            ));
+        }
+        
+        warnings
+    }
+    
+    /// Build estimate response from rate responses
+    pub fn build_estimate_response(
+        &self,
+        rates: Vec<RateResponse>,
+        query: &EstimateQuery,
+        provider_spread: f64,
+        amount_usd: f64,
+        cached: bool,
+        cache_age_seconds: i64,
+        expires_in_seconds: i64,
+    ) -> EstimateResponse {
+        let best_rate = rates.first().expect("No rates available");
+        
+        // Calculate slippage
+        let slippage_pct = self.strategy.estimate_slippage(amount_usd, provider_spread);
+        let slippage_amount = best_rate.estimated_amount * slippage_pct;
+        
+        // Generate warnings
+        let warnings = self.generate_warnings(
+            amount_usd,
+            slippage_pct * 100.0,
+            rates.len(),
+            provider_spread,
+        );
+        
+        EstimateResponse {
+            from: query.from.clone(),
+            to: query.to.clone(),
+            amount: query.amount,
+            network_from: query.network_from.clone(),
+            network_to: query.network_to.clone(),
+            best_rate: best_rate.rate,
+            estimated_receive: best_rate.estimated_amount,
+            estimated_receive_min: (best_rate.estimated_amount - slippage_amount).max(0.0),
+            estimated_receive_max: best_rate.estimated_amount + (slippage_amount * 0.5),
+            network_fee: best_rate.network_fee,
+            provider_fee: best_rate.provider_fee,
+            platform_fee: best_rate.platform_fee,
+            total_fee: best_rate.total_fee,
+            slippage_percentage: slippage_pct * 100.0,
+            price_impact: provider_spread * 100.0,
+            best_provider: best_rate.provider.clone(),
+            provider_count: rates.len(),
+            cached,
+            cache_age_seconds,
+            expires_in_seconds,
+            warnings,
+        }
     }
 }

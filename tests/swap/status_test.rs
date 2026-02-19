@@ -1,3 +1,4 @@
+use serial_test::serial;
 use serde_json::{json, Value};
 
 #[path = "../common/mod.rs"]
@@ -12,6 +13,7 @@ use tokio::time::sleep;
 // =============================================================================
 
 /// Test successful status retrieval for a newly created swap
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_successful() {
     sleep(Duration::from_secs(2)).await; // Prevent rate limiting
@@ -99,6 +101,7 @@ async fn test_get_swap_status_successful() {
 }
 
 /// Test status retrieval with non-existent swap ID
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_not_found() {
     let server = setup_test_server().await;
@@ -116,6 +119,7 @@ async fn test_get_swap_status_not_found() {
 }
 
 /// Test status retrieval with invalid UUID format
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_invalid_id_format() {
     let server = setup_test_server().await;
@@ -134,6 +138,7 @@ async fn test_get_swap_status_invalid_id_format() {
 }
 
 /// Test status updates from Trocador API
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_updates_from_trocador() {
     sleep(Duration::from_secs(2)).await;
@@ -202,6 +207,7 @@ async fn test_get_swap_status_updates_from_trocador() {
 }
 
 /// Test status retrieval includes all required fields
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_complete_response() {
     sleep(Duration::from_secs(2)).await;
@@ -270,6 +276,7 @@ async fn test_get_swap_status_complete_response() {
 }
 
 /// Test multiple status checks don't cause rate limiting issues
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_multiple_checks() {
     sleep(Duration::from_secs(2)).await;
@@ -329,6 +336,7 @@ async fn test_get_swap_status_multiple_checks() {
 }
 
 /// Test status with special characters in ID (SQL injection attempt)
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_sql_injection_attempt() {
     let server = setup_test_server().await;
@@ -349,6 +357,7 @@ async fn test_get_swap_status_sql_injection_attempt() {
 }
 
 /// Test status retrieval performance (should be fast)
+#[serial]
 #[tokio::test]
 async fn test_get_swap_status_performance() {
     sleep(Duration::from_secs(2)).await;

@@ -1,3 +1,4 @@
+use serial_test::serial;
 // =============================================================================
 // INTEGRATION TESTS - MULTI-CHAIN / MULTI-TOKEN EDGE CASES
 // Tests handle scenarios with same token on different chains
@@ -17,6 +18,7 @@ use tokio::time::sleep;
 // User sends USDT on Ethereum, should NOT work if system expects Solana
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_usdt_ethereum_to_ethereum_swap() {
     sleep(Duration::from_secs(1)).await; // Rate limit
@@ -48,6 +50,7 @@ async fn test_usdt_ethereum_to_ethereum_swap() {
 // System should detect and reject this mismatch
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_usdt_chain_mismatch_rejection() {
     sleep(Duration::from_secs(1)).await;
@@ -93,6 +96,7 @@ async fn test_usdt_chain_mismatch_rejection() {
 // Verify system can route USDC to multiple chains correctly
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_usdc_multiple_chains_supported() {
     sleep(Duration::from_secs(1)).await;
@@ -130,6 +134,7 @@ async fn test_usdc_multiple_chains_supported() {
 // Verify commission is applied correctly regardless of chains involved
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_applies_across_chains() {
     sleep(Duration::from_secs(1)).await;
@@ -168,6 +173,7 @@ async fn test_commission_applies_across_chains() {
 // Test that system rejects invalid/unsupported chain combinations
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_invalid_chain_specification() {
     sleep(Duration::from_secs(1)).await;
@@ -192,6 +198,7 @@ async fn test_invalid_chain_specification() {
 // e.g., USDT exists on Ethereum & Solana, but not on Bitcoin network
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_token_on_unsupported_chain() {
     sleep(Duration::from_secs(1)).await;
@@ -214,6 +221,7 @@ async fn test_token_on_unsupported_chain() {
 // User tries to refund to wrong chain address
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_refund_address_chain_validation() {
     sleep(Duration::from_secs(1)).await;
@@ -262,6 +270,7 @@ async fn test_refund_address_chain_validation() {
 // (due to different liquidity/fees per chain)
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_same_pair_different_networks_different_rates() {
     sleep(Duration::from_secs(1)).await;
@@ -306,6 +315,7 @@ async fn test_same_pair_different_networks_different_rates() {
 // Test that system properly tracks this requirement per chain
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_memo_required_address_handling() {
     sleep(Duration::from_secs(1)).await;
@@ -339,6 +349,7 @@ async fn test_memo_required_address_handling() {
 // Quote should expire before user can deposit on slow chain
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_rate_expiration_slow_chain() {
     sleep(Duration::from_secs(1)).await;
@@ -369,6 +380,7 @@ async fn test_rate_expiration_slow_chain() {
 // System must handle different precisions correctly
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_decimal_precision_handling() {
     sleep(Duration::from_secs(1)).await;
@@ -406,6 +418,7 @@ async fn test_decimal_precision_handling() {
 // Test that zero or negative amounts are rejected
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_zero_amount_rejection() {
     sleep(Duration::from_secs(1)).await;
@@ -423,6 +436,7 @@ async fn test_zero_amount_rejection() {
 // Test handling of amounts exceeding maximum per currency
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_amount_exceeds_maximum() {
     sleep(Duration::from_secs(1)).await;
@@ -445,6 +459,7 @@ async fn test_amount_exceeds_maximum() {
 // Not all providers support all chains - verify system handles this
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_provider_chain_support_variance() {
     sleep(Duration::from_secs(1)).await;
@@ -473,6 +488,7 @@ async fn test_provider_chain_support_variance() {
 // User's swap history should correctly show which chains involved
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_swap_history_multi_chain_tracking() {
     sleep(Duration::from_secs(1)).await;

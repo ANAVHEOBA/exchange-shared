@@ -11,8 +11,9 @@ use super::crud::{SwapCrud, CurrenciesResult};
 use super::schema::{
     CurrenciesQuery, ProvidersQuery, SwapErrorResponse,
     CreateSwapRequest, CreateSwapResponse, SwapStatusResponse, ValidateAddressRequest, ValidateAddressResponse,
+    HistoryQuery, HistoryResponse,
 };
-use crate::modules::auth::interface::OptionalUser;
+use crate::modules::auth::interface::{OptionalUser, User};
 
 // ... (existing handlers)
 
@@ -169,6 +170,92 @@ pub async fn validate_address(
     let response = crud.validate_address(&payload).await.map_err(|e| {
         let status = match e {
             super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
+            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+
+    Ok(Json(response))
+}
+
+// =============================================================================
+// GET /swap/history - Get authenticated user's swap history
+// =============================================================================
+
+pub async fn get_swap_history(
+    State(state): State<Arc<AppState>>,
+    user: User,  // Requires authentication
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<HistoryResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = SwapCrud::new(
+        state.db.clone(),
+        Some(state.redis.clone()),
+        Some(state.wallet_mnemonic.clone())
+    );
+    
+    let response = crud.get_swap_history(&user.0.id, query).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+    
+    Ok(Json(response))
+}
+
+
+// =============================================================================
+// GET /swap/pairs - List available trading pairs
+// =============================================================================
+
+pub async fn get_pairs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<super::schema::PairsQuery>,
+) -> Result<Json<super::schema::PairsResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = SwapCrud::new(
+        state.db.clone(),
+        Some(state.redis.clone()),
+        Some(state.wallet_mnemonic.clone())
+    );
+    
+    let response = crud.get_pairs(query).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+    
+    Ok(Json(response))
+}
+
+// =============================================================================
+// GET /swap/estimate - Quick rate preview without creating swap
+// =============================================================================
+
+pub async fn get_estimate(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<super::schema::EstimateQuery>,
+) -> Result<Json<super::schema::EstimateResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    use validator::Validate;
+    
+    // Validate query parameters
+    if let Err(e) = query.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(SwapErrorResponse::new(e.to_string())),
+        ));
+    }
+    
+    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+
+    let response = crud.get_estimate_optimized(&query).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::PairNotAvailable => StatusCode::NOT_FOUND,
+            super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
             super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

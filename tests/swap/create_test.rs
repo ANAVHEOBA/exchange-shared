@@ -1,3 +1,4 @@
+use serial_test::serial;
 use serde_json::{json, Value};
 
 #[path = "../common/mod.rs"]
@@ -11,6 +12,7 @@ use tokio::time::sleep;
 // These tests call the actual Trocador API via our backend
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_successful() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
@@ -82,6 +84,7 @@ async fn test_create_swap_successful() {
     assert_eq!(json["recipient_address"].as_str().unwrap(), recipient_address);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_without_trade_id_should_fail() {
     sleep(Duration::from_secs(1)).await;
@@ -111,6 +114,7 @@ async fn test_create_swap_without_trade_id_should_fail() {
     assert!(err.get("error").is_some(), "Response should contain error field");
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_invalid_address() {
     sleep(Duration::from_secs(1)).await;
@@ -134,6 +138,7 @@ async fn test_create_swap_invalid_address() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_small_amount() {
     sleep(Duration::from_secs(1)).await;
@@ -157,6 +162,7 @@ async fn test_create_swap_small_amount() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_fixed_rate() {
     sleep(Duration::from_secs(1)).await;
@@ -216,6 +222,7 @@ async fn test_create_swap_fixed_rate() {
     }
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_invalid_refund_address() {
     sleep(Duration::from_secs(1)).await;
@@ -239,6 +246,7 @@ async fn test_create_swap_invalid_refund_address() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_unsupported_pair() {
     sleep(Duration::from_secs(1)).await;
@@ -261,6 +269,7 @@ async fn test_create_swap_unsupported_pair() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_amount_too_high() {
     sleep(Duration::from_secs(1)).await;
@@ -283,6 +292,7 @@ async fn test_create_swap_amount_too_high() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_missing_memo_for_xrp() {
     sleep(Duration::from_secs(1)).await;
@@ -319,6 +329,7 @@ async fn test_create_swap_missing_memo_for_xrp() {
 // NEW EDGE CASE TESTS
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_invalid_provider() {
     sleep(Duration::from_secs(1)).await;
@@ -350,6 +361,7 @@ async fn test_create_swap_invalid_provider() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_wrong_network_for_currency() {
     sleep(Duration::from_secs(1)).await;
@@ -372,6 +384,7 @@ async fn test_create_swap_wrong_network_for_currency() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_expired_trade_id() {
     sleep(Duration::from_secs(1)).await;
@@ -395,6 +408,7 @@ async fn test_create_swap_expired_trade_id() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_rate_type_mismatch() {
     sleep(Duration::from_secs(1)).await;
@@ -430,6 +444,7 @@ async fn test_create_swap_rate_type_mismatch() {
     assert!(status >= 200 && status < 600, "Should get valid HTTP status");
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_empty_recipient_address() {
     sleep(Duration::from_secs(1)).await;
@@ -452,6 +467,7 @@ async fn test_create_swap_empty_recipient_address() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_whitespace_recipient_address() {
     sleep(Duration::from_secs(1)).await;
@@ -474,6 +490,7 @@ async fn test_create_swap_whitespace_recipient_address() {
     assert!(response.status_code().as_u16() >= 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_exactly_minimum_amount() {
     sleep(Duration::from_secs(3)).await; // Increased delay to prevent rate limiting
@@ -535,6 +552,7 @@ async fn test_create_swap_exactly_minimum_amount() {
     }
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_exactly_maximum_amount() {
     sleep(Duration::from_secs(1)).await;
@@ -600,6 +618,7 @@ async fn test_create_swap_exactly_maximum_amount() {
     }
 }
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_concurrent_same_trade_id() {
     sleep(Duration::from_secs(3)).await; // Increased delay to prevent rate limiting

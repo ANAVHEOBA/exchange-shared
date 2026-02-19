@@ -1,3 +1,4 @@
+use serial_test::serial;
 // =============================================================================
 // INTEGRATION TESTS - COMMISSION SYSTEM EDGE CASES
 // Tests for volume-based tiering, commission deduction, profit tracking
@@ -16,6 +17,7 @@ use tokio::time::sleep;
 // Verify: user_receives = trocador_amount - commission
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_deduction_calculation() {
     sleep(Duration::from_secs(1)).await;
@@ -56,6 +58,7 @@ async fn test_commission_deduction_calculation() {
 // (if tiering is implemented: small swaps higher fee, large swaps lower fee)
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_volume_based_commission_tiers() {
     sleep(Duration::from_secs(1)).await;
@@ -107,6 +110,7 @@ async fn test_volume_based_commission_tiers() {
 // Commission should work for both rate types
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_applies_to_both_rate_types() {
     sleep(Duration::from_secs(1)).await;
@@ -144,6 +148,7 @@ async fn test_commission_applies_to_both_rate_types() {
 // All providers should have commission applied (may vary amount, but all have it)
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_consistency_across_providers() {
     sleep(Duration::from_secs(1)).await;
@@ -178,6 +183,7 @@ async fn test_commission_consistency_across_providers() {
 // System should never allow negative commission (paying user to swap)
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_never_negative() {
     sleep(Duration::from_secs(1)).await;
@@ -203,6 +209,7 @@ async fn test_commission_never_negative() {
 // Verify: estimated_user_receive < trocador_amount (when commission > 0)
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_user_receives_less_than_trocador() {
     sleep(Duration::from_secs(1)).await;
@@ -235,6 +242,7 @@ async fn test_user_receives_less_than_trocador() {
 // When swap is created, commission info should be stored/returned
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_stored_in_swap_record() {
     sleep(Duration::from_secs(1)).await;
@@ -287,6 +295,7 @@ async fn test_commission_stored_in_swap_record() {
 // Test commission calculation at minimum allowed amount
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_at_minimum_amount() {
     sleep(Duration::from_secs(1)).await;
@@ -338,6 +347,7 @@ async fn test_commission_at_minimum_amount() {
 // This affects what platform can offer
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_varies_by_provider() {
     sleep(Duration::from_secs(1)).await;
@@ -374,6 +384,7 @@ async fn test_commission_varies_by_provider() {
 // Coins like XRP that need memo should still have commission
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_with_memo_required_coins() {
     sleep(Duration::from_secs(1)).await;
@@ -406,6 +417,7 @@ async fn test_commission_with_memo_required_coins() {
 // If tiering is enabled: 1 BTC should cost less % than 0.01 BTC
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_high_volume_lower_percentage_commission() {
     sleep(Duration::from_secs(1)).await;
@@ -446,6 +458,7 @@ async fn test_high_volume_lower_percentage_commission() {
 // When viewing past swaps, commission taken should be visible
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_commission_visible_in_history() {
     sleep(Duration::from_secs(1)).await;

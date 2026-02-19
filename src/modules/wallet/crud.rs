@@ -71,23 +71,29 @@ impl WalletCrud {
         .await
     }
 
-    /// Update payout status
+    /// Update payout status with actual amounts
     pub async fn mark_payout_completed(
         &self,
         swap_id: &str,
         tx_hash: &str,
+        actual_received: f64,
+        commission_taken: f64,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             UPDATE swap_address_info 
             SET status = 'success', 
                 payout_tx_hash = ?,
+                payout_amount = ?,
+                commission_rate = ?,
                 broadcast_at = NOW(),
                 confirmed_at = NOW()
             WHERE swap_id = ?
             "#
         )
         .bind(tx_hash)
+        .bind(actual_received)
+        .bind(if actual_received > 0.0 { commission_taken / actual_received } else { 0.0 })
         .bind(swap_id)
         .execute(&self.pool)
         .await?;

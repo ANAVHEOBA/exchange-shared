@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 // =============================================================================
 
 // Request query parameters for /swap/providers
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ProvidersQuery {
     pub rating: Option<String>,         // Filter by KYC rating (A, B, C, D)
     pub markup_enabled: Option<bool>,   // Filter by markup support
@@ -61,7 +61,7 @@ pub struct CurrenciesQuery {
 }
 
 // Response DTO matching Trocador's /coins format EXACTLY
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CurrencyResponse {
     pub name: String,
     pub ticker: String,       // Maps from symbol
@@ -102,21 +102,58 @@ impl From<crate::modules::swap::model::Currency> for CurrencyResponse {
 // PAIRS
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PairsQuery {
-    pub from: Option<String>,
-    pub to: Option<String>,
-    pub from_network: Option<String>,
-    pub to_network: Option<String>,
+    // Filtering
+    pub base_currency: Option<String>,
+    pub quote_currency: Option<String>,
+    pub base_network: Option<String>,
+    pub quote_network: Option<String>,
+    pub status: Option<String>,  // "active", "disabled", "all"
+    
+    // Pagination
+    #[serde(default = "default_page")]
+    pub page: u32,
+    #[serde(default = "default_pairs_size")]
+    pub size: u32,
+    
+    // Sorting
+    pub order_by: Option<String>,  // e.g., "volume_24h desc", "name asc"
+    
+    // Filtering expression (advanced)
+    pub filter: Option<String>,
 }
+
+fn default_page() -> u32 { 0 }
+fn default_pairs_size() -> u32 { 20 }
 
 #[derive(Debug, Serialize)]
 pub struct PairResponse {
-    pub from: String,
-    pub to: String,
-    pub from_network: String,
-    pub to_network: String,
-    pub is_active: bool,
+    pub name: String,  // e.g., "BTC/USDT"
+    pub base_currency: String,
+    pub quote_currency: String,
+    pub base_network: String,
+    pub quote_network: String,
+    pub status: String,  // "active" or "disabled"
+    pub min_amount: Option<f64>,
+    pub max_amount: Option<f64>,
+    pub last_updated: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairsResponse {
+    pub pairs: Vec<PairResponse>,
+    pub pagination: PairsPaginationInfo,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairsPaginationInfo {
+    pub page: u32,
+    pub size: u32,
+    pub total_elements: i64,
+    pub total_pages: u32,
+    pub has_next: bool,
+    pub has_prev: bool,
 }
 
 // =============================================================================
@@ -210,35 +247,74 @@ pub struct TrocadorRatesResponse {
 }
 
 // =============================================================================
-// ESTIMATE
+// ESTIMATE - Quick rate preview without creating swap
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
-pub struct EstimateRequest {
+use validator::Validate;
+
+#[derive(Debug, Deserialize, Validate, Clone)]
+pub struct EstimateQuery {
+    #[validate(length(min = 1, max = 20))]
     pub from: String,
-    pub network_from: String,
+    
+    #[validate(length(min = 1, max = 20))]
     pub to: String,
-    pub network_to: String,
+    
+    #[validate(range(min = 0.0, max = 1000000.0))]
     pub amount: f64,
-    pub provider: String,
-    #[serde(default)]
-    pub rate_type: RateType,
+    
+    #[validate(length(min = 1, max = 50))]
+    pub network_from: String,
+    
+    #[validate(length(min = 1, max = 50))]
+    pub network_to: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EstimateResponse {
+    // Request echo
     pub from: String,
     pub to: String,
     pub amount: f64,
-    pub provider: String,
-    pub rate: f64,
-    pub estimated_amount: f64,
-    pub min_amount: f64,
-    pub max_amount: f64,
+    pub network_from: String,
+    pub network_to: String,
+    
+    // Best rate summary
+    pub best_rate: f64,
+    pub estimated_receive: f64,
+    pub estimated_receive_min: f64,  // After slippage
+    pub estimated_receive_max: f64,  // Best case
+    
+    // Fee breakdown
     pub network_fee: f64,
+    pub provider_fee: f64,
+    pub platform_fee: f64,
     pub total_fee: f64,
-    pub rate_type: RateType,
-    pub valid_until: DateTime<Utc>,
+    
+    // Slippage info
+    pub slippage_percentage: f64,
+    pub price_impact: f64,
+    
+    // Provider info
+    pub best_provider: String,
+    pub provider_count: usize,
+    
+    // Metadata
+    pub cached: bool,
+    pub cache_age_seconds: i64,
+    pub expires_in_seconds: i64,
+    
+    // Warning flags
+    pub warnings: Vec<String>,
+}
+
+// Internal cache entry with metadata for PER
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EstimateCacheEntry {
+    pub response: EstimateResponse,
+    pub created_at: i64,      // Unix timestamp in milliseconds
+    pub expires_at: i64,      // Unix timestamp in milliseconds
+    pub compute_time_ms: i64, // How long it took to compute (delta for PER)
 }
 
 // =============================================================================
@@ -371,36 +447,60 @@ pub struct SwapStatusResponse {
 }
 
 // =============================================================================
-// SWAP HISTORY
+// SWAP HISTORY (Keyset Pagination)
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
 pub struct HistoryQuery {
-    #[serde(default = "default_page")]
-    pub page: u32,
+    // Keyset pagination
+    pub cursor: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: u32,
-    pub status: Option<SwapStatus>,
-    pub from: Option<String>,
-    pub to: Option<String>,
-    pub from_date: Option<String>,
-    pub to_date: Option<String>,
-    #[serde(default)]
-    pub sandbox: Option<bool>,
+    
+    // Filters
+    pub status: Option<String>,
+    pub from_currency: Option<String>,
+    pub to_currency: Option<String>,
+    pub provider: Option<String>,
+    pub date_from: Option<String>,  // ISO 8601
+    pub date_to: Option<String>,    // ISO 8601
+    
+    // Sorting (optional)
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
 }
 
-fn default_page() -> u32 { 1 }
 fn default_limit() -> u32 { 20 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoryCursor {
+    pub created_at: DateTime<Utc>,
+    pub id: String,
+    
+    // Filter snapshot for validation
+    pub status: Option<String>,
+    pub from_currency: Option<String>,
+    pub to_currency: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct SwapSummary {
-    pub swap_id: String,
-    pub provider: String,
-    pub from: String,
-    pub to: String,
+    pub id: String,
+    pub status: SwapStatus,
+    pub from_currency: String,
+    pub from_network: String,
+    pub to_currency: String,
+    pub to_network: String,
     pub amount: f64,
     pub estimated_receive: f64,
-    pub status: SwapStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_receive: Option<f64>,
+    pub rate: f64,
+    pub platform_fee: f64,
+    pub total_fee: f64,
+    pub deposit_address: String,
+    pub recipient_address: String,
+    pub provider: String,
     pub rate_type: RateType,
     pub is_sandbox: bool,
     pub created_at: DateTime<Utc>,
@@ -411,10 +511,32 @@ pub struct SwapSummary {
 #[derive(Debug, Serialize)]
 pub struct HistoryResponse {
     pub swaps: Vec<SwapSummary>,
-    pub page: u32,
+    pub pagination: PaginationInfo,
+    pub filters_applied: FiltersApplied,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginationInfo {
     pub limit: u32,
-    pub total: u64,
-    pub total_pages: u32,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FiltersApplied {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_to: Option<String>,
 }
 
 // =============================================================================

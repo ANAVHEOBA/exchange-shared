@@ -253,6 +253,8 @@ exchange-shared/
 
 ## Testing
 
+### Running Tests
+
 ```bash
 # Run all tests
 cargo test
@@ -260,15 +262,36 @@ cargo test
 # Run auth tests only
 cargo test --test auth_tests
 
-# Run swap tests only
-cargo test --test swap_tests
+# Run wallet tests only
+cargo test --test wallet_tests
 
-# Run specific test with output
-cargo test test_name -- --nocapture
-
-# Run tests sequentially (for DB tests)
-cargo test -- --test-threads=1
+# Run worker tests only
+cargo test --test worker_tests
 ```
+
+### Running Swap Tests (Important!)
+
+Swap tests hit the real Trocador API and must run sequentially to avoid rate limiting:
+
+```bash
+# Run ALL swap tests sequentially (recommended)
+cargo test --test swap_tests -- --test-threads=1
+
+# Or use the convenience script
+./run_swap_tests.sh
+
+# Run specific swap test module
+cargo test --test swap_tests currencies_test -- --test-threads=1
+cargo test --test swap_tests providers_test -- --test-threads=1
+cargo test --test swap_tests create_test -- --test-threads=1
+```
+
+**Why `--test-threads=1`?**
+- Swap tests call the real Trocador API
+- Running tests in parallel overwhelms the API with concurrent requests
+- This causes 429 rate limit errors and test failures
+- Sequential execution (1 test at a time) ensures all tests pass
+- Takes ~5-10 minutes but guarantees reliability
 
 ### Test Coverage
 

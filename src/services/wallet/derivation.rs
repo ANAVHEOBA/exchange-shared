@@ -19,6 +19,53 @@ use curve25519_dalek::scalar::Scalar;
 // Implements BIP39/BIP44 hierarchical deterministic wallet derivation
 // =============================================================================
 
+/// Derive Bitcoin private key from seed phrase and index
+/// Path: m/44'/0'/0'/0/[index]
+pub async fn derive_btc_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    if !is_valid_seed_phrase(seed_phrase) {
+        return Err("Invalid seed phrase".to_string());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+        .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    let path_str = format!("m/44'/0'/0'/0/{}", index);
+    let derivation_path = DerivationPath::from_str(&path_str)
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let key = coins_bip32::xkeys::XPriv::root_from_seed(&seed, None)
+        .map_err(|e| format!("Failed to create root key: {}", e))?
+        .derive_path(&derivation_path)
+        .map_err(|e| format!("Failed to derive path: {}", e))?;
+
+    let signing_key: &SigningKey = key.as_ref();
+    let priv_bytes = signing_key.to_bytes();
+    
+    Ok(hex::encode(priv_bytes))
+}
+
+/// Derive Solana private key from seed phrase and index
+pub async fn derive_solana_key(seed_phrase: &str, index: u32) -> Result<Vec<u8>, String> {
+    if !is_valid_seed_phrase(seed_phrase) {
+        return Err("Invalid seed phrase".to_string());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+        .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    // Create a unique seed for this index
+    let mut hasher = Sha256::new();
+    hasher.update(&seed);
+    hasher.update(b"solana_derivation");
+    hasher.update(&index.to_le_bytes());
+    let derived_seed = hasher.finalize();
+
+    // Return the 32-byte seed as keypair bytes (Ed25519 uses 32-byte seed)
+    Ok(derived_seed.to_vec())
+}
+
 /// Derive EVM private key from seed phrase
 /// Path: m/44'/60'/0'/0/0 (Ethereum)
 /// Returns hex string of private key
@@ -171,7 +218,7 @@ pub async fn derive_solana_address(seed_phrase: &str, index: u32) -> Result<Stri
     let derived_seed = hasher.finalize();
 
     // Create Ed25519 keypair from the derived seed (first 32 bytes)
-    let signing_key = EdSigningKey::from_bytes(derived_seed.as_slice().try_into().unwrap());
+    let signing_key = EdSigningKey::from_bytes(&derived_seed[..].try_into().unwrap());
     let verifying_key = signing_key.verifying_key();
 
     // Base58 encode public key
@@ -196,7 +243,7 @@ pub async fn derive_sui_address(seed_phrase: &str, index: u32) -> Result<String,
     hasher.update(&index.to_le_bytes());
     let derived_seed = hasher.finalize();
 
-    let signing_key = EdSigningKey::from_bytes(derived_seed.as_slice().try_into().unwrap());
+    let signing_key = EdSigningKey::from_bytes(&derived_seed[..].try_into().unwrap());
     let verifying_key = signing_key.verifying_key();
     let pub_bytes = verifying_key.to_bytes();
 

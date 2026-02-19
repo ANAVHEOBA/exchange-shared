@@ -1,5 +1,5 @@
 use exchange_shared::config::{environment::Config, init_db};
-use exchange_shared::services::{jwt::JwtService, redis_cache::RedisService};
+use exchange_shared::services::{jwt::JwtService, redis_cache::RedisService, blockchain::BlockchainListener};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -25,6 +25,14 @@ async fn main() {
     tracing::info!("Connected to Redis");
 
     let jwt_service = JwtService::new(config.jwt_secret);
+
+    // Start blockchain listener in background
+    let listener_db = db.clone();
+    tokio::spawn(async move {
+        let listener = BlockchainListener::new(listener_db);
+        listener.run().await;
+    });
+    tracing::info!("Blockchain listener started");
 
     let app = exchange_shared::create_app(db, redis_service, jwt_service, config.wallet_mnemonic).await;
 

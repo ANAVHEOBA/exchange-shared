@@ -1,9 +1,11 @@
+use serial_test::serial;
 #[path = "../common/mod.rs"]
 mod common;
 
 use exchange_shared::services::pricing::PricingEngine;
 use exchange_shared::modules::swap::schema::TrocadorQuote;
 
+#[serial]
 #[tokio::test]
 async fn test_gas_floor_protection_on_small_trades() {
     let engine = PricingEngine::new();
@@ -33,6 +35,7 @@ async fn test_gas_floor_protection_on_small_trades() {
     println!("✅ Gas floor protection verified: Fee {} covers gas cost {}", results[0].platform_fee, gas_cost_native);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_whale_discount_on_large_trades() {
     let engine = PricingEngine::new();
@@ -61,6 +64,7 @@ async fn test_whale_discount_on_large_trades() {
     println!("✅ Whale discount verified: Large trade fee is 0.4%");
 }
 
+#[serial]
 #[tokio::test]
 async fn test_volatility_premium_during_market_spread() {
     let engine = PricingEngine::new();

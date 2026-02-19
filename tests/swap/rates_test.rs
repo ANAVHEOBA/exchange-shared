@@ -1,3 +1,4 @@
+use serial_test::serial;
 use serde_json::Value;
 
 #[path = "../common/mod.rs"]
@@ -11,6 +12,7 @@ use tokio::time::sleep;
 // These tests call the actual Trocador API via our backend
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_get_rates_successful() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
@@ -60,6 +62,7 @@ async fn test_get_rates_successful() {
     assert!(best_rate["estimated_amount"].as_f64().unwrap() > 0.0);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_get_rates_sorted_by_best_price() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
@@ -87,6 +90,7 @@ async fn test_get_rates_sorted_by_best_price() {
     }
 }
 
+#[serial]
 #[tokio::test]
 async fn test_get_rates_minimum_amount_validation() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
@@ -114,6 +118,7 @@ async fn test_get_rates_minimum_amount_validation() {
     }
 }
 
+#[serial]
 #[tokio::test]
 async fn test_get_rates_invalid_pair() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
@@ -131,6 +136,7 @@ async fn test_get_rates_invalid_pair() {
     );
 }
 
+#[serial]
 #[tokio::test]
 async fn test_get_rates_missing_params() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
@@ -145,6 +151,7 @@ async fn test_get_rates_missing_params() {
     assert_eq!(response.status_code(), 400);
 }
 
+#[serial]
 #[tokio::test]
 async fn test_get_rates_includes_network_fees() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit

@@ -1,3 +1,4 @@
+use serial_test::serial;
 // =============================================================================
 // INTEGRATION TESTS - WALLET/ADDRESS VALIDATION EDGE CASES
 // Tests for address format validation, chain mismatches, invalid addresses
@@ -16,6 +17,7 @@ use tokio::time::sleep;
 // System should reject obviously invalid BTC addresses
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_invalid_btc_address_rejection() {
     sleep(Duration::from_secs(1)).await;
@@ -62,6 +64,7 @@ async fn test_invalid_btc_address_rejection() {
 // Ethereum addresses must be 0x + 40 hex characters
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_invalid_eth_address_rejection() {
     sleep(Duration::from_secs(1)).await;
@@ -106,6 +109,7 @@ async fn test_invalid_eth_address_rejection() {
 // Solana addresses are Base58, not hex
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_solana_address_format_validation() {
     sleep(Duration::from_secs(1)).await;
@@ -147,6 +151,7 @@ async fn test_solana_address_format_validation() {
 // XRP addresses require destination tag, system should handle this
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_address_with_required_memo() {
     sleep(Duration::from_secs(1)).await;
@@ -180,6 +185,7 @@ async fn test_address_with_required_memo() {
 // but some validation might be strict
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_address_case_handling() {
     sleep(Duration::from_secs(1)).await;
@@ -223,6 +229,7 @@ async fn test_address_case_handling() {
 // System should reject empty addresses
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_empty_address_rejection() {
     sleep(Duration::from_secs(1)).await;
@@ -263,6 +270,7 @@ async fn test_empty_address_rejection() {
 // Some systems are lenient, others strict
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_address_with_whitespace() {
     sleep(Duration::from_secs(1)).await;
@@ -304,6 +312,7 @@ async fn test_address_with_whitespace() {
 // Some coins have special formats (e.g., Monero, Zcash with payment IDs)
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_special_characters_in_address() {
     sleep(Duration::from_secs(1)).await;
@@ -330,6 +339,7 @@ async fn test_special_characters_in_address() {
 // Some addresses can be long; system should handle or reject gracefully
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_very_long_address_handling() {
     sleep(Duration::from_secs(1)).await;
@@ -373,6 +383,7 @@ async fn test_very_long_address_handling() {
 // This might be allowed or disallowed depending on business logic
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_same_recipient_and_refund_address() {
     sleep(Duration::from_secs(1)).await;
@@ -416,6 +427,7 @@ async fn test_same_recipient_and_refund_address() {
 // Coins like XRP need memo/extra_id field
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_address_with_extra_id() {
     sleep(Duration::from_secs(1)).await;
@@ -463,6 +475,7 @@ async fn test_address_with_extra_id() {
 // User sends ETH address when they should send different format
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_cross_chain_address_format_confusion() {
     sleep(Duration::from_secs(1)).await;
@@ -510,6 +523,7 @@ async fn test_cross_chain_address_format_confusion() {
 // When showing multiple addresses, validate format of each
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_batch_address_validation() {
     sleep(Duration::from_secs(1)).await;

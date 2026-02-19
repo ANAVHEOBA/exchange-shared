@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Bitcoin",
+    "ticker": "btc",
+    "network": "Mainnet",
+    "memo": false,
+    "image": "https://trocador.app/static/img/icons/btc.svg",
+    "minimum": 6.4e-05,
+    "maximum": 20
+  },
+  {
+    "name": "Bitcoin (Lightning)",
+    "ticker": "btc",
+    "network": "Lightning",
+    "memo": false,
+    "image": "https://trocador.app/static/img/icons/btc.svg",
+    "minimum": 6.4e-05,
+    "maximum": 20
+  },
+  {
+    "name": "Ethereum (Mainnet)",
+    "ticker": "eth",
+    "network": "ERC20",
+    "memo": false,
+    "image": "https://trocador.app/static/img/icons/eth.svg",
+    "minimum": 0.002169,
+    "maximum": 677.6914596167919
+  },
+  {
+    "name": "Litecoin (Mainnet - not MW)",
+    "ticker": "ltc",
+    "network": "Mainnet",
+    "memo": false,
+    "image": "https://trocador.app/static/img/icons/ltc.svg",
+    "minimum": 0.082776,
+    "maximum": 25867.46440339938
+  },
+  {
+    "name": "Monero",
+    "ticker": "xmr",
+    "network": "Mainnet",
+    "memo": false,
+    "image": "https://trocador.app/static/img/icons/xmr.svg",
+    "minimum": 0.013563,
+    "maximum": 4238.3042297663105
+  }
+]

@@ -1,3 +1,4 @@
+use serial_test::serial;
 use serde_json::{json, Value};
 
 #[path = "../common/mod.rs"]
@@ -14,6 +15,7 @@ use tokio::time::sleep;
 // 3. We track the user's actual recipient address for the second hop
 // =============================================================================
 
+#[serial]
 #[tokio::test]
 async fn test_create_swap_middleman_address_swap() {
     sleep(Duration::from_secs(1)).await;
@@ -96,6 +98,7 @@ async fn test_create_swap_middleman_address_swap() {
     assert_eq!(status_json["recipient_address"].as_str().unwrap(), user_recipient_address, "Should track user recipient address");
 }
 
+#[serial]
 #[tokio::test]
 async fn test_middleman_commission_deduction_accuracy() {
     sleep(Duration::from_secs(1)).await;

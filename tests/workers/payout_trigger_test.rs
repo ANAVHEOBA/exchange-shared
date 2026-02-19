@@ -13,6 +13,31 @@ use exchange_shared::services::wallet::manager::WalletManager;
 use exchange_shared::services::monitor::MonitorEngine;
 use exchange_shared::modules::wallet::schema::GenerateAddressRequest;
 use exchange_shared::modules::monitor::model::PollingState;
+use exchange_shared::services::wallet::rpc::{BlockchainProvider, RpcError};
+use async_trait::async_trait;
+use std::sync::Arc;
+
+// Mock BlockchainProvider for testing
+struct MockBlockchainProvider;
+
+#[async_trait]
+impl BlockchainProvider for MockBlockchainProvider {
+    async fn get_transaction_count(&self, _address: &str) -> Result<u64, RpcError> {
+        Ok(0)
+    }
+
+    async fn get_gas_price(&self) -> Result<u64, RpcError> {
+        Ok(20_000_000_000) // 20 gwei
+    }
+
+    async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> {
+        Ok("0xmocktxhash123".to_string())
+    }
+
+    async fn get_balance(&self, _address: &str) -> Result<f64, RpcError> {
+        Ok(1.0)
+    }
+}
 
 #[tokio::test]
 async fn test_finished_status_triggers_bridge_payout() {
@@ -27,7 +52,8 @@ async fn test_finished_status_triggers_bridge_payout() {
     // 2. Setup: Setup Wallet tracking (The Bridge Address)
     let wallet_crud = WalletCrud::new(ctx.db.clone());
     let master_seed = "abandon ".repeat(11) + "about";
-    let wallet_manager = WalletManager::new(wallet_crud, master_seed.clone());
+    let mock_provider = Arc::new(MockBlockchainProvider);
+    let wallet_manager = WalletManager::new(wallet_crud, master_seed.clone(), mock_provider);
     
     // Assign our platform address to the swap
     wallet_manager.get_or_generate_address(GenerateAddressRequest {
