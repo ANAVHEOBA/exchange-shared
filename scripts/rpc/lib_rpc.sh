@@ -1,11 +1,12 @@
 #!/bin/bash
-# scripts/rpc/lib_rpc.sh
+# scripts/rpc/lib_rpc.sh - Rigorous Multi-Chain Validator
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 ANKR_ID="255ef0129f301d346a2a784d9bef2bed6feb53f0584208e29751f1593d597662"
@@ -57,29 +58,34 @@ check_endpoint() {
             RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
                 --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
                 --max-time 10 "$URL")
-            [[ $RESPONSE == *"result"* ]] && { echo -e "${GREEN}✅ LIVE${NC}"; return 0; }
+            if [[ $RESPONSE == *"result"* ]]; then
+                BLOCK=$(echo "$RESPONSE" | jq -r '.result')
+                echo -e "${GREEN}✅ LIVE ($BLOCK)${NC}"
+                return 0
+            fi
             ;;
-        "solana")
+        "neo")
             RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
-                --data '{"jsonrpc":"2.0","method":"getSlot","id":1}' \
+                --data '{"jsonrpc":"2.0","method":"getblockcount","params":[],"id":1}' \
                 --max-time 10 "$URL")
-            [[ $RESPONSE == *"result"* ]] && { echo -e "${GREEN}✅ LIVE${NC}"; return 0; }
-            ;;
-        "mina")
-            # Specialized GraphQL probe
-            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
-                --data '{"jsonrpc":"2.0","method":"system_health","params":[],"id":1}' \
-                --max-time 10 "$URL")
-            [[ $RESPONSE == *"data"* ]] && { echo -e "${GREEN}✅ LIVE${NC}"; return 0; }
+            if [[ $RESPONSE == *"result"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
             ;;
         "icon")
-            # Specialized loopchain probe
             RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
                 --data '{"jsonrpc":"2.0","method":"icx_getLastBlock","id":1}' \
                 --max-time 10 "$URL")
-            [[ $RESPONSE == *"result"* ]] && { echo -e "${GREEN}✅ LIVE${NC}"; return 0; }
+            if [[ $RESPONSE == *"result"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result.height')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
             ;;
         *)
+            # Generic probe: Must return HTTP 200/405/204
             HTTP_CODE=$(curl -s -A "Mozilla/5.0" -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
             if [[ "$HTTP_CODE" =~ ^(200|405|204|403|401)$ ]]; then
                 echo -e "${GREEN}✅ LIVE (HTTP $HTTP_CODE)${NC}"
