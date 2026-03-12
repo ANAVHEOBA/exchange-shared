@@ -236,7 +236,7 @@ mod tests {
     
     #[test]
     fn test_calculate_approval_amount() {
-        let manager = ApprovalManager::new(MySqlPool::connect("mysql://localhost").await.unwrap());
+        let manager = ApprovalManager::new(MySqlPool::connect_lazy("mysql://localhost").unwrap());
         
         let required = U256::from(1000u64);
         let approved = manager.calculate_approval_amount(required);
@@ -245,7 +245,7 @@ mod tests {
     
     #[test]
     fn test_calculate_approval_amount_overflow() {
-        let manager = ApprovalManager::new(MySqlPool::connect("mysql://localhost").await.unwrap());
+        let manager = ApprovalManager::new(MySqlPool::connect_lazy("mysql://localhost").unwrap());
         
         // Test with max value
         let required = U256::MAX;

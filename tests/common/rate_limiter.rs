@@ -63,12 +63,18 @@ pub struct RateLimitGuard {
 
 // Global rate limiter instance for all tests
 lazy_static! {
-    /// Global rate limiter for Trocador API calls
-    /// Limits to 1 concurrent call with 1000ms (1 second) minimum delay
+    /// Global rate limiter for Trocador GET API calls (rates, currencies, etc)
+    /// Limits to 1 concurrent call with 2000ms (2 second) minimum delay
     /// This prevents 429 rate limit errors during test runs
     /// 
-    /// Trocador's rate limit appears to be around 60 requests per minute
-    /// So we use 1 second delay = 60 requests/minute (safe limit)
+    /// Trocador's rate limit is around 60 requests per minute
+    /// We use 2 second delay = 30 requests/minute (2x safety margin)
     pub static ref TROCADOR_RATE_LIMITER: TestRateLimiter = 
-        TestRateLimiter::new(1, 1000);
+        TestRateLimiter::new(1, 2000);
+
+    /// Separate rate limiter for POST calls (create trades)
+    /// Uses same timing but independent queue to prevent trade_id expiry
+    /// When both GET and POST acquire separately, they don't block each other
+    pub static ref TROCADOR_POST_LIMITER: TestRateLimiter = 
+        TestRateLimiter::new(1, 2000);
 }

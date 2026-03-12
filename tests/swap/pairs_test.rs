@@ -24,7 +24,7 @@ async fn test_get_pairs_basic() {
     assert!(body.get("pairs").is_some(), "Missing 'pairs' field");
     assert!(body.get("pagination").is_some(), "Missing 'pagination' field");
     
-    let pairs = body["pairs"].as_array().unwrap();
+    let _pairs = body["pairs"].as_array().unwrap();
     let pagination = &body["pagination"];
     
     // Validate pagination structure
@@ -161,7 +161,7 @@ async fn test_pairs_response_structure() {
     // Check pagination structure
     let pagination = &body["pagination"];
     assert!(pagination["total_elements"].as_i64().unwrap() >= 0);
-    assert!(pagination["total_pages"].as_u64().unwrap() >= 0);
+    assert!(pagination["total_pages"].is_u64());
     
     // Check pair structure if any pairs exist
     if !pairs.is_empty() {
@@ -216,5 +216,4 @@ async fn test_pairs_pagination_navigation() {
         }
     }
 }
-
 

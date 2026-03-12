@@ -142,7 +142,7 @@ mod tests {
         // Example with USDT on Ethereum mainnet
         let client = Erc20Client::from_rpc_url("https://eth.llamarpc.com").await.unwrap();
         let usdt_address: Address = "0xdAC17F958D2ee523a2206206994597C13D831ec7".parse().unwrap();
-        let (name, symbol, decimals) = client.get_metadata(usdt_address).await.unwrap();
+        let (_name, symbol, decimals) = client.get_metadata(usdt_address).await.unwrap();
         assert_eq!(symbol, "USDT");
         assert_eq!(decimals, 6);
     }

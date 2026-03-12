@@ -94,6 +94,7 @@ impl TokenGasEstimator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::prelude::FromPrimitive;
     
     fn create_test_token(token_type: TokenType, gas_multiplier: f64, is_verified: bool) -> Token {
         Token {

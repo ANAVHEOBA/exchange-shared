@@ -31,3 +31,10 @@ coverage/
 
 # Build artifacts
 *.pdb
+
+# Sensitive config files (contain API keys)
+src/config/chains.json
+src/config/chains.json.backup
+src/config/chains_updated.json
+rpc_config.json
+*.rpc.json

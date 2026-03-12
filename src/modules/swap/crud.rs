@@ -1429,7 +1429,7 @@ impl SwapCrud {
     // =========================================================================
 
     /// Call Trocador API with exponential backoff retry logic
-    /// Handles rate limiting gracefully by retrying with increasing delays
+    /// Handles rate limiting AND transient network errors gracefully
     async fn call_trocador_with_retry<F, Fut, T>(
         &self,
         f: F,
@@ -1438,7 +1438,7 @@ impl SwapCrud {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, TrocadorError>>,
     {
-        let max_retries = 2; // Reduced from 5 to avoid long hangs
+        let max_retries = 3;
         let mut retries = 0;
 
         loop {
@@ -1453,14 +1453,25 @@ impl SwapCrud {
                         || error_msg.contains("429")
                         || error_msg.contains("Too Many Requests");
 
-                    if is_rate_limit && retries < max_retries {
+                    // Check if it's a transient network error
+                    let is_transient_error = error_msg.contains("error sending request")
+                        || error_msg.contains("connection")
+                        || error_msg.contains("timeout")
+                        || error_msg.contains("502")
+                        || error_msg.contains("503")
+                        || error_msg.contains("Bad Gateway");
+
+                    // Retry on either rate limit or transient errors
+                    if (is_rate_limit || is_transient_error) && retries < max_retries {
                         retries += 1;
-                        // Linear backoff: 500ms, 1000ms
-                        // Total max wait: ~1.5s
-                        let delay_millis = retries * 500;
+                        // Exponential backoff: 400ms, 800ms, 1600ms
+                        // Total max wait: ~2.8s (allows API to recover)
+                        let delay_millis = 200 * (2_u64.pow(retries as u32));
                         
+                        let error_type = if is_rate_limit { "Rate limit" } else { "Network error" };
                         tracing::warn!(
-                            "Rate limit hit, retrying in {}ms (attempt {}/{})",
+                            "{} hit, retrying in {}ms (attempt {}/{})",
+                            error_type,
                             delay_millis,
                             retries,
                             max_retries
@@ -1470,7 +1481,7 @@ impl SwapCrud {
                         continue;
                     }
 
-                    // Not a rate limit error or max retries exceeded
+                    // Not retriable error or max retries exceeded
                     return Err(SwapError::from(e));
                 }
             }

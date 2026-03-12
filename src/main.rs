@@ -1,5 +1,10 @@
 use exchange_shared::config::{environment::Config, init_db};
-use exchange_shared::services::{jwt::JwtService, redis_cache::RedisService, blockchain::BlockchainListener};
+use exchange_shared::services::{
+    jwt::JwtService, 
+    redis_cache::RedisService, 
+    blockchain::BlockchainListener,
+    monitor::MonitorEngine,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -26,13 +31,25 @@ async fn main() {
 
     let jwt_service = JwtService::new(config.jwt_secret);
 
-    // Start blockchain listener in background
+    // Start blockchain listener in background (PRIMARY: Direct blockchain monitoring)
     let listener_db = db.clone();
+    let listener_mnemonic = config.wallet_mnemonic.clone();
     tokio::spawn(async move {
-        let listener = BlockchainListener::new(listener_db);
+        let listener = BlockchainListener::new(listener_db)
+            .with_wallet_mnemonic(listener_mnemonic);
         listener.run().await;
     });
-    tracing::info!("Blockchain listener started");
+    tracing::info!("Blockchain listener started (primary fund detection)");
+
+    // Start monitor engine in background (FALLBACK: Trocador polling + blockchain verification)
+    let monitor_db = db.clone();
+    let monitor_redis = redis_service.clone();
+    let monitor_mnemonic = config.wallet_mnemonic.clone();
+    tokio::spawn(async move {
+        let monitor = MonitorEngine::new(monitor_db, monitor_redis, monitor_mnemonic);
+        monitor.run().await;
+    });
+    tracing::info!("Monitor engine started (adaptive polling with mathematical optimization)");
 
     let app = exchange_shared::create_app(db, redis_service, jwt_service, config.wallet_mnemonic).await;
 

@@ -82,6 +82,13 @@ pub fn test_password() -> &'static str {
     "TestPassword123!"
 }
 
+// Helper to get wallet mnemonic from environment
+#[allow(dead_code)]
+pub fn test_wallet_mnemonic() -> String {
+    std::env::var("WALLET_MNEMONIC")
+        .unwrap_or_else(|_| "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string())
+}
+
 // Helper to setup test server (simplified for swap tests)
 #[allow(dead_code)]
 pub async fn setup_test_server() -> TestServer {
@@ -90,13 +97,11 @@ pub async fn setup_test_server() -> TestServer {
 }
 
 // Helper to measure and print request duration WITH SMART RATE LIMITING
-// Rate-limits ALL /swap/* endpoints to prevent 429 errors
+// Uses separate rate limiters for GET and POST to prevent trade_id expiry
 #[allow(dead_code)]
 pub async fn timed_get(server: &TestServer, path: &str) -> axum_test::TestResponse {
-    // Rate limit ALL swap endpoints that might hit Trocador API
-    let needs_rate_limit = path.starts_with("/swap/");
-    
-    let _guard = if needs_rate_limit {
+    // Rate limit GET calls (fetching rates, currencies, etc)
+    let _guard = if path.starts_with("/swap/") {
         Some(rate_limiter::TROCADOR_RATE_LIMITER.acquire().await)
     } else {
         None
@@ -111,11 +116,11 @@ pub async fn timed_get(server: &TestServer, path: &str) -> axum_test::TestRespon
 
 #[allow(dead_code)]
 pub async fn timed_post<T: serde::Serialize>(server: &TestServer, path: &str, body: &T) -> axum_test::TestResponse {
-    // Rate limit ALL swap endpoints that might hit Trocador API
-    let needs_rate_limit = path.starts_with("/swap/");
-    
-    let _guard = if needs_rate_limit {
-        Some(rate_limiter::TROCADOR_RATE_LIMITER.acquire().await)
+    // Rate limit POST calls (creating trades) with SEPARATE limiter
+    // This allows GET and POST to happen independently without blocking each other
+    // Both space out at 2000ms, but they don't share the same queue
+    let _guard = if path.starts_with("/swap/") {
+        Some(rate_limiter::TROCADOR_POST_LIMITER.acquire().await)
     } else {
         None
     };

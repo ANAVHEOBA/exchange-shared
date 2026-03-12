@@ -22,9 +22,14 @@ async fn test_create_swap_middleman_address_swap() {
     let server = setup_test_server().await;
 
     // 1. Get rates
-    // BTC -> XMR
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.01&network_from=Mainnet&network_to=Mainnet";
-    let rate_response = timed_get(&server, rate_url).await;
+    // ETH -> USDT (both ERC20, more stable than BTC->XMR)
+    let rate_url = "/swap/rates?from=eth&to=usdt&amount=0.5&network_from=ERC20&network_to=ERC20";
+    
+    // Get rates WITHOUT rate limiting to prevent trade_id expiry
+    let start = std::time::Instant::now();
+    let rate_response = server.get(rate_url).await;
+    let duration = start.elapsed();
+    println!("⏱️ GET {} took {:?}", rate_url, duration);
     rate_response.assert_status_ok();
     
     let rate_json: Value = rate_response.json();
@@ -35,18 +40,18 @@ async fn test_create_swap_middleman_address_swap() {
     println!("Initial estimated amount to user: {}", initial_estimated_amount);
 
     // 2. Create the swap
-    // The user provides THEIR recipient address
-    let user_recipient_address = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve"; 
+    // The user provides THEIR recipient address (must be ERC20/ETH address for this pair)
+    let user_recipient_address = "0x742d35Cc6634C0532925a3b844Bc9e7595f42bE0"; 
     let payload = json!({
         "trade_id": trade_id,
-        "from": "btc",
-        "network_from": "Mainnet",
-        "to": "xmr",
-        "network_to": "Mainnet",
-        "amount": 0.01,
+        "from": "eth",
+        "network_from": "ERC20",
+        "to": "usdt",
+        "network_to": "ERC20",
+        "amount": 0.5,
         "provider": provider,
         "recipient_address": user_recipient_address,
-        "refund_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+        "refund_address": "0x1234567890123456789012345678901234567890",
         "rate_type": "floating"
     });
 

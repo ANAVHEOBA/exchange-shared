@@ -131,7 +131,6 @@ impl DeliveryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::webhook::WebhookEvent;
 
     #[tokio::test]
     async fn test_delivery_client_creation() {

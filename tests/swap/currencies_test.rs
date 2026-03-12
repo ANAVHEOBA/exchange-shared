@@ -358,9 +358,7 @@ async fn test_currency_minimum_maximum_values() {
 async fn test_nonexistent_ticker_returns_empty() {
     let server = setup_test_server().await;
 
-    let response = server
-        .get("/swap/currencies?ticker=NONEXISTENT999")
-        .await;
+    let response = timed_get(&server, "/swap/currencies?ticker=NONEXISTENT999").await;
     response.assert_status_ok();
 
     let currencies: Vec<Value> = response.json();
@@ -534,7 +532,7 @@ async fn test_currencies_pagination_readiness() {
 async fn test_special_characters_in_currency_names() {
     let server = setup_test_server().await;
 
-    let response = server.get("/swap/currencies?ticker=1inch").await;
+    let response = timed_get(&server, "/swap/currencies?ticker=1inch").await;
     response.assert_status_ok();
 
     let currencies: Vec<Value> = response.json();

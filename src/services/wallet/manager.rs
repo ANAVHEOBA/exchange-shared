@@ -108,6 +108,112 @@ impl WalletManager {
             _ => self.process_evm_payout(&info, &req.swap_id).await,
         }
     }
+    
+    /// Process payout with retry logic and exponential backoff
+    /// Handles transient failures (network errors, RPC timeouts, gas spikes)
+    pub async fn process_payout_with_retry(
+        &self,
+        req: PayoutRequest,
+        max_attempts: usize,
+    ) -> Result<PayoutResponse, String> {
+        let mut last_error = String::new();
+        
+        for attempt in 1..=max_attempts {
+            tracing::info!(
+                "Payout attempt {}/{} for swap {}",
+                attempt, max_attempts, req.swap_id
+            );
+            
+            match self.process_payout(req.clone()).await {
+                Ok(response) => {
+                    if attempt > 1 {
+                        tracing::info!(
+                            "✅ Payout succeeded on attempt {}/{} for swap {}",
+                            attempt, max_attempts, req.swap_id
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(e) => {
+                    last_error = e.clone();
+                    
+                    tracing::warn!(
+                        "❌ Payout attempt {}/{} failed for swap {}: {}",
+                        attempt, max_attempts, req.swap_id, e
+                    );
+                    
+                    // Check if error is retryable
+                    if !Self::is_retryable_error(&e) {
+                        tracing::error!(
+                            "Non-retryable error for swap {}: {}",
+                            req.swap_id, e
+                        );
+                        return Err(format!("Non-retryable error: {}", e));
+                    }
+                    
+                    // If not the last attempt, wait with exponential backoff
+                    if attempt < max_attempts {
+                        let backoff_secs = 2u64.pow((attempt - 1) as u32);
+                        tracing::info!(
+                            "Retrying in {} seconds... (attempt {}/{})",
+                            backoff_secs, attempt, max_attempts
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
+                    }
+                }
+            }
+        }
+        
+        // All attempts failed
+        tracing::error!(
+            "❌ All {} payout attempts failed for swap {}: {}",
+            max_attempts, req.swap_id, last_error
+        );
+        
+        Err(format!(
+            "Payout failed after {} attempts: {}",
+            max_attempts, last_error
+        ))
+    }
+    
+    /// Determine if an error is retryable
+    fn is_retryable_error(error: &str) -> bool {
+        let error_lower = error.to_lowercase();
+        
+        // Non-retryable errors
+        let non_retryable = [
+            "insufficient balance",
+            "invalid address",
+            "invalid signature",
+            "amount too small",
+            "no address info found",
+        ];
+        
+        for pattern in &non_retryable {
+            if error_lower.contains(pattern) {
+                return false;
+            }
+        }
+        
+        // Retryable errors
+        let retryable = [
+            "network error",
+            "timeout",
+            "rpc error",
+            "failed to broadcast",
+            "failed to get",
+            "connection",
+        ];
+        
+        for pattern in &retryable {
+            if error_lower.contains(pattern) {
+                return true;
+            }
+        }
+        
+        // Default: retry for unknown errors
+        true
+    }
 
     /// Process EVM chain payout (Ethereum, Polygon, BSC, etc.)
     async fn process_evm_payout(

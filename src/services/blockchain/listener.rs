@@ -2,7 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use sqlx::{MySql, Pool};
-use crate::services::wallet::rpc::{BlockchainProvider, HttpRpcClient};
+use crate::services::wallet::rpc::BlockchainProvider;
+use crate::services::wallet::manager::WalletManager;
+use crate::modules::wallet::crud::WalletCrud;
+use crate::modules::wallet::schema::PayoutRequest;
+use crate::config::RpcProviderConfig;
 
 /// Blockchain event listener that monitors addresses for incoming funds
 /// This is the optimal approach - detects funds immediately without polling Trocador
@@ -10,144 +14,28 @@ pub struct BlockchainListener {
     db: Pool<MySql>,
     providers: HashMap<String, Arc<dyn BlockchainProvider>>,
     check_interval: Duration,
+    wallet_mnemonic: Option<String>,
 }
 
 impl BlockchainListener {
-    /// Create a new blockchain listener with RPC providers for each chain
+    /// Create a new blockchain listener with RPC providers from config
     pub fn new(db: Pool<MySql>) -> Self {
-        let mut providers: HashMap<String, Arc<dyn BlockchainProvider>> = HashMap::new();
-        
-        // Initialize RPC clients for each supported EVM chain
-        // Ethereum
-        if let Ok(rpc) = std::env::var("ETH_RPC_URL") {
-            providers.insert("ethereum".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Polygon
-        if let Ok(rpc) = std::env::var("POLYGON_RPC_URL") {
-            providers.insert("polygon".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Binance Smart Chain
-        if let Ok(rpc) = std::env::var("BSC_RPC_URL") {
-            providers.insert("bsc".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Arbitrum
-        if let Ok(rpc) = std::env::var("ARBITRUM_RPC_URL") {
-            providers.insert("arbitrum".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Optimism
-        if let Ok(rpc) = std::env::var("OPTIMISM_RPC_URL") {
-            providers.insert("optimism".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Avalanche
-        if let Ok(rpc) = std::env::var("AVALANCHE_RPC_URL") {
-            providers.insert("avalanche".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Base
-        if let Ok(rpc) = std::env::var("BASE_RPC_URL") {
-            providers.insert("base".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Fantom
-        if let Ok(rpc) = std::env::var("FANTOM_RPC_URL") {
-            providers.insert("fantom".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Gnosis
-        if let Ok(rpc) = std::env::var("GNOSIS_RPC_URL") {
-            providers.insert("gnosis".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Cronos
-        if let Ok(rpc) = std::env::var("CRONOS_RPC_URL") {
-            providers.insert("cronos".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Moonbeam
-        if let Ok(rpc) = std::env::var("MOONBEAM_RPC_URL") {
-            providers.insert("moonbeam".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Moonriver
-        if let Ok(rpc) = std::env::var("MOONRIVER_RPC_URL") {
-            providers.insert("moonriver".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Celo
-        if let Ok(rpc) = std::env::var("CELO_RPC_URL") {
-            providers.insert("celo".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Aurora
-        if let Ok(rpc) = std::env::var("AURORA_RPC_URL") {
-            providers.insert("aurora".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Harmony
-        if let Ok(rpc) = std::env::var("HARMONY_RPC_URL") {
-            providers.insert("harmony".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Metis
-        if let Ok(rpc) = std::env::var("METIS_RPC_URL") {
-            providers.insert("metis".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // zkSync Era
-        if let Ok(rpc) = std::env::var("ZKSYNC_RPC_URL") {
-            providers.insert("zksync".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Linea
-        if let Ok(rpc) = std::env::var("LINEA_RPC_URL") {
-            providers.insert("linea".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Scroll
-        if let Ok(rpc) = std::env::var("SCROLL_RPC_URL") {
-            providers.insert("scroll".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Mantle
-        if let Ok(rpc) = std::env::var("MANTLE_RPC_URL") {
-            providers.insert("mantle".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Blast
-        if let Ok(rpc) = std::env::var("BLAST_RPC_URL") {
-            providers.insert("blast".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Mode
-        if let Ok(rpc) = std::env::var("MODE_RPC_URL") {
-            providers.insert("mode".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        // Manta Pacific
-        if let Ok(rpc) = std::env::var("MANTA_RPC_URL") {
-            providers.insert("manta".to_string(), Arc::new(HttpRpcClient::new(rpc)));
-        }
-        
-        if providers.is_empty() {
-            tracing::warn!("⚠️  No RPC providers configured! Blockchain listener will not work.");
-            tracing::warn!("    Add RPC URLs to .env file (e.g., ETH_RPC_URL, POLYGON_RPC_URL)");
-        } else {
-            tracing::info!("🚀 Blockchain listener initialized with {} chains: {:?}", 
-                providers.len(), 
-                providers.keys().collect::<Vec<_>>()
-            );
-        }
+        // Load RPC providers from centralized config
+        let rpc_config = RpcProviderConfig::from_env();
+        let providers = rpc_config.get_all_providers().clone();
         
         Self {
             db,
             providers,
             check_interval: Duration::from_secs(30), // Check every 30 seconds
+            wallet_mnemonic: None,
         }
+    }
+    
+    /// Set wallet mnemonic for payout processing
+    pub fn with_wallet_mnemonic(mut self, mnemonic: String) -> Self {
+        self.wallet_mnemonic = Some(mnemonic);
+        self
     }
     
     /// Main monitoring loop - runs continuously in background
@@ -165,7 +53,7 @@ impl BlockchainListener {
     }
     
     /// Check all pending swaps for incoming funds on blockchain
-    async fn check_pending_swaps(&self) -> Result<(), String> {
+    pub async fn check_pending_swaps(&self) -> Result<(), String> {
         // Get swaps that are in progress and waiting for funds
         let pending: Vec<(String, String, String, f64, f64)> = sqlx::query_as(
             r#"
@@ -173,8 +61,8 @@ impl BlockchainListener {
                 s.id,
                 sa.our_address,
                 s.to_network,
-                s.estimated_receive,
-                s.platform_fee
+                CAST(s.estimated_receive AS DOUBLE) as estimated_receive,
+                CAST(s.platform_fee AS DOUBLE) as platform_fee
             FROM swaps s
             JOIN swap_address_info sa ON s.id = sa.swap_id
             WHERE s.status IN ('sending', 'exchanging', 'confirming')
@@ -334,7 +222,7 @@ impl BlockchainListener {
         self.providers.get(provider_key).cloned()
     }
     
-    /// Trigger payout by updating swap status
+    /// Trigger payout by updating swap status and executing the payout
     async fn trigger_payout(&self, swap_id: &str, actual_balance: f64) -> Result<(), String> {
         // Update swap status to 'funds_received'
         sqlx::query(
@@ -349,26 +237,95 @@ impl BlockchainListener {
         .await
         .map_err(|e| format!("Failed to update swap status: {}", e))?;
         
-        // Update swap_address_info with actual received amount
-        sqlx::query(
-            r#"
-            UPDATE swap_address_info 
-            SET actual_received = ?, last_balance_check = NOW()
-            WHERE swap_id = ?
-            "#
-        )
-        .bind(actual_balance)
-        .bind(swap_id)
-        .execute(&self.db)
-        .await
-        .map_err(|e| format!("Failed to update address info: {}", e))?;
-        
         tracing::info!(
-            "🎯 Payout triggered for swap {}: {} received on blockchain",
+            "🎯 Funds detected for swap {}: {} received on blockchain",
             swap_id, actual_balance
         );
         
-        Ok(())
+        // CRITICAL: Execute the actual payout to user
+        if let Some(ref mnemonic) = self.wallet_mnemonic {
+            tracing::info!("💸 Initiating payout for swap {}", swap_id);
+            
+            // Get the provider for this swap's network
+            let provider = self.get_provider_for_swap(swap_id).await?;
+            
+            // Create WalletManager
+            let crud = WalletCrud::new(self.db.clone());
+            let wallet_manager = WalletManager::new(
+                crud,
+                mnemonic.clone(),
+                provider,
+            );
+            
+            // Execute payout with retry logic (3 attempts with exponential backoff)
+            let payout_request = PayoutRequest {
+                swap_id: swap_id.to_string(),
+            };
+            
+            match wallet_manager.process_payout_with_retry(payout_request, 3).await {
+                Ok(response) => {
+                    tracing::info!(
+                        "✅ Payout successful for swap {}: {} (tx: {})",
+                        swap_id, response.amount, response.tx_hash
+                    );
+                    
+                    // Update swap status to completed
+                    sqlx::query(
+                        r#"
+                        UPDATE swaps 
+                        SET status = 'completed', updated_at = NOW() 
+                        WHERE id = ?
+                        "#
+                    )
+                    .bind(swap_id)
+                    .execute(&self.db)
+                    .await
+                    .map_err(|e| format!("Failed to update swap to completed: {}", e))?;
+                    
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!("❌ Payout failed after retries for swap {}: {}", swap_id, e);
+                    
+                    // Update swap status to failed
+                    sqlx::query(
+                        r#"
+                        UPDATE swaps 
+                        SET status = 'failed', updated_at = NOW() 
+                        WHERE id = ?
+                        "#
+                    )
+                    .bind(swap_id)
+                    .execute(&self.db)
+                    .await
+                    .ok();
+                    
+                    Err(format!("Payout execution failed after retries: {}", e))
+                }
+            }
+        } else {
+            tracing::warn!(
+                "⚠️  Wallet mnemonic not configured - cannot execute payout for swap {}",
+                swap_id
+            );
+            tracing::warn!("   Status updated to 'funds_received' but payout not executed");
+            Ok(())
+        }
+    }
+    
+    /// Get the appropriate blockchain provider for a swap
+    async fn get_provider_for_swap(&self, swap_id: &str) -> Result<Arc<dyn BlockchainProvider>, String> {
+        // Get swap network from database
+        let (network,): (String,) = sqlx::query_as(
+            "SELECT to_network FROM swaps WHERE id = ?"
+        )
+        .bind(swap_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| format!("Failed to get swap network: {}", e))?;
+        
+        self.get_provider_for_network(&network)
+            .ok_or_else(|| format!("No RPC provider configured for network: {}", network))
     }
     
     /// Update last balance check timestamp

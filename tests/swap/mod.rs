@@ -15,3 +15,8 @@ pub mod wallet_validation_test;
 pub mod middleman_flow_test;
 pub mod algorithmic_pricing_test;
 
+// Blockchain coverage and support tests
+pub mod blockchain_coverage_test;
+pub mod blockchain_smoke_test;
+pub mod blockchain_health_check_test;
+

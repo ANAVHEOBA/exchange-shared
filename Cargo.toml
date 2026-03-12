@@ -50,6 +50,8 @@ solana-client = "2.1"
 bincode = "1.3"
 rust_decimal = { version = "1.40.0", features = ["db-tokio-postgres"] }
 alloy = { version = "0.5", features = ["contract", "providers", "transports"] }
+bech32 = "0.11"
+blake2 = "0.10"
 
 [dev-dependencies]
 axum-test = "18.4.1"

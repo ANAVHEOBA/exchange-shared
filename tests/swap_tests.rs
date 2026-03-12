@@ -11,4 +11,7 @@ mod swap {
     pub mod validate_address_test;
     pub mod middleman_flow_test;
     pub mod algorithmic_pricing_test;
+    pub mod blockchain_coverage_test;
+    pub mod blockchain_smoke_test;
+    pub mod blockchain_health_check_test;
 }

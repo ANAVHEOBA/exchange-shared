@@ -283,8 +283,6 @@ impl TokenRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
     // Integration tests would require database connection
     // These are unit tests for the cache key logic
     
