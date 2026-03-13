@@ -51,7 +51,7 @@ async fn test_finished_status_triggers_bridge_payout() {
     
     // 2. Setup: Setup Wallet tracking (The Bridge Address)
     let wallet_crud = WalletCrud::new(ctx.db.clone());
-    let master_seed = "abandon ".repeat(11) + "about";
+    let master_seed = crate::common::test_wallet_mnemonic();
     let mock_provider = Arc::new(MockBlockchainProvider);
     let wallet_manager = WalletManager::new(wallet_crud, master_seed.clone(), mock_provider);
     

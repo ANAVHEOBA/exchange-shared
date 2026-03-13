@@ -41,8 +41,7 @@ impl TestContext {
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
         let redis_service = RedisService::new(&redis_url);
 
-        let wallet_mnemonic = std::env::var("WALLET_MNEMONIC")
-            .unwrap_or_else(|_| "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string());
+        let wallet_mnemonic = test_wallet_mnemonic();
 
         let app = exchange_shared::create_app(db.clone(), redis_service.clone(), jwt_service, wallet_mnemonic).await;
         let server = TestServer::new(app).expect("Failed to create test server");
@@ -85,8 +84,9 @@ pub fn test_password() -> &'static str {
 // Helper to get wallet mnemonic from environment
 #[allow(dead_code)]
 pub fn test_wallet_mnemonic() -> String {
+    dotenvy::dotenv().ok();
     std::env::var("WALLET_MNEMONIC")
-        .unwrap_or_else(|_| "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string())
+        .expect("WALLET_MNEMONIC must be set in .env")
 }
 
 // Helper to setup test server (simplified for swap tests)
@@ -178,8 +178,7 @@ pub async fn setup_test_app() -> axum::Router {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
     let redis_service = RedisService::new(&redis_url);
 
-    let wallet_mnemonic = std::env::var("WALLET_MNEMONIC")
-        .unwrap_or_else(|_| "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string());
+    let wallet_mnemonic = test_wallet_mnemonic();
 
     exchange_shared::create_app(db, redis_service, jwt_service, wallet_mnemonic).await
 }

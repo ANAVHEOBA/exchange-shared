@@ -1,3 +1,6 @@
+#[path = "../common/mod.rs"]
+mod common;
+
 use exchange_shared::services::wallet::{
     bitcoin_rpc::{BitcoinUtxo, build_bitcoin_transaction},
     solana_rpc::build_solana_transaction,
@@ -6,8 +9,8 @@ use exchange_shared::services::wallet::{
 
 #[tokio::test]
 async fn test_bitcoin_address_derivation() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let address = derivation::derive_btc_address(seed, 0).await.unwrap();
+    let seed = common::test_wallet_mnemonic();
+    let address = derivation::derive_btc_address(&seed, 0).await.unwrap();
     
     // Bitcoin addresses start with 1, 3, or bc1
     assert!(address.starts_with('1') || address.starts_with('3') || address.starts_with("bc1"));
@@ -16,8 +19,8 @@ async fn test_bitcoin_address_derivation() {
 
 #[tokio::test]
 async fn test_solana_address_derivation() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let address = derivation::derive_solana_address(seed, 0).await.unwrap();
+    let seed = common::test_wallet_mnemonic();
+    let address = derivation::derive_solana_address(&seed, 0).await.unwrap();
     
     // Solana addresses are base58 encoded, typically 32-44 characters
     assert!(address.len() >= 32 && address.len() <= 44);
@@ -26,8 +29,8 @@ async fn test_solana_address_derivation() {
 
 #[tokio::test]
 async fn test_bitcoin_key_derivation() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let key = derivation::derive_btc_key(seed, 0).await.unwrap();
+    let seed = common::test_wallet_mnemonic();
+    let key = derivation::derive_btc_key(&seed, 0).await.unwrap();
     
     // Private key should be 64 hex characters (32 bytes)
     assert_eq!(key.len(), 64);
@@ -36,8 +39,8 @@ async fn test_bitcoin_key_derivation() {
 
 #[tokio::test]
 async fn test_solana_key_derivation() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let key = derivation::derive_solana_key(seed, 0).await.unwrap();
+    let seed = common::test_wallet_mnemonic();
+    let key = derivation::derive_solana_key(&seed, 0).await.unwrap();
     
     // Solana key should be 32 bytes
     assert_eq!(key.len(), 32);
@@ -85,20 +88,20 @@ async fn test_solana_transaction_building() {
 
 #[tokio::test]
 async fn test_multi_chain_address_consistency() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = common::test_wallet_mnemonic();
     
     // Test that same seed + index produces same address
-    let btc1 = derivation::derive_btc_address(seed, 0).await.unwrap();
-    let btc2 = derivation::derive_btc_address(seed, 0).await.unwrap();
+    let btc1 = derivation::derive_btc_address(&seed, 0).await.unwrap();
+    let btc2 = derivation::derive_btc_address(&seed, 0).await.unwrap();
     assert_eq!(btc1, btc2);
     
-    let sol1 = derivation::derive_solana_address(seed, 0).await.unwrap();
-    let sol2 = derivation::derive_solana_address(seed, 0).await.unwrap();
+    let sol1 = derivation::derive_solana_address(&seed, 0).await.unwrap();
+    let sol2 = derivation::derive_solana_address(&seed, 0).await.unwrap();
     assert_eq!(sol1, sol2);
     
     // Different indices produce different addresses
-    let btc_idx1 = derivation::derive_btc_address(seed, 0).await.unwrap();
-    let btc_idx2 = derivation::derive_btc_address(seed, 1).await.unwrap();
+    let btc_idx1 = derivation::derive_btc_address(&seed, 0).await.unwrap();
+    let btc_idx2 = derivation::derive_btc_address(&seed, 1).await.unwrap();
     assert_ne!(btc_idx1, btc_idx2);
 }
 

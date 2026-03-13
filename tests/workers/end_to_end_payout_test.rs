@@ -72,7 +72,7 @@ async fn test_end_to_end_payout_flow() {
     ).await;
     
     // 2. Generate our receiving address
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = crate::common::test_wallet_mnemonic();
     let crud = WalletCrud::new(ctx.db.clone());
     
     // Note: We don't need to create WalletManager here - the BlockchainListener will do it

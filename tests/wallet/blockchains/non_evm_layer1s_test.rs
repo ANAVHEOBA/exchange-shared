@@ -13,8 +13,8 @@ use exchange_shared::services::wallet::derive_evm_address;
 #[tokio::test]
 async fn test_aptos_derivation_path() {
     // BIP44 path: m/44'/637'
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_aptos_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_aptos_address(&seed, 0).await;
     assert!(addr.starts_with("0x"), "Aptos uses 0x format");
 }
 
@@ -34,9 +34,9 @@ async fn test_aptos_signing_sha3() {
 
 #[tokio::test]
 async fn test_aptos_different_from_ethereum() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let eth_addr = derive_evm_address(seed, 0).await.unwrap();
-    let apt_addr = derive_aptos_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let eth_addr = derive_evm_address(&seed, 0).await.unwrap();
+    let apt_addr = derive_aptos_address(&seed, 0).await;
     
     // Both start with 0x but are different accounts
     assert_ne!(eth_addr, apt_addr, "Aptos and Ethereum are different blockchains");
@@ -46,8 +46,8 @@ async fn test_aptos_different_from_ethereum() {
 #[tokio::test]
 async fn test_sui_derivation_path() {
     // BIP44 path: m/44'/784'
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_sui_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_sui_address(&seed, 0).await;
     assert!(addr.starts_with("0x"), "Sui uses 0x format");
 }
 
@@ -69,8 +69,8 @@ async fn test_sui_signing_blake2b() {
 #[tokio::test]
 async fn test_ton_address_format() {
     // BIP44 path: m/44'/607'
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_ton_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_ton_address(&seed, 0).await;
     assert!(!addr.is_empty(), "TON has unique address format");
 }
 
@@ -90,8 +90,8 @@ async fn test_ton_has_21_coins() {
 #[tokio::test]
 async fn test_stellar_address_derivation() {
     // BIP44 path: m/44'/148'
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_stellar_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_stellar_address(&seed, 0).await;
     assert!(addr.starts_with("G"), "Stellar addresses start with G");
 }
 
@@ -104,8 +104,8 @@ async fn test_stellar_requires_memo() {
 // ===== CARDANO =====
 #[tokio::test]
 async fn test_cardano_address_derivation() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_cardano_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_cardano_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 
@@ -113,8 +113,8 @@ async fn test_cardano_address_derivation() {
 #[tokio::test]
 async fn test_polkadot_derivation_path() {
     // Substrate chains use special derivation
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_polkadot_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_polkadot_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 
@@ -127,8 +127,8 @@ async fn test_polkadot_requires_memo() {
 // ===== NEAR =====
 #[tokio::test]
 async fn test_near_address_format() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_near_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_near_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 
@@ -136,8 +136,8 @@ async fn test_near_address_format() {
 #[tokio::test]
 async fn test_cosmos_bech32_address() {
     // BIP44 path: m/44'/118'
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_cosmos_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_cosmos_address(&seed, 0).await;
     assert!(addr.starts_with("cosmos1"), "Cosmos uses bech32 format");
 }
 
@@ -145,8 +145,8 @@ async fn test_cosmos_bech32_address() {
 #[tokio::test]
 async fn test_algorand_address_derivation() {
     // BIP44 path: m/44'/283'
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_algorand_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_algorand_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 
@@ -159,24 +159,24 @@ async fn test_algorand_requires_memo() {
 // ===== ELROND (Velascan) =====
 #[tokio::test]
 async fn test_elrond_address_format() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_elrond_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_elrond_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 
 // ===== VECHAIN =====
 #[tokio::test]
 async fn test_vechain_address_format() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_vechain_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_vechain_address(&seed, 0).await;
     assert!(addr.starts_with("0x"), "VeChain uses 0x format but different signing");
 }
 
 // ===== ZILLIQA =====
 #[tokio::test]
 async fn test_zilliqa_address_format() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_zilliqa_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_zilliqa_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 

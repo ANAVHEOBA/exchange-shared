@@ -21,13 +21,13 @@ use std::time::Instant;
 #[tokio::test]
 async fn test_seed_phrase_consistency() {
     // Example BIP39 seed phrase (test vector)
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // Derive EVM key from seed
-    let evm_key_1 = derive_evm_key(seed_phrase).await.unwrap();
-    let evm_key_2 = derive_evm_key(seed_phrase).await.unwrap();
+    let evm_key_1 = derive_evm_key(&seed_phrase).await.unwrap();
+    let evm_key_2 = derive_evm_key(&seed_phrase).await.unwrap();
     
     let duration = start.elapsed();
     
@@ -47,18 +47,18 @@ async fn test_seed_phrase_consistency() {
 
 #[tokio::test]
 async fn test_different_derivation_paths() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // Index 0: m/44'/60'/0'/0/0
-    let address_0 = derive_evm_address(seed_phrase, 0).await.unwrap();
+    let address_0 = derive_evm_address(&seed_phrase, 0).await.unwrap();
     
     // Index 1: m/44'/60'/0'/0/1
-    let address_1 = derive_evm_address(seed_phrase, 1).await.unwrap();
+    let address_1 = derive_evm_address(&seed_phrase, 1).await.unwrap();
     
     // Index 2: m/44'/60'/0'/0/2
-    let address_2 = derive_evm_address(seed_phrase, 2).await.unwrap();
+    let address_2 = derive_evm_address(&seed_phrase, 2).await.unwrap();
     
     let duration = start.elapsed();
     
@@ -81,12 +81,12 @@ async fn test_different_derivation_paths() {
 
 #[tokio::test]
 async fn test_evm_chain_derivation_path() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // EVM path: m/44'/60'/0'/0/0
-    let eth_address = derive_evm_address(seed_phrase, 0).await.unwrap();
+    let eth_address = derive_evm_address(&seed_phrase, 0).await.unwrap();
     
     let duration = start.elapsed();
     
@@ -106,12 +106,12 @@ async fn test_evm_chain_derivation_path() {
 
 #[tokio::test]
 async fn test_bitcoin_derivation_path() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // BTC path: m/44'/0'/0'/0/0
-    let btc_address = derive_btc_address(seed_phrase, 0).await.unwrap();
+    let btc_address = derive_btc_address(&seed_phrase, 0).await.unwrap();
     
     let duration = start.elapsed();
     
@@ -131,12 +131,12 @@ async fn test_bitcoin_derivation_path() {
 
 #[tokio::test]
 async fn test_solana_derivation_path() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // Solana path: m/44'/501'/0'/0'/0'
-    let sol_address = derive_solana_address(seed_phrase, 0).await.unwrap();
+    let sol_address = derive_solana_address(&seed_phrase, 0).await.unwrap();
     
     let duration = start.elapsed();
     
@@ -154,12 +154,12 @@ async fn test_solana_derivation_path() {
 
 #[tokio::test]
 async fn test_sui_derivation_path() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // Sui path: m/44'/784'/0'/0'/0'
-    let sui_address = derive_sui_address(seed_phrase, 0).await.unwrap();
+    let sui_address = derive_sui_address(&seed_phrase, 0).await.unwrap();
     
     let duration = start.elapsed();
     
@@ -177,10 +177,10 @@ async fn test_sui_derivation_path() {
 
 #[tokio::test]
 async fn test_private_key_not_exposed() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     // Get address (should be safe)
-    let address = derive_evm_address(seed_phrase, 0).await.unwrap();
+    let address = derive_evm_address(&seed_phrase, 0).await.unwrap();
     assert!(!address.is_empty(), "Address should be provided");
     
     // Private key should NEVER be returned to caller
@@ -212,13 +212,13 @@ async fn test_invalid_seed_phrase_rejection() {
 #[tokio::test]
 async fn test_seed_phrase_word_count_validation() {
     // Too short (11 words)
-    let short_seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let short_result = derive_evm_address_safe(short_seed, 0).await;
+    let short_seed = "word ".repeat(10) + "about";
+    let short_result = derive_evm_address_safe(&short_seed, 0).await;
     assert!(short_result.is_err(), "11-word seed should be rejected");
     
     // Valid (12 words)
-    let valid_seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let valid_result = derive_evm_address_safe(valid_seed, 0).await;
+    let valid_seed = common::test_wallet_mnemonic();
+    let valid_result = derive_evm_address_safe(&valid_seed, 0).await;
     assert!(valid_result.is_ok(), "12-word seed should be valid");
     
     println!("✅ Seed phrase word count validation works");
@@ -231,14 +231,14 @@ async fn test_seed_phrase_word_count_validation() {
 
 #[tokio::test]
 async fn test_high_address_index_derivation() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let start = Instant::now();
     
     // Generate multiple addresses
     let mut addresses = vec![];
     for i in 0..100 {
-        let addr = derive_evm_address(seed_phrase, i).await.unwrap();
+        let addr = derive_evm_address(&seed_phrase, i).await.unwrap();
         addresses.push(addr);
     }
     
@@ -261,13 +261,13 @@ async fn test_high_address_index_derivation() {
 
 #[tokio::test]
 async fn test_signing_consistency() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     let message = "test message for signing";
     
     let start = Instant::now();
     
-    let signature_1 = sign_message_with_seed(seed_phrase, 0, message).await.unwrap();
-    let signature_2 = sign_message_with_seed(seed_phrase, 0, message).await.unwrap();
+    let signature_1 = sign_message_with_seed(&seed_phrase, 0, message).await.unwrap();
+    let signature_2 = sign_message_with_seed(&seed_phrase, 0, message).await.unwrap();
     
     let duration = start.elapsed();
     

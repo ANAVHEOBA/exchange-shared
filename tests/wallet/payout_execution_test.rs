@@ -87,7 +87,7 @@ async fn create_payout_ready_swap(db: &sqlx::Pool<sqlx::MySql>, swap_id: &str, r
 #[tokio::test]
 async fn test_commission_deduction_on_payout() {
     let ctx = TestContext::new().await;
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let crud = WalletCrud::new(ctx.db.clone());
     let mock_provider = Arc::new(MockProvider::new());
@@ -132,7 +132,7 @@ async fn test_commission_deduction_on_payout() {
 #[tokio::test]
 async fn test_payout_audit_trail() {
     let ctx = TestContext::new().await;
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let crud = WalletCrud::new(ctx.db.clone());
     let mock_provider = Arc::new(MockProvider::new());

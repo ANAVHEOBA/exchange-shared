@@ -38,10 +38,10 @@ async fn create_dummy_swap(db: &sqlx::Pool<sqlx::MySql>, swap_id: &str) {
 #[tokio::test]
 async fn test_unique_address_per_swap() {
     let ctx = TestContext::new().await;
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let crud = WalletCrud::new(ctx.db.clone());
-    let manager = WalletManager::new(crud, seed_phrase.to_string(), Arc::new(common::NoOpProvider));
+    let manager = WalletManager::new(crud, seed_phrase, Arc::new(common::NoOpProvider));
     
     let mut addresses = vec![];
     
@@ -83,10 +83,10 @@ async fn test_unique_address_per_swap() {
 #[tokio::test]
 async fn test_address_sequence_predictable() {
     let ctx = TestContext::new().await;
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let crud = WalletCrud::new(ctx.db.clone());
-    let manager = WalletManager::new(crud, seed_phrase.to_string(), Arc::new(common::NoOpProvider));
+    let manager = WalletManager::new(crud, seed_phrase, Arc::new(common::NoOpProvider));
     
     let swap_id_0 = Uuid::new_v4().to_string();
     let swap_id_1 = Uuid::new_v4().to_string();
@@ -127,10 +127,10 @@ async fn test_address_sequence_predictable() {
 #[tokio::test]
 async fn test_address_idempotency() {
     let ctx = TestContext::new().await;
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let crud = WalletCrud::new(ctx.db.clone());
-    let manager = WalletManager::new(crud, seed_phrase.to_string(), Arc::new(common::NoOpProvider));
+    let manager = WalletManager::new(crud, seed_phrase, Arc::new(common::NoOpProvider));
     
     let swap_id = Uuid::new_v4().to_string();
     create_dummy_swap(&ctx.db, &swap_id).await;
@@ -161,10 +161,10 @@ async fn test_address_idempotency() {
 #[tokio::test]
 async fn test_cross_chain_generation() {
     let ctx = TestContext::new().await;
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let crud = WalletCrud::new(ctx.db.clone());
-    let manager = WalletManager::new(crud, seed_phrase.to_string(), Arc::new(common::NoOpProvider));
+    let manager = WalletManager::new(crud, seed_phrase, Arc::new(common::NoOpProvider));
     
     let btc_swap = Uuid::new_v4().to_string();
     let eth_swap = Uuid::new_v4().to_string();

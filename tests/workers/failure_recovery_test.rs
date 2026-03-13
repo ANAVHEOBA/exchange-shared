@@ -16,7 +16,7 @@ use exchange_shared::modules::monitor::model::PollingState;
 async fn test_worker_lock_prevents_concurrency() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let master_seed = "abandon ".repeat(11) + "about";
+    let master_seed = crate::common::test_wallet_mnemonic();
     
     // 1. Try to manually acquire the Redis lock for this swap
     let lock_key = format!("lock:monitor:{}", swap_id);

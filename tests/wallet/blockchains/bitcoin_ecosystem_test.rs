@@ -9,22 +9,22 @@ mod common;
 // ===== BITCOIN MAINNET (BIP44 path: m/44'/0') =====
 #[tokio::test]
 async fn test_bitcoin_legacy_address() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_bitcoin_legacy(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_bitcoin_legacy(&seed, 0).await;
     assert!(addr.starts_with("1"), "Bitcoin legacy addresses start with 1");
 }
 
 #[tokio::test]
 async fn test_bitcoin_segwit_address() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_bitcoin_segwit(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_bitcoin_segwit(&seed, 0).await;
     assert!(addr.starts_with("3"), "Bitcoin P2SH addresses start with 3");
 }
 
 #[tokio::test]
 async fn test_bitcoin_native_segwit() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_bitcoin_native_segwit(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_bitcoin_native_segwit(&seed, 0).await;
     assert!(addr.starts_with("bc1"), "Bitcoin native segwit starts with bc1");
 }
 
@@ -40,8 +40,8 @@ async fn test_bitcoin_utxo_signing() {
 #[tokio::test]
 async fn test_brc20_address_derivation() {
     // BRC20 uses Bitcoin Taproot addresses (bc1p...)
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_bitcoin_taproot(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_bitcoin_taproot(&seed, 0).await;
     assert!(addr.starts_with("bc1p"), "BRC20 uses Taproot addresses");
 }
 
@@ -81,8 +81,8 @@ async fn test_lightning_fast_payments() {
 #[tokio::test]
 async fn test_stacks_address_derivation() {
     // Stacks runs on Bitcoin, uses m/44'/5757' BIP44 path
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_stacks_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_stacks_address(&seed, 0).await;
     assert!(!addr.is_empty());
 }
 
@@ -97,20 +97,20 @@ async fn test_stacks_requires_memo() {
 #[tokio::test]
 async fn test_rsk_address_format() {
     // RSK uses EVM-compatible addresses
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_rsk_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_rsk_address(&seed, 0).await;
     assert!(addr.starts_with("0x"));
 }
 
 // ===== Bitcoin Address Type Distribution Test =====
 #[tokio::test]
 async fn test_bitcoin_all_address_types() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = common::test_wallet_mnemonic();
     
-    let legacy = derive_bitcoin_legacy(seed, 0).await;
-    let segwit = derive_bitcoin_segwit(seed, 0).await;
-    let native = derive_bitcoin_native_segwit(seed, 0).await;
-    let taproot = derive_bitcoin_taproot(seed, 0).await;
+    let legacy = derive_bitcoin_legacy(&seed, 0).await;
+    let segwit = derive_bitcoin_segwit(&seed, 0).await;
+    let native = derive_bitcoin_native_segwit(&seed, 0).await;
+    let taproot = derive_bitcoin_taproot(&seed, 0).await;
     
     assert!(legacy.starts_with("1"));
     assert!(segwit.starts_with("3"));

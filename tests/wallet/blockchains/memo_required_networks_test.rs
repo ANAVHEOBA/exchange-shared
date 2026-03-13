@@ -9,8 +9,8 @@ mod common;
 // ===== XRP (RIPPLE) - Requires memo/tag =====
 #[tokio::test]
 async fn test_xrp_address_with_tag() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let addr = derive_xrp_address(seed, 0).await;
+    let seed = common::test_wallet_mnemonic();
+    let addr = derive_xrp_address(&seed, 0).await;
     let tag = generate_xrp_tag().await;
     
     assert!(!addr.is_empty());

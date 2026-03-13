@@ -14,11 +14,11 @@ mod common;
 
 #[tokio::test]
 async fn test_address_index_rotation() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
-    let addr_0 = derive_address(seed_phrase, 0, "ethereum").await;
-    let addr_1 = derive_address(seed_phrase, 1, "ethereum").await;
-    let addr_2 = derive_address(seed_phrase, 2, "ethereum").await;
+    let addr_0 = derive_address(&seed_phrase, 0, "ethereum").await;
+    let addr_1 = derive_address(&seed_phrase, 1, "ethereum").await;
+    let addr_2 = derive_address(&seed_phrase, 2, "ethereum").await;
     
     assert_ne!(addr_0, addr_1, "Index 0 and 1 should be different addresses");
     assert_ne!(addr_1, addr_2, "Index 1 and 2 should be different addresses");
@@ -34,7 +34,7 @@ async fn test_address_index_rotation() {
 
 #[tokio::test]
 async fn test_prevent_address_reuse() {
-    let _seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let _seed_phrase = common::test_wallet_mnemonic();
     
     let swaps = vec![
         SwapRecord { address_index: 0 },
@@ -55,7 +55,7 @@ async fn test_prevent_address_reuse() {
 
 #[tokio::test]
 async fn test_anonymity_score_calculation() {
-    let _seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let _seed_phrase = common::test_wallet_mnemonic();
     
     // Poor anonymity: 10 swaps with same address
     let poor_swaps = vec![

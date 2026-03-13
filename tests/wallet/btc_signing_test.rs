@@ -12,11 +12,11 @@ mod common;
 
 #[tokio::test]
 async fn test_sign_bitcoin_transaction() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let tx = BtcTransaction { };
     
-    let signature = sign_bitcoin_transaction(seed_phrase, 0, &tx).await;
+    let signature = sign_bitcoin_transaction(&seed_phrase, 0, &tx).await;
     
     assert!(!signature.is_empty(), "Bitcoin transaction should be signed");
     println!("✅ Bitcoin transaction signed");
@@ -29,11 +29,11 @@ async fn test_sign_bitcoin_transaction() {
 
 #[tokio::test]
 async fn test_bitcoin_utxo_signing() {
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = common::test_wallet_mnemonic();
     
     let utxo_tx = BtcUtxoTransaction { };
     
-    let signature = sign_bitcoin_utxo_transaction(seed_phrase, 0, &utxo_tx).await;
+    let signature = sign_bitcoin_utxo_transaction(&seed_phrase, 0, &utxo_tx).await;
     
     assert!(!signature.is_empty());
     println!("✅ Bitcoin UTXO transaction signed");

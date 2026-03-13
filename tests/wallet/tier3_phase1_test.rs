@@ -267,7 +267,7 @@ async fn test_invalid_seed_rejected() {
     let invalid_seeds = vec![
         "",
         "invalid",
-        "abandon abandon abandon",
+        "word word word",
         "12345 12345 12345",
     ];
     

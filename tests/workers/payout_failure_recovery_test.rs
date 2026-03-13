@@ -107,7 +107,7 @@ async fn test_payout_fails_without_retry() {
     
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
     
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(999)); // Always fail
     let crud = WalletCrud::new(ctx.db.clone());
     let wallet_manager = WalletManager::new(
@@ -156,7 +156,7 @@ async fn test_payout_succeeds_after_retry() {
     
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
     
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = crate::common::test_wallet_mnemonic();
     // Fail 2 times, then succeed on 3rd attempt
     let failing_provider = Arc::new(FailingBlockchainProvider::new(2));
     let crud = WalletCrud::new(ctx.db.clone());
@@ -208,7 +208,7 @@ async fn test_payout_fails_after_max_retries() {
     
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
     
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(999)); // Always fail
     let crud = WalletCrud::new(ctx.db.clone());
     let wallet_manager = WalletManager::new(
@@ -262,7 +262,7 @@ async fn test_exponential_backoff() {
     
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
     
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(2));
     let crud = WalletCrud::new(ctx.db.clone());
     let wallet_manager = WalletManager::new(
@@ -317,7 +317,7 @@ async fn test_error_logging() {
     
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
     
-    let seed_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(999));
     let crud = WalletCrud::new(ctx.db.clone());
     let wallet_manager = WalletManager::new(

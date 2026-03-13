@@ -10,7 +10,7 @@ mod common;
 // ===== BASE (Coinbase L2) =====
 #[tokio::test]
 async fn test_base_address_derivation() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = common::test_wallet_mnemonic();
     let addr = derive_evm_address(seed, 0, "base").await;
     assert!(addr.starts_with("0x"), "Base uses EVM format");
 }
@@ -36,7 +36,7 @@ async fn test_base_chain_id_in_signature() {
 // ===== OPTIMISM (Ethereum L2) =====
 #[tokio::test]
 async fn test_optimism_evm_compatibility() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = common::test_wallet_mnemonic();
     let eth_addr = derive_evm_address(seed, 0, "ethereum").await;
     let opt_addr = derive_evm_address(seed, 0, "optimism").await;
     
@@ -46,7 +46,7 @@ async fn test_optimism_evm_compatibility() {
 // ===== ZKSYNC (Zero-Knowledge Rollup) =====
 #[tokio::test]
 async fn test_zksync_evm_address() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = common::test_wallet_mnemonic();
     let addr = derive_evm_address(seed, 0, "zksync").await;
     assert!(addr.starts_with("0x"));
 }
@@ -126,7 +126,7 @@ async fn test_katana_gaming_l2() {
 // ===== Cross-L2 Test: Same Address on All =====
 #[tokio::test]
 async fn test_all_l2s_share_same_address() {
-    let seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = common::test_wallet_mnemonic();
     let l2s = vec!["base", "optimism", "arbitrum", "zksync", "linea", "scroll", "metis", "mode", "morph", "manta", "kakarot", "hyperevm", "katana"];
     
     let mut addrs = Vec::new();

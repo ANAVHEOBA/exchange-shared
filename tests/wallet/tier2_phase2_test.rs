@@ -3,9 +3,14 @@
 // Tezos, Algorand, Stellar, NEAR, Waves, Stacks, TON
 // =============================================================================
 
+#[path = "../common/mod.rs"]
+mod common;
+
 use exchange_shared::services::wallet::derivation::derive_address;
 
-const TEST_SEED: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+fn test_seed() -> String {
+    common::test_wallet_mnemonic()
+}
 
 // =============================================================================
 // TEZOS (XTZ) TESTS
@@ -13,7 +18,7 @@ const TEST_SEED: &str = "abandon abandon abandon abandon abandon abandon abandon
 
 #[tokio::test]
 async fn test_tezos_address_derivation() {
-    let addr = derive_address(TEST_SEED, "xtz", "tezos", 0)
+    let addr = derive_address(&test_seed(), "xtz", "tezos", 0)
         .await
         .expect("Failed to derive Tezos address");
 
@@ -25,10 +30,10 @@ async fn test_tezos_address_derivation() {
 
 #[tokio::test]
 async fn test_tezos_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "xtz", "tezos", 0)
+    let addr1 = derive_address(&test_seed(), "xtz", "tezos", 0)
         .await
         .expect("Failed to derive Tezos address");
-    let addr2 = derive_address(TEST_SEED, "xtz", "tezos", 0)
+    let addr2 = derive_address(&test_seed(), "xtz", "tezos", 0)
         .await
         .expect("Failed to derive Tezos address again");
 
@@ -38,10 +43,10 @@ async fn test_tezos_deterministic() {
 
 #[tokio::test]
 async fn test_tezos_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "xtz", "tezos", 0)
+    let addr0 = derive_address(&test_seed(), "xtz", "tezos", 0)
         .await
         .expect("Failed to derive Tezos address at index 0");
-    let addr1 = derive_address(TEST_SEED, "xtz", "tezos", 1)
+    let addr1 = derive_address(&test_seed(), "xtz", "tezos", 1)
         .await
         .expect("Failed to derive Tezos address at index 1");
 
