@@ -6,15 +6,13 @@
 use exchange_shared::services::wallet::derivation::derive_address;
 use std::collections::HashSet;
 
-const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
 // =========================================
 // BITCOIN-LIKE TESTS (Dash, Zcash, etc)
 // =========================================
 
 #[tokio::test]
 async fn test_dash_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "dash", "mainnet", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", 0).await;
     assert!(addr.is_ok(), "Failed to generate Dash address");
     let address = addr.unwrap();
     
@@ -29,7 +27,7 @@ async fn test_dash_address_generation() {
 
 #[tokio::test]
 async fn test_zcash_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "zec", "mainnet", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "zec", "mainnet", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -45,7 +43,7 @@ async fn test_zcash_address_generation() {
 
 #[tokio::test]
 async fn test_monacoin_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "mona", "mainnet", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "mona", "mainnet", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -59,12 +57,12 @@ async fn test_monacoin_address_generation() {
 
 #[tokio::test]
 async fn test_bitcoin_like_determinism() {
-    let dash1 = derive_address(TEST_MNEMONIC, "dash", "mainnet", 5).await.unwrap();
-    let dash2 = derive_address(TEST_MNEMONIC, "dash", "mainnet", 5).await.unwrap();
+    let dash1 = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", 5).await.unwrap();
+    let dash2 = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", 5).await.unwrap();
     assert_eq!(dash1, dash2, "Dash addresses must be deterministic");
     
-    let zec1 = derive_address(TEST_MNEMONIC, "zec", "mainnet", 7).await.unwrap();
-    let zec2 = derive_address(TEST_MNEMONIC, "zec", "mainnet", 7).await.unwrap();
+    let zec1 = derive_address(&crate::common::test_wallet_mnemonic(), "zec", "mainnet", 7).await.unwrap();
+    let zec2 = derive_address(&crate::common::test_wallet_mnemonic(), "zec", "mainnet", 7).await.unwrap();
     assert_eq!(zec1, zec2, "Zcash addresses must be deterministic");
 }
 
@@ -72,7 +70,7 @@ async fn test_bitcoin_like_determinism() {
 async fn test_bitcoin_like_uniqueness() {
     let mut dash_addrs = HashSet::new();
     for i in 0..10 {
-        let addr = derive_address(TEST_MNEMONIC, "dash", "mainnet", i)
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", i)
             .await
             .unwrap();
         assert!(dash_addrs.insert(addr), "Duplicate Dash address at index {}", i);
@@ -86,7 +84,7 @@ async fn test_bitcoin_like_uniqueness() {
 
 #[tokio::test]
 async fn test_osmosis_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "osmo", "osmosis", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -101,7 +99,7 @@ async fn test_osmosis_address_generation() {
 
 #[tokio::test]
 async fn test_juno_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "juno", "juno", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "juno", "juno", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -115,7 +113,7 @@ async fn test_juno_address_generation() {
 
 #[tokio::test]
 async fn test_akash_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "akt", "akash", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "akt", "akash", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -129,7 +127,7 @@ async fn test_akash_address_generation() {
 
 #[tokio::test]
 async fn test_cronos_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "cro", "cronos", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "cro", "cronos", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -142,7 +140,7 @@ async fn test_cronos_address_generation() {
 
 #[tokio::test]
 async fn test_injective_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "inj", "injective", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "inj", "injective", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     
@@ -155,12 +153,12 @@ async fn test_injective_address_generation() {
 
 #[tokio::test]
 async fn test_cosmos_like_determinism() {
-    let osmo1 = derive_address(TEST_MNEMONIC, "osmo", "osmosis", 3).await.unwrap();
-    let osmo2 = derive_address(TEST_MNEMONIC, "osmo", "osmosis", 3).await.unwrap();
+    let osmo1 = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", 3).await.unwrap();
+    let osmo2 = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", 3).await.unwrap();
     assert_eq!(osmo1, osmo2, "Osmosis addresses must be deterministic");
     
-    let juno1 = derive_address(TEST_MNEMONIC, "juno", "juno", 5).await.unwrap();
-    let juno2 = derive_address(TEST_MNEMONIC, "juno", "juno", 5).await.unwrap();
+    let juno1 = derive_address(&crate::common::test_wallet_mnemonic(), "juno", "juno", 5).await.unwrap();
+    let juno2 = derive_address(&crate::common::test_wallet_mnemonic(), "juno", "juno", 5).await.unwrap();
     assert_eq!(juno1, juno2, "Juno addresses must be deterministic");
 }
 
@@ -168,7 +166,7 @@ async fn test_cosmos_like_determinism() {
 async fn test_cosmos_like_uniqueness() {
     let mut osmo_addrs = HashSet::new();
     for i in 0..10 {
-        let addr = derive_address(TEST_MNEMONIC, "osmo", "osmosis", i)
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", i)
             .await
             .unwrap();
         assert!(osmo_addrs.insert(addr), "Duplicate Osmosis address at index {}", i);
@@ -182,7 +180,7 @@ async fn test_cosmos_like_uniqueness() {
 
 #[tokio::test]
 async fn test_kusama_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "ksm", "kusama", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "ksm", "kusama", 0).await;
     assert!(addr.is_ok(), "Failed to generate Kusama address");
     let address = addr.unwrap();
     
@@ -192,7 +190,7 @@ async fn test_kusama_address_generation() {
 
 #[tokio::test]
 async fn test_acala_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "aca", "acala", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "aca", "acala", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     assert!(address.len() > 45);
@@ -200,7 +198,7 @@ async fn test_acala_address_generation() {
 
 #[tokio::test]
 async fn test_astar_address_generation() {
-    let addr = derive_address(TEST_MNEMONIC, "astr", "astar", 0).await;
+    let addr = derive_address(&crate::common::test_wallet_mnemonic(), "astr", "astar", 0).await;
     assert!(addr.is_ok());
     let address = addr.unwrap();
     assert!(address.len() > 45);
@@ -208,12 +206,12 @@ async fn test_astar_address_generation() {
 
 #[tokio::test]
 async fn test_substrate_like_determinism() {
-    let ksm1 = derive_address(TEST_MNEMONIC, "ksm", "kusama", 2).await.unwrap();
-    let ksm2 = derive_address(TEST_MNEMONIC, "ksm", "kusama", 2).await.unwrap();
+    let ksm1 = derive_address(&crate::common::test_wallet_mnemonic(), "ksm", "kusama", 2).await.unwrap();
+    let ksm2 = derive_address(&crate::common::test_wallet_mnemonic(), "ksm", "kusama", 2).await.unwrap();
     assert_eq!(ksm1, ksm2, "Kusama addresses must be deterministic");
     
-    let aca1 = derive_address(TEST_MNEMONIC, "aca", "acala", 4).await.unwrap();
-    let aca2 = derive_address(TEST_MNEMONIC, "aca", "acala", 4).await.unwrap();
+    let aca1 = derive_address(&crate::common::test_wallet_mnemonic(), "aca", "acala", 4).await.unwrap();
+    let aca2 = derive_address(&crate::common::test_wallet_mnemonic(), "aca", "acala", 4).await.unwrap();
     assert_eq!(aca1, aca2, "Acala addresses must be deterministic");
 }
 
@@ -221,7 +219,7 @@ async fn test_substrate_like_determinism() {
 async fn test_substrate_like_uniqueness() {
     let mut ksm_addrs = HashSet::new();
     for i in 0..10 {
-        let addr = derive_address(TEST_MNEMONIC, "ksm", "kusama", i)
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), "ksm", "kusama", i)
             .await
             .unwrap();
         assert!(ksm_addrs.insert(addr), "Duplicate Kusama address at index {}", i);
@@ -235,10 +233,10 @@ async fn test_substrate_like_uniqueness() {
 
 #[tokio::test]
 async fn test_all_tier3_different_networks() {
-    let dash = derive_address(TEST_MNEMONIC, "dash", "mainnet", 0).await.unwrap();
-    let zec = derive_address(TEST_MNEMONIC, "zec", "mainnet", 0).await.unwrap();
-    let osmo = derive_address(TEST_MNEMONIC, "osmo", "osmosis", 0).await.unwrap();
-    let ksm = derive_address(TEST_MNEMONIC, "ksm", "kusama", 0).await.unwrap();
+    let dash = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", 0).await.unwrap();
+    let zec = derive_address(&crate::common::test_wallet_mnemonic(), "zec", "mainnet", 0).await.unwrap();
+    let osmo = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", 0).await.unwrap();
+    let ksm = derive_address(&crate::common::test_wallet_mnemonic(), "ksm", "kusama", 0).await.unwrap();
     
     assert_ne!(dash, zec, "Dash and Zcash must have different addresses");
     assert_ne!(dash, osmo, "Dash and Osmosis must have different addresses");
@@ -249,14 +247,14 @@ async fn test_all_tier3_different_networks() {
 #[tokio::test]
 async fn test_tier3_no_collisions_with_tier1_tier2() {
     // Tier 1
-    let ada = derive_address(TEST_MNEMONIC, "ada", "cardano", 0).await.unwrap();
+    let ada = derive_address(&crate::common::test_wallet_mnemonic(), "ada", "cardano", 0).await.unwrap();
     
     // Tier 2 Phase 1
-    let ltc = derive_address(TEST_MNEMONIC, "ltc", "litecoin", 0).await.unwrap();
+    let ltc = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", 0).await.unwrap();
     
     // Tier 3
-    let dash = derive_address(TEST_MNEMONIC, "dash", "mainnet", 0).await.unwrap();
-    let osmo = derive_address(TEST_MNEMONIC, "osmo", "osmosis", 0).await.unwrap();
+    let dash = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", 0).await.unwrap();
+    let osmo = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", 0).await.unwrap();
     
     assert_ne!(ada, ltc, "Tier 1 and Tier 2 collision");
     assert_ne!(ada, dash, "Tier 1 and Tier 3 Bitcoin-like collision");
@@ -285,17 +283,17 @@ async fn test_performance_tier3_addresses() {
     
     // 10 Dash addresses
     for i in 0..10 {
-        let _ = derive_address(TEST_MNEMONIC, "dash", "mainnet", i).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "dash", "mainnet", i).await;
     }
     
     // 10 Osmosis addresses
     for i in 0..10 {
-        let _ = derive_address(TEST_MNEMONIC, "osmo", "osmosis", i).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "osmo", "osmosis", i).await;
     }
     
     // 10 Kusama addresses
     for i in 0..10 {
-        let _ = derive_address(TEST_MNEMONIC, "ksm", "kusama", i).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "ksm", "kusama", i).await;
     }
     
     let elapsed = start.elapsed();
@@ -323,7 +321,7 @@ async fn test_all_bitcoinlike_networks() {
     ];
     
     for (ticker, network) in networks {
-        let addr = derive_address(TEST_MNEMONIC, ticker, network, 0).await;
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), ticker, network, 0).await;
         assert!(addr.is_ok(), "Failed for {} on {}", ticker, network);
     }
 }
@@ -347,7 +345,7 @@ async fn test_all_cosmoslike_networks() {
     ];
     
     for (ticker, network) in networks {
-        let addr = derive_address(TEST_MNEMONIC, ticker, network, 0).await;
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), ticker, network, 0).await;
         assert!(addr.is_ok(), "Failed for {} on {}", ticker, network);
     }
 }
@@ -363,7 +361,7 @@ async fn test_all_substratelike_networks() {
     ];
     
     for (ticker, network) in networks {
-        let addr = derive_address(TEST_MNEMONIC, ticker, network, 0).await;
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), ticker, network, 0).await;
         assert!(addr.is_ok(), "Failed for {} on {}", ticker, network);
     }
 }

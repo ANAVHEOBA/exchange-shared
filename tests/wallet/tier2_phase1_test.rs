@@ -6,16 +6,13 @@
 use exchange_shared::services::wallet::derivation::derive_address;
 use std::collections::HashSet;
 
-// Test vectors from official sources
-const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
 // =========================================
 // LITECOIN TESTS
 // =========================================
 
 #[tokio::test]
 async fn test_litecoin_address_generation() {
-    let result = derive_address(TEST_MNEMONIC, "ltc", "litecoin", 0).await;
+    let result = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", 0).await;
     assert!(result.is_ok(), "Failed to generate Litecoin address");
     
     let address = result.unwrap();
@@ -46,11 +43,11 @@ async fn test_litecoin_address_generation() {
 
 #[tokio::test]
 async fn test_litecoin_determinism() {
-    let addr1 = derive_address(TEST_MNEMONIC, "ltc", "litecoin", 5)
+    let addr1 = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", 5)
         .await
         .expect("Failed to derive address 1");
     
-    let addr2 = derive_address(TEST_MNEMONIC, "ltc", "litecoin", 5)
+    let addr2 = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", 5)
         .await
         .expect("Failed to derive address 2");
     
@@ -65,7 +62,7 @@ async fn test_litecoin_uniqueness_per_index() {
     let mut addresses = HashSet::new();
     
     for i in 0..10 {
-        let addr = derive_address(TEST_MNEMONIC, "ltc", "litecoin", i)
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", i)
             .await
             .expect(&format!("Failed to derive Litecoin address at index {}", i));
         
@@ -86,11 +83,11 @@ async fn test_litecoin_uniqueness_per_index() {
 
 #[tokio::test]
 async fn test_litecoin_dispatcher_aliases() {
-    let addr_ltc = derive_address(TEST_MNEMONIC, "ltc", "litecoin", 3)
+    let addr_ltc = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", 3)
         .await
         .expect("Failed with 'ltc' ticker");
     
-    let addr_litecoin = derive_address(TEST_MNEMONIC, "litecoin", "litecoin", 3)
+    let addr_litecoin = derive_address(&crate::common::test_wallet_mnemonic(), "litecoin", "litecoin", 3)
         .await
         .expect("Failed with 'litecoin' ticker");
     
@@ -106,7 +103,7 @@ async fn test_litecoin_dispatcher_aliases() {
 
 #[tokio::test]
 async fn test_dogecoin_address_generation() {
-    let result = derive_address(TEST_MNEMONIC, "doge", "dogecoin", 0).await;
+    let result = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", 0).await;
     assert!(result.is_ok(), "Failed to generate Dogecoin address");
     
     let address = result.unwrap();
@@ -137,11 +134,11 @@ async fn test_dogecoin_address_generation() {
 
 #[tokio::test]
 async fn test_dogecoin_determinism() {
-    let addr1 = derive_address(TEST_MNEMONIC, "doge", "dogecoin", 7)
+    let addr1 = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", 7)
         .await
         .expect("Failed to derive address 1");
     
-    let addr2 = derive_address(TEST_MNEMONIC, "doge", "dogecoin", 7)
+    let addr2 = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", 7)
         .await
         .expect("Failed to derive address 2");
     
@@ -156,7 +153,7 @@ async fn test_dogecoin_uniqueness_per_index() {
     let mut addresses = HashSet::new();
     
     for i in 0..10 {
-        let addr = derive_address(TEST_MNEMONIC, "doge", "dogecoin", i)
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", i)
             .await
             .expect(&format!("Failed to derive Dogecoin address at index {}", i));
         
@@ -177,11 +174,11 @@ async fn test_dogecoin_uniqueness_per_index() {
 
 #[tokio::test]
 async fn test_dogecoin_dispatcher_aliases() {
-    let addr_doge = derive_address(TEST_MNEMONIC, "doge", "dogecoin", 2)
+    let addr_doge = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", 2)
         .await
         .expect("Failed with 'doge' ticker");
     
-    let addr_dogecoin = derive_address(TEST_MNEMONIC, "dogecoin", "dogecoin", 2)
+    let addr_dogecoin = derive_address(&crate::common::test_wallet_mnemonic(), "dogecoin", "dogecoin", 2)
         .await
         .expect("Failed with 'dogecoin' ticker");
     
@@ -197,7 +194,7 @@ async fn test_dogecoin_dispatcher_aliases() {
 
 #[tokio::test]
 async fn test_bitcoin_cash_address_generation() {
-    let result = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", 0).await;
+    let result = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", 0).await;
     assert!(result.is_ok(), "Failed to generate Bitcoin Cash address");
     
     let address = result.unwrap();
@@ -229,11 +226,11 @@ async fn test_bitcoin_cash_address_generation() {
 
 #[tokio::test]
 async fn test_bitcoin_cash_determinism() {
-    let addr1 = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", 4)
+    let addr1 = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", 4)
         .await
         .expect("Failed to derive address 1");
     
-    let addr2 = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", 4)
+    let addr2 = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", 4)
         .await
         .expect("Failed to derive address 2");
     
@@ -248,7 +245,7 @@ async fn test_bitcoin_cash_uniqueness_per_index() {
     let mut addresses = HashSet::new();
     
     for i in 0..10 {
-        let addr = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", i)
+        let addr = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", i)
             .await
             .expect(&format!("Failed to derive Bitcoin Cash address at index {}", i));
         
@@ -269,11 +266,11 @@ async fn test_bitcoin_cash_uniqueness_per_index() {
 
 #[tokio::test]
 async fn test_bitcoin_cash_dispatcher_aliases() {
-    let addr_bch = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", 1)
+    let addr_bch = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", 1)
         .await
         .expect("Failed with 'bch' ticker");
     
-    let addr_bitcoincash = derive_address(TEST_MNEMONIC, "bitcoin_cash", "bitcoin_cash", 1)
+    let addr_bitcoincash = derive_address(&crate::common::test_wallet_mnemonic(), "bitcoin_cash", "bitcoin_cash", 1)
         .await
         .expect("Failed with 'bitcoin_cash' ticker");
     
@@ -289,15 +286,15 @@ async fn test_bitcoin_cash_dispatcher_aliases() {
 
 #[tokio::test]
 async fn test_tier2_addresses_different_from_each_other() {
-    let ltc = derive_address(TEST_MNEMONIC, "ltc", "litecoin", 0)
+    let ltc = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", 0)
         .await
         .expect("Failed to generate LTC address");
     
-    let doge = derive_address(TEST_MNEMONIC, "doge", "dogecoin", 0)
+    let doge = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", 0)
         .await
         .expect("Failed to generate DOGE address");
     
-    let bch = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", 0)
+    let bch = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", 0)
         .await
         .expect("Failed to generate BCH address");
     
@@ -339,16 +336,16 @@ async fn test_performance_100_addresses_under_7_seconds() {
     let start = std::time::Instant::now();
     
     for i in 0..25 {
-        let _ = derive_address(TEST_MNEMONIC, "ltc", "litecoin", i).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", i).await;
     }
     for i in 0..25 {
-        let _ = derive_address(TEST_MNEMONIC, "doge", "dogecoin", i).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "doge", "dogecoin", i).await;
     }
     for i in 0..25 {
-        let _ = derive_address(TEST_MNEMONIC, "bch", "bitcoin_cash", i).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "bch", "bitcoin_cash", i).await;
     }
     for i in 0..25 {
-        let _ = derive_address(TEST_MNEMONIC, "ltc", "litecoin", i + 100).await;
+        let _ = derive_address(&crate::common::test_wallet_mnemonic(), "ltc", "litecoin", i + 100).await;
     }
     
     let elapsed = start.elapsed();
