@@ -11,15 +11,32 @@ impl WalletCrud {
         Self { pool }
     }
 
-    /// Get the next available address index by finding the maximum index used
+    /// Get the next available address index atomically using a database sequence
+    /// This prevents race conditions when multiple swaps are created simultaneously
     pub async fn get_next_index(&self) -> Result<u32, sqlx::Error> {
-        let result: (Option<u32>,) = sqlx::query_as(
-            "SELECT MAX(address_index) FROM swap_address_info"
+        // Use a transaction with SELECT FOR UPDATE to lock the row
+        let mut tx = self.pool.begin().await?;
+        
+        // Lock the row and get current value
+        let current: (u32,) = sqlx::query_as(
+            "SELECT next_index FROM address_index_counter WHERE id = 1 FOR UPDATE"
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
-
-        Ok(result.0.map(|idx| idx + 1).unwrap_or(0))
+        
+        let next_index = current.0 + 1;
+        
+        // Update to the new value
+        sqlx::query(
+            "UPDATE address_index_counter SET next_index = ? WHERE id = 1"
+        )
+        .bind(next_index)
+        .execute(&mut *tx)
+        .await?;
+        
+        tx.commit().await?;
+        
+        Ok(next_index)
     }
 
     /// Save address information for a swap

@@ -11,6 +11,7 @@ pub mod priority_blockchains_test;
 pub mod tier2_phase1_test;
 pub mod tier2_phase2_test;
 pub mod tier3_phase1_test;
+pub mod concurrent_address_generation_test;
 
 // Comprehensive blockchain coverage (129 blockchains)
 pub mod blockchains;
