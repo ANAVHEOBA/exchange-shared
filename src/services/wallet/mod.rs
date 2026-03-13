@@ -4,6 +4,7 @@ pub mod manager;
 pub mod rpc;
 pub mod bitcoin_rpc;
 pub mod solana_rpc;
+pub mod rest_rpc;
 pub mod blockchains;
 
 pub use derivation::*;

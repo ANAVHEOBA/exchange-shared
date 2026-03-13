@@ -88,6 +88,59 @@ impl SigningService {
         
         Ok(hex::encode(sig.serialize_der()))
     }
+
+    /// Sign a UTXO transaction (Dash, Dogecoin, Zcash)
+    /// Core logic is similar to Bitcoin ECDSA but with different sighash handling
+    pub fn sign_utxo_transaction(
+        private_key_hex: &str,
+        sighash_hex: &str,
+    ) -> Result<String, String> {
+        // Reuse BTC logic as the fundamental signing (ECDSA on Secp256k1) is identical
+        Self::sign_btc_transaction(private_key_hex, sighash_hex)
+    }
+
+    /// Sign a Cosmos transaction (Osmosis, Juno, etc.)
+    /// Uses Secp256k1 and produces a signature for the Doc object
+    pub fn sign_cosmos_transaction(
+        private_key_hex: &str,
+        sign_doc_hex: &str,
+    ) -> Result<String, String> {
+        let secp = Secp256k1::new();
+        let clean_key = private_key_hex.trim_start_matches("0x");
+        let secret_key = SecretKey::from_str(clean_key).map_err(|e| e.to_string())?;
+        
+        // Cosmos signs the SHA256 of the sign doc
+        let doc_bytes = hex::decode(sign_doc_hex).map_err(|e| e.to_string())?;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&doc_bytes);
+        let hash = hasher.finalize();
+        
+        let message = Message::from_digest_slice(&hash).map_err(|e| e.to_string())?;
+        let sig = secp.sign_ecdsa(&message, &secret_key);
+        
+        // Cosmos expects the compact 64-byte signature [r, s]
+        let sig_bytes = sig.serialize_compact();
+        Ok(hex::encode(sig_bytes))
+    }
+
+    /// Sign a Substrate transaction (Polkadot, Kusama)
+    /// Uses Ed25519 (or Sr25519, but Ed25519 is standard for many implementations)
+    pub fn sign_substrate_transaction(
+        private_key_hex: &str,
+        message_hex: &str,
+    ) -> Result<String, String> {
+        // Reuse Solana logic as the fundamental signing (Ed25519) is identical
+        Self::sign_solana_transaction(private_key_hex, message_hex)
+    }
+
+    /// Sign an Algorand/NEAR/TON transaction
+    /// All use Ed25519 signatures
+    pub fn sign_ed25519_transaction(
+        private_key_hex: &str,
+        message_hex: &str,
+    ) -> Result<String, String> {
+        Self::sign_solana_transaction(private_key_hex, message_hex)
+    }
 }
 
 // =============================================================================

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use sqlx::{MySql, Pool};
@@ -12,7 +11,7 @@ use crate::config::RpcProviderConfig;
 /// This is the optimal approach - detects funds immediately without polling Trocador
 pub struct BlockchainListener {
     db: Pool<MySql>,
-    providers: HashMap<String, Arc<dyn BlockchainProvider>>,
+    rpc_config: RpcProviderConfig,
     check_interval: Duration,
     wallet_mnemonic: Option<String>,
 }
@@ -22,11 +21,10 @@ impl BlockchainListener {
     pub fn new(db: Pool<MySql>) -> Self {
         // Load RPC providers from centralized config
         let rpc_config = RpcProviderConfig::from_env();
-        let providers = rpc_config.get_all_providers().clone();
         
         Self {
             db,
-            providers,
+            rpc_config,
             check_interval: Duration::from_secs(30), // Check every 30 seconds
             wallet_mnemonic: None,
         }
@@ -135,91 +133,7 @@ impl BlockchainListener {
     
     /// Get RPC provider for a specific network
     fn get_provider_for_network(&self, network: &str) -> Option<Arc<dyn BlockchainProvider>> {
-        let normalized = network.to_lowercase();
-        
-        // Try exact match first
-        if let Some(provider) = self.providers.get(&normalized) {
-            return Some(provider.clone());
-        }
-        
-        // Try common aliases and variations
-        let provider_key = match normalized.as_str() {
-            // Ethereum aliases
-            "erc20" | "eth" | "mainnet" => "ethereum",
-            
-            // Polygon aliases
-            "matic" | "pos" => "polygon",
-            
-            // BSC aliases
-            "bnb" | "bep20" | "binance" | "smartchain" => "bsc",
-            
-            // Arbitrum aliases
-            "arb" | "arbitrum one" | "arbitrumone" => "arbitrum",
-            
-            // Optimism aliases
-            "op" | "optimistic" => "optimism",
-            
-            // Avalanche aliases
-            "avax" | "avalanche c-chain" | "cchain" => "avalanche",
-            
-            // Base aliases
-            "base mainnet" | "coinbase" => "base",
-            
-            // Fantom aliases
-            "ftm" | "opera" => "fantom",
-            
-            // Gnosis aliases
-            "xdai" | "gno" => "gnosis",
-            
-            // Cronos aliases
-            "cro" => "cronos",
-            
-            // Moonbeam aliases
-            "glmr" => "moonbeam",
-            
-            // Moonriver aliases
-            "movr" => "moonriver",
-            
-            // Celo aliases
-            "celo mainnet" => "celo",
-            
-            // Aurora aliases
-            "aurora mainnet" | "near" => "aurora",
-            
-            // Harmony aliases
-            "one" | "harmony one" => "harmony",
-            
-            // Metis aliases
-            "metis andromeda" => "metis",
-            
-            // zkSync aliases
-            "zksync era" | "zks" => "zksync",
-            
-            // Linea aliases
-            "linea mainnet" => "linea",
-            
-            // Scroll aliases
-            "scroll mainnet" => "scroll",
-            
-            // Mantle aliases
-            "mnt" => "mantle",
-            
-            // Blast aliases
-            "blast mainnet" => "blast",
-            
-            // Mode aliases
-            "mode mainnet" => "mode",
-            
-            // Manta aliases
-            "manta pacific" | "manta mainnet" => "manta",
-            
-            _ => {
-                tracing::debug!("No RPC provider found for network: {}", network);
-                return None;
-            }
-        };
-        
-        self.providers.get(provider_key).cloned()
+        self.rpc_config.get_provider(network)
     }
     
     /// Trigger payout by updating swap status and executing the payout
@@ -361,7 +275,7 @@ impl BlockchainListener {
         Ok(ListenerStats {
             total_pending: total_pending as u64,
             oldest_pending,
-            active_chains: self.providers.len(),
+            active_chains: self.rpc_config.provider_count(),
         })
     }
 }

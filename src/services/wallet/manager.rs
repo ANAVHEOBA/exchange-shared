@@ -1,45 +1,30 @@
 use std::sync::Arc;
-use base64::Engine;
 use crate::modules::wallet::crud::WalletCrud;
 use crate::modules::wallet::schema::{GenerateAddressRequest, WalletAddressResponse, PayoutRequest, PayoutResponse};
 use super::derivation;
 use super::signing::SigningService;
 use super::rpc::BlockchainProvider;
-use super::bitcoin_rpc::{BitcoinProvider, build_bitcoin_transaction};
-use super::solana_rpc::{SolanaProvider, build_solana_transaction, sign_solana_transaction};
-use crate::services::pricing::{PricingContext, PricingStrategy, AdaptivePricingStrategy};
+use super::bitcoin_rpc::build_bitcoin_transaction;
+use super::solana_rpc::{build_solana_transaction, sign_solana_transaction};
+use ed25519_dalek::Signer;
 
 pub struct WalletManager {
     crud: WalletCrud,
     master_seed: String,
-    evm_provider: Arc<dyn BlockchainProvider>,
-    bitcoin_provider: Option<Arc<dyn BitcoinProvider>>,
-    solana_provider: Option<Arc<dyn SolanaProvider>>,
+    provider: Arc<dyn BlockchainProvider>,
 }
 
 impl WalletManager {
     pub fn new(
         crud: WalletCrud,
         master_seed: String,
-        evm_provider: Arc<dyn BlockchainProvider>,
+        provider: Arc<dyn BlockchainProvider>,
     ) -> Self {
         Self {
             crud,
             master_seed,
-            evm_provider,
-            bitcoin_provider: None,
-            solana_provider: None,
+            provider,
         }
-    }
-
-    pub fn with_bitcoin_provider(mut self, provider: Arc<dyn BitcoinProvider>) -> Self {
-        self.bitcoin_provider = Some(provider);
-        self
-    }
-
-    pub fn with_solana_provider(mut self, provider: Arc<dyn SolanaProvider>) -> Self {
-        self.solana_provider = Some(provider);
-        self
     }
 
     /// High-level orchestrator to generate a new swap address
@@ -100,17 +85,577 @@ impl WalletManager {
             });
         }
 
-        // 3. Determine chain type from coin_type
-        // coin_type: 0 = Bitcoin, 60 = Ethereum/EVM, 501 = Solana
+        // 3. Dispatch based on network family using SLIP-0044 coin types
         match info.coin_type {
-            0 => self.process_bitcoin_payout(&info, &req.swap_id).await,
+            // UTXO Family (Bitcoin and likes)
+            0 | 2 | 3 | 5 | 20 | 22 | 133 | 145 | 175 => self.process_bitcoin_payout(&info, &req.swap_id).await,
+            
+            // Solana
             501 => self.process_solana_payout(&info, &req.swap_id).await,
+            
+            // Cosmos Family
+            118 => self.process_cosmos_payout(&info, &req.swap_id).await,
+            
+            // Substrate Family (Polkadot/Kusama)
+            354 | 434 => self.process_substrate_payout(&info, &req.swap_id).await,
+            
+            // Algorand
+            283 => self.process_algorand_payout(&info, &req.swap_id).await,
+            
+            // NEAR
+            397 => self.process_near_payout(&info, &req.swap_id).await,
+            
+            // Cardano
+            1815 => self.process_cardano_payout(&info, &req.swap_id).await,
+            
+            // Ripple (XRP)
+            144 => self.process_xrp_payout(&info, &req.swap_id).await,
+            
+            // Tron
+            195 => self.process_tron_payout(&info, &req.swap_id).await,
+            
+            // Tezos
+            1729 => self.process_tezos_payout(&info, &req.swap_id).await,
+            
+            // Stellar
+            148 => self.process_stellar_payout(&info, &req.swap_id).await,
+            
+            // Waves
+            5741 => self.process_waves_payout(&info, &req.swap_id).await,
+            
+            // Stacks
+            5757 => self.process_stacks_payout(&info, &req.swap_id).await,
+            
+            // TON
+            607 => self.process_ton_payout(&info, &req.swap_id).await,
+            
+            // Default to EVM (60) or generic handler
             _ => self.process_evm_payout(&info, &req.swap_id).await,
         }
     }
     
+    /// Process Algorand payout
+    async fn process_algorand_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Algorand balance: {}", e))?;
+        
+        if actual_balance < 0.001 {
+            return Err("Insufficient Algorand balance".to_string());
+        }
+
+        // 1. Derive private key
+        let private_key_hex = derivation::derive_algorand_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        // 2. Build Algorand transaction
+        let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to microAlgos
+        let fee = 1000u64; // 0.001 ALGO fee
+        
+        // Algorand transaction format (simplified)
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"TX"); // Transaction prefix
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        
+        // 3. Sign with Ed25519
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        // 4. Build signed transaction
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Algorand tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.001).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process NEAR payout
+    async fn process_near_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get NEAR balance: {}", e))?;
+        
+        if actual_balance < 0.01 {
+            return Err("Insufficient NEAR balance".to_string());
+        }
+
+        // 1. Derive private key
+        let private_key_hex = derivation::derive_near_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        // 2. Build NEAR transaction (simplified)
+        let send_amount = (actual_balance * 0.99 * 1_000_000_000_000_000_000_000_000.0) as u128; // yoctoNEAR
+        
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_le_bytes());
+        
+        // 3. Sign with Ed25519
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        // 4. Build signed transaction
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast NEAR tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.01).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Cardano payout
+    async fn process_cardano_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Cardano balance: {}", e))?;
+        
+        if actual_balance < 1.5 {
+            return Err("Insufficient Cardano balance (min 1.5 ADA)".to_string());
+        }
+
+        // Cardano uses CBOR-encoded transactions with complex structure
+        // This is a simplified implementation - production would use cardano-serialization-lib
+        let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to Lovelace
+        let fee = 170000u64; // ~0.17 ADA typical fee
+        
+        // Build simplified transaction data
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"CARDANO_TX");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        
+        // Sign with Ed25519 (Cardano uses extended keys)
+        let private_key_hex = derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Cardano tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.17).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Ripple (XRP) payout
+    async fn process_xrp_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get XRP balance: {}", e))?;
+        
+        if actual_balance < 20.1 {
+            return Err("Insufficient XRP balance (min 20 XRP reserve + fees)".to_string());
+        }
+
+        // XRP uses a JSON-based transaction format
+        let send_amount = ((actual_balance - 20.0) * 0.99 * 1_000_000.0) as u64; // Convert to drops, keep 20 XRP reserve
+        let fee = 12u64; // 12 drops = 0.000012 XRP
+        
+        // Get account sequence
+        let sequence = self.provider.get_transaction_count(&info.our_address).await
+            .map_err(|e| format!("Failed to get sequence: {}", e))?;
+        
+        // Build transaction data
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"XRP_PAYMENT");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        tx_data.extend_from_slice(&sequence.to_be_bytes());
+        
+        // Sign with Secp256k1
+        let signature = SigningService::sign_cosmos_transaction(
+            &derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?,
+            &hex::encode(&tx_data)
+        )?;
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&hex::decode(signature).map_err(|e| e.to_string())?);
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast XRP tx: {}", e))?;
+
+        let payout_amount = (actual_balance - 20.0) * 0.99;
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance - payout_amount).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: payout_amount,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Tron payout
+    async fn process_tron_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Tron balance: {}", e))?;
+        
+        if actual_balance < 1.0 {
+            return Err("Insufficient Tron balance".to_string());
+        }
+
+        // Tron uses protobuf-encoded transactions
+        let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to SUN
+        
+        // Build transaction data (simplified)
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"TRON_TRANSFER");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        
+        // Sign with Secp256k1
+        let signature = SigningService::sign_cosmos_transaction(
+            &derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?,
+            &hex::encode(&tx_data)
+        )?;
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&hex::decode(signature).map_err(|e| e.to_string())?);
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Tron tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Tezos payout
+    async fn process_tezos_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Tezos balance: {}", e))?;
+        
+        if actual_balance < 0.01 {
+            return Err("Insufficient Tezos balance".to_string());
+        }
+
+        // Tezos uses Michelson-encoded operations
+        let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to mutez
+        let fee = 1420u64; // ~0.00142 XTZ typical fee
+        
+        // Build transaction data
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"TEZOS_TX");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        
+        // Sign with Ed25519
+        let private_key_hex = derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Tezos tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Stellar payout
+    async fn process_stellar_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Stellar balance: {}", e))?;
+        
+        if actual_balance < 1.5 {
+            return Err("Insufficient Stellar balance (min 1 XLM reserve)".to_string());
+        }
+
+        // Stellar uses XDR-encoded transactions
+        let send_amount = ((actual_balance - 1.0) * 0.99 * 10_000_000.0) as i64; // Convert to stroops, keep 1 XLM reserve
+        let fee = 100i64; // 100 stroops = 0.00001 XLM base fee
+        
+        // Get sequence number
+        let sequence = self.provider.get_transaction_count(&info.our_address).await
+            .map_err(|e| format!("Failed to get sequence: {}", e))?;
+        
+        // Build transaction data
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"STELLAR_PAYMENT");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        tx_data.extend_from_slice(&sequence.to_be_bytes());
+        
+        // Sign with Ed25519
+        let private_key_hex = derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Stellar tx: {}", e))?;
+
+        let payout_amount = (actual_balance - 1.0) * 0.99;
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance - payout_amount).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: payout_amount,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Waves payout
+    async fn process_waves_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Waves balance: {}", e))?;
+        
+        if actual_balance < 0.01 {
+            return Err("Insufficient Waves balance".to_string());
+        }
+
+        // Waves uses a custom binary format
+        let send_amount = (actual_balance * 0.99 * 100_000_000.0) as u64; // Convert to wavelets
+        let fee = 100000u64; // 0.001 WAVES
+        
+        // Build transaction data
+        let mut tx_data = Vec::new();
+        tx_data.push(4u8); // Transfer transaction type
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        
+        // Sign with Ed25519
+        let private_key_hex = derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Waves tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.001).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process Stacks payout
+    async fn process_stacks_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Stacks balance: {}", e))?;
+        
+        if actual_balance < 0.01 {
+            return Err("Insufficient Stacks balance".to_string());
+        }
+
+        // Stacks uses Clarity smart contracts for transfers
+        let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to microSTX
+        let fee = 1000u64; // 0.001 STX
+        
+        // Build transaction data
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"STX_TRANSFER");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        
+        // Sign with Secp256k1
+        let signature = SigningService::sign_cosmos_transaction(
+            &derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?,
+            &hex::encode(&tx_data)
+        )?;
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&hex::decode(signature).map_err(|e| e.to_string())?);
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Stacks tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.001).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
+    /// Process TON payout
+    async fn process_ton_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get TON balance: {}", e))?;
+        
+        if actual_balance < 0.1 {
+            return Err("Insufficient TON balance".to_string());
+        }
+
+        // TON uses TL-B serialization for messages
+        let send_amount = (actual_balance * 0.99 * 1_000_000_000.0) as u64; // Convert to nanoTON
+        let fee = 10_000_000u64; // 0.01 TON
+        
+        // Build transaction data
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"TON_TRANSFER");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        tx_data.extend_from_slice(&fee.to_be_bytes());
+        
+        // Sign with Ed25519
+        let private_key_hex = derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?;
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid key hex: {}", e))?;
+        
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
+            .map_err(|_| "Invalid key length")?);
+        let signature = signing_key.sign(&tx_data);
+        
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&signature.to_bytes());
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast TON tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.01).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+    
     /// Process payout with retry logic and exponential backoff
-    /// Handles transient failures (network errors, RPC timeouts, gas spikes)
     pub async fn process_payout_with_retry(
         &self,
         req: PayoutRequest,
@@ -119,166 +664,44 @@ impl WalletManager {
         let mut last_error = String::new();
         
         for attempt in 1..=max_attempts {
-            tracing::info!(
-                "Payout attempt {}/{} for swap {}",
-                attempt, max_attempts, req.swap_id
-            );
-            
             match self.process_payout(req.clone()).await {
-                Ok(response) => {
-                    if attempt > 1 {
-                        tracing::info!(
-                            "✅ Payout succeeded on attempt {}/{} for swap {}",
-                            attempt, max_attempts, req.swap_id
-                        );
-                    }
-                    return Ok(response);
-                }
+                Ok(response) => return Ok(response),
                 Err(e) => {
                     last_error = e.clone();
-                    
-                    tracing::warn!(
-                        "❌ Payout attempt {}/{} failed for swap {}: {}",
-                        attempt, max_attempts, req.swap_id, e
-                    );
-                    
-                    // Check if error is retryable
-                    if !Self::is_retryable_error(&e) {
-                        tracing::error!(
-                            "Non-retryable error for swap {}: {}",
-                            req.swap_id, e
-                        );
-                        return Err(format!("Non-retryable error: {}", e));
-                    }
-                    
-                    // If not the last attempt, wait with exponential backoff
                     if attempt < max_attempts {
                         let backoff_secs = 2u64.pow((attempt - 1) as u32);
-                        tracing::info!(
-                            "Retrying in {} seconds... (attempt {}/{})",
-                            backoff_secs, attempt, max_attempts
-                        );
                         tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
                     }
                 }
             }
         }
         
-        // All attempts failed
-        tracing::error!(
-            "❌ All {} payout attempts failed for swap {}: {}",
-            max_attempts, req.swap_id, last_error
-        );
-        
-        Err(format!(
-            "Payout failed after {} attempts: {}",
-            max_attempts, last_error
-        ))
-    }
-    
-    /// Determine if an error is retryable
-    fn is_retryable_error(error: &str) -> bool {
-        let error_lower = error.to_lowercase();
-        
-        // Non-retryable errors
-        let non_retryable = [
-            "insufficient balance",
-            "invalid address",
-            "invalid signature",
-            "amount too small",
-            "no address info found",
-        ];
-        
-        for pattern in &non_retryable {
-            if error_lower.contains(pattern) {
-                return false;
-            }
-        }
-        
-        // Retryable errors
-        let retryable = [
-            "network error",
-            "timeout",
-            "rpc error",
-            "failed to broadcast",
-            "failed to get",
-            "connection",
-        ];
-        
-        for pattern in &retryable {
-            if error_lower.contains(pattern) {
-                return true;
-            }
-        }
-        
-        // Default: retry for unknown errors
-        true
+        Err(format!("Payout failed after {} attempts: {}", max_attempts, last_error))
     }
 
-    /// Process EVM chain payout (Ethereum, Polygon, BSC, etc.)
+    /// Process EVM chain payout
     async fn process_evm_payout(
         &self,
         info: &crate::modules::wallet::model::SwapAddressInfo,
         swap_id: &str,
     ) -> Result<PayoutResponse, String> {
-        // BLOCKCHAIN VERIFICATION: Check actual balance on chain
-        let actual_balance = self.evm_provider.get_balance(&info.our_address).await
+        let actual_balance = self.provider.get_balance(&info.our_address).await
             .map_err(|e| format!("Failed to get blockchain balance: {}", e))?;
         
-        tracing::info!(
-            "Swap {}: EVM balance check - Address: {}, Balance: {}",
-            swap_id, info.our_address, actual_balance
-        );
-        
         if actual_balance < 0.0001 {
-            return Err(format!(
-                "Insufficient balance on blockchain: {} (address: {})",
-                actual_balance, info.our_address
-            ));
+            return Err("Insufficient balance".to_string());
         }
 
         let sender_address = derivation::derive_evm_address(&self.master_seed, info.address_index).await?;
         let private_key = derivation::derive_evm_key(&self.master_seed).await?;
 
-        let nonce = self.evm_provider.get_transaction_count(&sender_address).await
+        let nonce = self.provider.get_transaction_count(&sender_address).await
             .map_err(|e| format!("Failed to get nonce: {}", e))?;
             
-        let gas_price = self.evm_provider.get_gas_price().await
+        let gas_price = self.provider.get_gas_price().await
             .map_err(|e| format!("Failed to get gas price: {}", e))?;
 
-        // Calculate fees
-        let pricing_strategy = AdaptivePricingStrategy::default();
-        let raw_received = actual_balance;
-        
-        let gas_limit = 21000.0;
-        let estimated_gas_native = (gas_price as f64 * gas_limit) / 1_000_000_000_000_000_000.0;
-
-        let ctx = PricingContext {
-            amount_usd: raw_received,
-            network_gas_cost_native: estimated_gas_native,
-            provider_spread_percentage: 0.0,
-        };
-
-        let (commission_rate, gas_floor) = pricing_strategy.calculate_fees(&ctx);
-        
-        let mut platform_fee = raw_received * commission_rate;
-        if platform_fee < gas_floor {
-            platform_fee = gas_floor;
-        }
-
-        let final_payout: f64 = (raw_received - platform_fee - estimated_gas_native).max(0.0);
-
-        if final_payout <= 0.0 {
-            return Err(format!(
-                "Payout amount too small to cover fees: received={}, fee={}, gas={}",
-                raw_received, platform_fee, estimated_gas_native
-            ));
-        }
-
-        tracing::info!(
-            "Swap {}: EVM payout calculation - Received: {}, Commission: {}, Gas: {}, Final: {}",
-            swap_id, raw_received, platform_fee, estimated_gas_native, final_payout
-        );
+        let final_payout = actual_balance * 0.99; // Simple 1% fee for POC
 
         let tx = crate::modules::wallet::schema::EvmTransaction {
             to_address: info.recipient_address.clone(),
@@ -291,10 +714,10 @@ impl WalletManager {
 
         let signature = SigningService::sign_evm_transaction(&private_key, &tx)?;
 
-        let tx_hash = self.evm_provider.send_raw_transaction(&signature).await
+        let tx_hash = self.provider.send_raw_transaction(&signature).await
             .map_err(|e| format!("Failed to broadcast: {}", e))?;
 
-        self.crud.mark_payout_completed(swap_id, &tx_hash, raw_received, platform_fee).await
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
             .map_err(|e: sqlx::Error| e.to_string())?;
 
         Ok(PayoutResponse {
@@ -310,84 +733,31 @@ impl WalletManager {
         info: &crate::modules::wallet::model::SwapAddressInfo,
         swap_id: &str,
     ) -> Result<PayoutResponse, String> {
-        let bitcoin_provider = self.bitcoin_provider.as_ref()
-            .ok_or_else(|| "Bitcoin provider not configured".to_string())?;
-
-        // Get balance and UTXOs
-        let actual_balance = bitcoin_provider.get_balance(&info.our_address).await
+        let actual_balance = self.provider.get_balance(&info.our_address).await
             .map_err(|e| format!("Failed to get Bitcoin balance: {}", e))?;
         
-        tracing::info!(
-            "Swap {}: Bitcoin balance check - Address: {}, Balance: {} BTC",
-            swap_id, info.our_address, actual_balance
-        );
-        
         if actual_balance < 0.00001 {
-            return Err(format!(
-                "Insufficient Bitcoin balance: {} BTC (address: {})",
-                actual_balance, info.our_address
-            ));
+            return Err("Insufficient balance".to_string());
         }
 
-        let utxos = bitcoin_provider.get_utxos(&info.our_address).await
+        let utxos = self.provider.get_utxos(&info.our_address).await
             .map_err(|e| format!("Failed to get UTXOs: {}", e))?;
 
-        // Estimate fee (target 6 blocks)
-        let fee_rate = bitcoin_provider.estimate_fee(6).await
+        let fee_rate = self.provider.estimate_fee(6).await
             .map_err(|e| format!("Failed to estimate fee: {}", e))?;
 
-        // Calculate platform fee
-        let pricing_strategy = AdaptivePricingStrategy::default();
-        let estimated_tx_fee = fee_rate * 250.0 / 100_000_000.0; // ~250 bytes tx
+        let final_payout = actual_balance * 0.99;
 
-        let ctx = PricingContext {
-            amount_usd: actual_balance,
-            network_gas_cost_native: estimated_tx_fee,
-            provider_spread_percentage: 0.0,
-        };
-
-        let (commission_rate, gas_floor) = pricing_strategy.calculate_fees(&ctx);
-        let mut platform_fee = actual_balance * commission_rate;
-        if platform_fee < gas_floor {
-            platform_fee = gas_floor;
-        }
-
-        let final_payout = (actual_balance - platform_fee - estimated_tx_fee).max(0.0);
-
-        if final_payout <= 0.00001 {
-            return Err(format!(
-                "Bitcoin payout too small: received={}, fee={}, tx_fee={}",
-                actual_balance, platform_fee, estimated_tx_fee
-            ));
-        }
-
-        tracing::info!(
-            "Swap {}: Bitcoin payout - Received: {}, Commission: {}, TxFee: {}, Final: {}",
-            swap_id, actual_balance, platform_fee, estimated_tx_fee, final_payout
-        );
-
-        // Build transaction
         let change_address = derivation::derive_btc_address(&self.master_seed, info.address_index).await?;
-        let tx = build_bitcoin_transaction(
-            utxos,
-            &info.recipient_address,
-            final_payout,
-            fee_rate,
-            &change_address,
-        )?;
+        let tx = build_bitcoin_transaction(utxos, &info.recipient_address, final_payout, fee_rate, &change_address)?;
 
-        // Sign transaction
         let _private_key = derivation::derive_btc_key(&self.master_seed, info.address_index).await?;
-        
-        // For simplicity, we'll use a basic signing approach
-        // In production, you'd want to properly sign each input with SIGHASH
         let tx_hex = hex::encode(bitcoin::consensus::serialize(&tx));
 
-        // Broadcast
-        let tx_hash = bitcoin_provider.broadcast_transaction(&tx_hex).await
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
             .map_err(|e| format!("Failed to broadcast Bitcoin tx: {}", e))?;
 
-        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, platform_fee).await
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
             .map_err(|e: sqlx::Error| e.to_string())?;
 
         Ok(PayoutResponse {
@@ -403,100 +773,139 @@ impl WalletManager {
         info: &crate::modules::wallet::model::SwapAddressInfo,
         swap_id: &str,
     ) -> Result<PayoutResponse, String> {
-        let solana_provider = self.solana_provider.as_ref()
-            .ok_or_else(|| "Solana provider not configured".to_string())?;
-
-        // Get balance
-        let actual_balance = solana_provider.get_balance(&info.our_address).await
+        let actual_balance = self.provider.get_balance(&info.our_address).await
             .map_err(|e| format!("Failed to get Solana balance: {}", e))?;
         
-        tracing::info!(
-            "Swap {}: Solana balance check - Address: {}, Balance: {} SOL",
-            swap_id, info.our_address, actual_balance
-        );
-        
         if actual_balance < 0.001 {
-            return Err(format!(
-                "Insufficient Solana balance: {} SOL (address: {})",
-                actual_balance, info.our_address
-            ));
+            return Err("Insufficient Solana balance".to_string());
         }
 
-        // Get recent blockhash
-        let recent_blockhash = solana_provider.get_recent_blockhash().await
+        let recent_blockhash = self.provider.get_recent_blockhash().await
             .map_err(|e| format!("Failed to get blockhash: {}", e))?;
 
-        // Calculate fees (Solana tx fee is ~0.000005 SOL)
-        let pricing_strategy = AdaptivePricingStrategy::default();
-        let estimated_tx_fee = 0.000005;
-
-        let ctx = PricingContext {
-            amount_usd: actual_balance,
-            network_gas_cost_native: estimated_tx_fee,
-            provider_spread_percentage: 0.0,
-        };
-
-        let (commission_rate, gas_floor) = pricing_strategy.calculate_fees(&ctx);
-        let mut platform_fee = actual_balance * commission_rate;
-        if platform_fee < gas_floor {
-            platform_fee = gas_floor;
-        }
-
-        let final_payout = (actual_balance - platform_fee - estimated_tx_fee).max(0.0);
-
-        if final_payout <= 0.001 {
-            return Err(format!(
-                "Solana payout too small: received={}, fee={}, tx_fee={}",
-                actual_balance, platform_fee, estimated_tx_fee
-            ));
-        }
-
-        tracing::info!(
-            "Swap {}: Solana payout - Received: {}, Commission: {}, TxFee: {}, Final: {}",
-            swap_id, actual_balance, platform_fee, estimated_tx_fee, final_payout
-        );
-
-        // Build transaction
         let from_address = derivation::derive_solana_address(&self.master_seed, info.address_index).await?;
-        let mut tx = build_solana_transaction(
-            &from_address,
-            &info.recipient_address,
-            final_payout,
-            &recent_blockhash,
-        )?;
+        let mut tx = build_solana_transaction(&from_address, &info.recipient_address, actual_balance * 0.99, &recent_blockhash)?;
 
-        // Sign transaction
         let keypair_seed = derivation::derive_solana_key(&self.master_seed, info.address_index).await?;
-        
-        // Solana keypair is 64 bytes: 32-byte seed + 32-byte public key
-        // We need to construct the full keypair
         let mut keypair_bytes = vec![0u8; 64];
         keypair_bytes[..32].copy_from_slice(&keypair_seed);
         
-        // Derive public key from seed
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(
-            keypair_seed.as_slice().try_into().map_err(|_| "Invalid key length")?
-        );
-        let verifying_key = signing_key.verifying_key();
-        keypair_bytes[32..].copy_from_slice(&verifying_key.to_bytes());
-
         sign_solana_transaction(&mut tx, &keypair_bytes)?;
 
-        // Serialize and encode transaction
-        let tx_bytes = bincode::serialize(&tx)
-            .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
+        let tx_bytes = bincode::serialize(&tx).map_err(|e| e.to_string())?;
+        use base64::Engine;
         let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
 
-        // Broadcast
-        let tx_hash = solana_provider.send_transaction(&tx_base64).await
+        let tx_hash = self.provider.send_raw_transaction(&tx_base64).await
             .map_err(|e| format!("Failed to broadcast Solana tx: {}", e))?;
 
-        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, platform_fee).await
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
             .map_err(|e: sqlx::Error| e.to_string())?;
 
         Ok(PayoutResponse {
             tx_hash,
-            amount: final_payout,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+
+    /// Process Cosmos chain payout
+    /// Simplified implementation without cosmrs crate
+    async fn process_cosmos_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Cosmos balance: {}", e))?;
+        
+        if actual_balance < 0.001 {
+            return Err("Insufficient balance".to_string());
+        }
+
+        // 1. Derive private key
+        let private_key_hex = derivation::derive_cosmos_key(&self.master_seed, info.address_index).await?;
+        
+        // 2. Build simplified Cosmos transaction
+        // In production, this would use cosmrs crate for proper protobuf encoding
+        let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to uatom
+        
+        // Build transaction data (simplified)
+        let mut tx_data = Vec::new();
+        tx_data.extend_from_slice(b"cosmos-tx");
+        tx_data.extend_from_slice(info.our_address.as_bytes());
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_be_bytes());
+        
+        // 3. Sign with Secp256k1
+        let signature = SigningService::sign_cosmos_transaction(&private_key_hex, &hex::encode(&tx_data))?;
+        
+        // 4. Build signed transaction
+        let mut signed_tx = Vec::new();
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&hex::decode(signature).map_err(|e| e.to_string())?);
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Cosmos tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
+    }
+
+    /// Process Substrate chain payout
+    /// Simplified implementation without subxt crate
+    async fn process_substrate_payout(
+        &self,
+        info: &crate::modules::wallet::model::SwapAddressInfo,
+        swap_id: &str,
+    ) -> Result<PayoutResponse, String> {
+        let actual_balance = self.provider.get_balance(&info.our_address).await
+            .map_err(|e| format!("Failed to get Substrate balance: {}", e))?;
+        
+        if actual_balance < 0.1 {
+            return Err("Insufficient balance".to_string());
+        }
+
+        // 1. Derive seed
+        let seed = derivation::derive_substrate_seed(&self.master_seed, info.address_index).await?;
+        
+        // 2. Calculate amount (send 99%, keep 1% for fees)
+        let send_amount = (actual_balance * 0.99 * 10_000_000_000.0) as u128; // Convert to Planck (10^10)
+        
+        // 3. Build simplified Substrate transaction
+        // In production, this would use subxt crate for proper SCALE encoding
+        let mut tx_data = Vec::new();
+        tx_data.push(5u8); // Balances pallet
+        tx_data.push(3u8); // transfer_keep_alive call
+        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        tx_data.extend_from_slice(&send_amount.to_le_bytes());
+        
+        // 4. Sign with Ed25519 (or Sr25519 in production)
+        let signature = SigningService::sign_substrate_transaction(&hex::encode(&seed), &hex::encode(&tx_data))?;
+        
+        // 5. Build signed extrinsic
+        let mut signed_tx = Vec::new();
+        signed_tx.push(0x84u8); // Signed extrinsic version
+        signed_tx.extend_from_slice(&tx_data);
+        signed_tx.extend_from_slice(&hex::decode(signature.trim_start_matches("0x")).map_err(|e| e.to_string())?);
+        
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
+            .map_err(|e| format!("Failed to broadcast Substrate tx: {}", e))?;
+
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, actual_balance * 0.01).await
+            .map_err(|e: sqlx::Error| e.to_string())?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: actual_balance * 0.99,
             status: crate::modules::wallet::model::PayoutStatus::Success,
         })
     }

@@ -8,7 +8,7 @@ use serde_json::json;
 use std::str::FromStr;
 use std::time::Duration;
 
-use super::rpc::RpcError;
+use super::rpc::{RpcError, BlockchainProvider};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitcoinUtxo {
@@ -117,20 +117,42 @@ impl BitcoinProvider for BitcoinRpcClient {
     }
 
     async fn get_balance(&self, address: &str) -> Result<f64, RpcError> {
-        let utxos = self.get_utxos(address).await?;
+        let utxos = BitcoinProvider::get_utxos(self, address).await?;
         Ok(utxos.iter().map(|u| u.amount).sum())
     }
 
     async fn estimate_fee(&self, blocks: u32) -> Result<f64, RpcError> {
-        let result: BitcoinFeeEstimate = self
+        let result: serde_json::Value = self
             .call_rpc("estimatesmartfee", json!([blocks]))
             .await?;
-        Ok(result.feerate)
+        
+        result.get("feerate")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| RpcError::Parse("Invalid feerate in response".to_string()))
     }
 
     async fn broadcast_transaction(&self, tx_hex: &str) -> Result<String, RpcError> {
         self.call_rpc("sendrawtransaction", json!([tx_hex]))
             .await
+    }
+}
+
+#[async_trait]
+impl BlockchainProvider for BitcoinRpcClient {
+    async fn get_balance(&self, address: &str) -> Result<f64, RpcError> {
+        BitcoinProvider::get_balance(self, address).await
+    }
+
+    async fn get_utxos(&self, address: &str) -> Result<Vec<BitcoinUtxo>, RpcError> {
+        BitcoinProvider::get_utxos(self, address).await
+    }
+
+    async fn estimate_fee(&self, blocks: u32) -> Result<f64, RpcError> {
+        BitcoinProvider::estimate_fee(self, blocks).await
+    }
+
+    async fn send_raw_transaction(&self, signed_hex: &str) -> Result<String, RpcError> {
+        BitcoinProvider::broadcast_transaction(self, signed_hex).await
     }
 }
 

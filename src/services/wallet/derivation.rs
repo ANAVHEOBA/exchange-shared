@@ -191,6 +191,110 @@ use bech32::Hrp;
 // Implements BIP39/BIP44 hierarchical deterministic wallet derivation
 // =============================================================================
 
+/// Derive Algorand private key from seed phrase and index
+/// Path: m/44'/283'/0'/0/[index]
+pub async fn derive_algorand_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    if !is_valid_seed_phrase(seed_phrase) {
+        return Err("Invalid seed phrase".to_string());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+        .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    let path_str = format!("m/44'/283'/0'/0/{}", index);
+    let derivation_path = DerivationPath::from_str(&path_str)
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let key = coins_bip32::xkeys::XPriv::root_from_seed(&seed, None)
+        .map_err(|e| format!("Failed to create root key: {}", e))?
+        .derive_path(&derivation_path)
+        .map_err(|e| format!("Failed to derive path: {}", e))?;
+
+    let signing_key: &SigningKey = key.as_ref();
+    let priv_bytes = signing_key.to_bytes();
+    
+    Ok(hex::encode(priv_bytes))
+}
+
+/// Derive NEAR private key from seed phrase and index
+/// Path: m/44'/397'/0'/0/[index]
+pub async fn derive_near_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    if !is_valid_seed_phrase(seed_phrase) {
+        return Err("Invalid seed phrase".to_string());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+        .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    let path_str = format!("m/44'/397'/0'/0/{}", index);
+    let derivation_path = DerivationPath::from_str(&path_str)
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let key = coins_bip32::xkeys::XPriv::root_from_seed(&seed, None)
+        .map_err(|e| format!("Failed to create root key: {}", e))?
+        .derive_path(&derivation_path)
+        .map_err(|e| format!("Failed to derive path: {}", e))?;
+
+    let signing_key: &SigningKey = key.as_ref();
+    let priv_bytes = signing_key.to_bytes();
+    
+    Ok(hex::encode(priv_bytes))
+}
+
+/// Derive Substrate seed from seed phrase and index
+/// Path: m/44'/354'/0'/0/[index] for Polkadot
+pub async fn derive_substrate_seed(seed_phrase: &str, index: u32) -> Result<Vec<u8>, String> {
+    if !is_valid_seed_phrase(seed_phrase) {
+        return Err("Invalid seed phrase".to_string());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+        .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    let path_str = format!("m/44'/354'/0'/0/{}", index);
+    let derivation_path = DerivationPath::from_str(&path_str)
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let key = coins_bip32::xkeys::XPriv::root_from_seed(&seed, None)
+        .map_err(|e| format!("Failed to create root key: {}", e))?
+        .derive_path(&derivation_path)
+        .map_err(|e| format!("Failed to derive path: {}", e))?;
+
+    let signing_key: &SigningKey = key.as_ref();
+    let priv_bytes = signing_key.to_bytes();
+    
+    Ok(priv_bytes.to_vec())
+}
+
+/// Derive Cosmos private key from seed phrase and index
+/// Path: m/44'/118'/0'/0/[index]
+pub async fn derive_cosmos_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    if !is_valid_seed_phrase(seed_phrase) {
+        return Err("Invalid seed phrase".to_string());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+        .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    let path_str = format!("m/44'/118'/0'/0/{}", index);
+    let derivation_path = DerivationPath::from_str(&path_str)
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let key = coins_bip32::xkeys::XPriv::root_from_seed(&seed, None)
+        .map_err(|e| format!("Failed to create root key: {}", e))?
+        .derive_path(&derivation_path)
+        .map_err(|e| format!("Failed to derive path: {}", e))?;
+
+    let signing_key: &SigningKey = key.as_ref();
+    let priv_bytes = signing_key.to_bytes();
+    
+    Ok(hex::encode(priv_bytes))
+}
+
 /// Derive Bitcoin private key from seed phrase and index
 /// Path: m/44'/0'/0'/0/[index]
 pub async fn derive_btc_key(seed_phrase: &str, index: u32) -> Result<String, String> {
@@ -1342,7 +1446,18 @@ pub async fn derive_address(
     let network_lower = network.to_lowercase();
 
     match network_lower.as_str() {
-        "ethereum" | "polygon" | "bsc" | "arbitrum" | "optimism" | "erc20" | "bep20" => {
+        // All EVM-compatible networks (80+ chains)
+        "ethereum" | "polygon" | "bsc" | "arbitrum" | "optimism" | "erc20" | "bep20" 
+        | "linea" | "mantle" | "manta_pacific" | "mode" | "blast" | "taiko" | "zora" | "sonic" 
+        | "moonbeam" | "moonriver" | "aurora" 
+        | "oasis" | "rootstock" | "telos" | "thundercore" 
+        | "tomochain" | "velas" | "wanchain" | "whitechain" | "x_layer" | "zkfair" 
+        | "shibarium" | "opbnb" | "fraxtal" | "merlin" | "morph" | "redbelly" 
+        | "rei" | "step_network" | "cyber" | "endurance" 
+        | "hyper_evm" | "iota_evm" | "islm_evm" | "okx_chain" | "oasys" | "peaq" 
+        | "pulsechain" | "ronin" | "zeta" | "bitgert" | "botanix" 
+        | "bttc" | "cfx" | "chiliz" | "conflux_espace" | "core" | "filecoin" 
+        | "flare" | "kcc" | "bahamut" | "b2" | "berachain" | "apechain" => {
             derive_evm_address(seed_phrase, index).await
         }
         "bitcoin" => {
@@ -1516,9 +1631,6 @@ pub async fn derive_address(
         "fetch" | "fet" => {
             super::blockchains::cosmos_like::derive_fetch_ai(seed_phrase, index).await
         }
-        "okexchain" | "okt" => {
-            super::blockchains::cosmos_like::derive_okex_chain(seed_phrase, index).await
-        }
         "chihuahua" | "huahua" => {
             super::blockchains::cosmos_like::derive_chihuahua(seed_phrase, index).await
         }
@@ -1551,9 +1663,6 @@ pub async fn derive_address(
         }
         "pundix" => {
             super::blockchains::cosmos_like::derive_pundix(seed_phrase, index).await
-        }
-        "mantle" => {
-            super::blockchains::cosmos_like::derive_mantle(seed_phrase, index).await
         }
         "nibiru" | "nibi" => {
             super::blockchains::cosmos_like::derive_nibiru(seed_phrase, index).await

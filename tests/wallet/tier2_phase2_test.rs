@@ -68,7 +68,7 @@ async fn test_tezos_invalid_seed() {
 
 #[tokio::test]
 async fn test_algorand_address_derivation() {
-    let addr = derive_address(TEST_SEED, "algo", "algorand", 0)
+    let addr = derive_address(&test_seed(), "algo", "algorand", 0)
         .await
         .expect("Failed to derive Algorand address");
 
@@ -83,10 +83,10 @@ async fn test_algorand_address_derivation() {
 
 #[tokio::test]
 async fn test_algorand_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "algo", "algorand", 0)
+    let addr1 = derive_address(&test_seed(), "algo", "algorand", 0)
         .await
         .expect("Failed to derive Algorand address");
-    let addr2 = derive_address(TEST_SEED, "algo", "algorand", 0)
+    let addr2 = derive_address(&test_seed(), "algo", "algorand", 0)
         .await
         .expect("Failed to derive Algorand address again");
 
@@ -96,10 +96,10 @@ async fn test_algorand_deterministic() {
 
 #[tokio::test]
 async fn test_algorand_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "algo", "algorand", 0)
+    let addr0 = derive_address(&test_seed(), "algo", "algorand", 0)
         .await
         .expect("Failed to derive Algorand address at index 0");
-    let addr1 = derive_address(TEST_SEED, "algo", "algorand", 1)
+    let addr1 = derive_address(&test_seed(), "algo", "algorand", 1)
         .await
         .expect("Failed to derive Algorand address at index 1");
 
@@ -121,7 +121,7 @@ async fn test_algorand_invalid_seed() {
 
 #[tokio::test]
 async fn test_stellar_address_derivation() {
-    let addr = derive_address(TEST_SEED, "xlm", "stellar", 0)
+    let addr = derive_address(&test_seed(), "xlm", "stellar", 0)
         .await
         .expect("Failed to derive Stellar address");
 
@@ -133,10 +133,10 @@ async fn test_stellar_address_derivation() {
 
 #[tokio::test]
 async fn test_stellar_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "xlm", "stellar", 0)
+    let addr1 = derive_address(&test_seed(), "xlm", "stellar", 0)
         .await
         .expect("Failed to derive Stellar address");
-    let addr2 = derive_address(TEST_SEED, "xlm", "stellar", 0)
+    let addr2 = derive_address(&test_seed(), "xlm", "stellar", 0)
         .await
         .expect("Failed to derive Stellar address again");
 
@@ -146,10 +146,10 @@ async fn test_stellar_deterministic() {
 
 #[tokio::test]
 async fn test_stellar_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "xlm", "stellar", 0)
+    let addr0 = derive_address(&test_seed(), "xlm", "stellar", 0)
         .await
         .expect("Failed to derive Stellar address at index 0");
-    let addr1 = derive_address(TEST_SEED, "xlm", "stellar", 1)
+    let addr1 = derive_address(&test_seed(), "xlm", "stellar", 1)
         .await
         .expect("Failed to derive Stellar address at index 1");
 
@@ -171,7 +171,7 @@ async fn test_stellar_invalid_seed() {
 
 #[tokio::test]
 async fn test_near_address_derivation() {
-    let addr = derive_address(TEST_SEED, "near", "near", 0)
+    let addr = derive_address(&test_seed(), "near", "near", 0)
         .await
         .expect("Failed to derive NEAR address");
 
@@ -186,10 +186,10 @@ async fn test_near_address_derivation() {
 
 #[tokio::test]
 async fn test_near_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "near", "near", 0)
+    let addr1 = derive_address(&test_seed(), "near", "near", 0)
         .await
         .expect("Failed to derive NEAR address");
-    let addr2 = derive_address(TEST_SEED, "near", "near", 0)
+    let addr2 = derive_address(&test_seed(), "near", "near", 0)
         .await
         .expect("Failed to derive NEAR address again");
 
@@ -199,10 +199,10 @@ async fn test_near_deterministic() {
 
 #[tokio::test]
 async fn test_near_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "near", "near", 0)
+    let addr0 = derive_address(&test_seed(), "near", "near", 0)
         .await
         .expect("Failed to derive NEAR address at index 0");
-    let addr1 = derive_address(TEST_SEED, "near", "near", 1)
+    let addr1 = derive_address(&test_seed(), "near", "near", 1)
         .await
         .expect("Failed to derive NEAR address at index 1");
 
@@ -224,7 +224,7 @@ async fn test_near_invalid_seed() {
 
 #[tokio::test]
 async fn test_waves_address_derivation() {
-    let addr = derive_address(TEST_SEED, "waves", "waves", 0)
+    let addr = derive_address(&test_seed(), "waves", "waves", 0)
         .await
         .expect("Failed to derive Waves address");
 
@@ -236,10 +236,10 @@ async fn test_waves_address_derivation() {
 
 #[tokio::test]
 async fn test_waves_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "waves", "waves", 0)
+    let addr1 = derive_address(&test_seed(), "waves", "waves", 0)
         .await
         .expect("Failed to derive Waves address");
-    let addr2 = derive_address(TEST_SEED, "waves", "waves", 0)
+    let addr2 = derive_address(&test_seed(), "waves", "waves", 0)
         .await
         .expect("Failed to derive Waves address again");
 
@@ -249,10 +249,10 @@ async fn test_waves_deterministic() {
 
 #[tokio::test]
 async fn test_waves_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "waves", "waves", 0)
+    let addr0 = derive_address(&test_seed(), "waves", "waves", 0)
         .await
         .expect("Failed to derive Waves address at index 0");
-    let addr1 = derive_address(TEST_SEED, "waves", "waves", 1)
+    let addr1 = derive_address(&test_seed(), "waves", "waves", 1)
         .await
         .expect("Failed to derive Waves address at index 1");
 
@@ -274,7 +274,7 @@ async fn test_waves_invalid_seed() {
 
 #[tokio::test]
 async fn test_stacks_address_derivation() {
-    let addr = derive_address(TEST_SEED, "stx", "stacks", 0)
+    let addr = derive_address(&test_seed(), "stx", "stacks", 0)
         .await
         .expect("Failed to derive Stacks address");
 
@@ -285,10 +285,10 @@ async fn test_stacks_address_derivation() {
 
 #[tokio::test]
 async fn test_stacks_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "stx", "stacks", 0)
+    let addr1 = derive_address(&test_seed(), "stx", "stacks", 0)
         .await
         .expect("Failed to derive Stacks address");
-    let addr2 = derive_address(TEST_SEED, "stx", "stacks", 0)
+    let addr2 = derive_address(&test_seed(), "stx", "stacks", 0)
         .await
         .expect("Failed to derive Stacks address again");
 
@@ -298,10 +298,10 @@ async fn test_stacks_deterministic() {
 
 #[tokio::test]
 async fn test_stacks_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "stx", "stacks", 0)
+    let addr0 = derive_address(&test_seed(), "stx", "stacks", 0)
         .await
         .expect("Failed to derive Stacks address at index 0");
-    let addr1 = derive_address(TEST_SEED, "stx", "stacks", 1)
+    let addr1 = derive_address(&test_seed(), "stx", "stacks", 1)
         .await
         .expect("Failed to derive Stacks address at index 1");
 
@@ -323,7 +323,7 @@ async fn test_stacks_invalid_seed() {
 
 #[tokio::test]
 async fn test_ton_address_derivation() {
-    let addr = derive_address(TEST_SEED, "ton", "ton", 0)
+    let addr = derive_address(&test_seed(), "ton", "ton", 0)
         .await
         .expect("Failed to derive TON address");
 
@@ -334,10 +334,10 @@ async fn test_ton_address_derivation() {
 
 #[tokio::test]
 async fn test_ton_deterministic() {
-    let addr1 = derive_address(TEST_SEED, "ton", "ton", 0)
+    let addr1 = derive_address(&test_seed(), "ton", "ton", 0)
         .await
         .expect("Failed to derive TON address");
-    let addr2 = derive_address(TEST_SEED, "ton", "ton", 0)
+    let addr2 = derive_address(&test_seed(), "ton", "ton", 0)
         .await
         .expect("Failed to derive TON address again");
 
@@ -347,10 +347,10 @@ async fn test_ton_deterministic() {
 
 #[tokio::test]
 async fn test_ton_unique_indices() {
-    let addr0 = derive_address(TEST_SEED, "ton", "ton", 0)
+    let addr0 = derive_address(&test_seed(), "ton", "ton", 0)
         .await
         .expect("Failed to derive TON address at index 0");
-    let addr1 = derive_address(TEST_SEED, "ton", "ton", 1)
+    let addr1 = derive_address(&test_seed(), "ton", "ton", 1)
         .await
         .expect("Failed to derive TON address at index 1");
 
@@ -383,7 +383,7 @@ async fn test_all_phase2_networks_derivable() {
     ];
 
     for (ticker, network) in networks {
-        let addr = derive_address(TEST_SEED, ticker, network, 0)
+        let addr = derive_address(&test_seed(), ticker, network, 0)
             .await
             .expect(&format!("Failed to derive {} address", network));
         assert!(!addr.is_empty(), "{} address is empty", network);
@@ -406,7 +406,7 @@ async fn test_phase2_no_duplicate_addresses() {
     ];
 
     for (ticker, network) in networks {
-        let addr = derive_address(TEST_SEED, ticker, network, 0)
+        let addr = derive_address(&test_seed(), ticker, network, 0)
             .await
             .expect(&format!("Failed to derive {} address", network));
         
@@ -436,7 +436,7 @@ async fn test_phase2_batch_generation() {
     for (ticker, network) in networks {
         let start = std::time::Instant::now();
         for i in 0..100 {
-            let _ = derive_address(TEST_SEED, ticker, network, i)
+            let _ = derive_address(&test_seed(), ticker, network, i)
                 .await
                 .expect(&format!("Failed to generate {} batch address {}", network, i));
         }
@@ -451,7 +451,7 @@ async fn test_phase2_index_boundaries() {
     let test_indices = vec![0, 1, 42, 1000, u32::MAX - 1];
 
     for index in test_indices {
-        let addr = derive_address(TEST_SEED, "algo", "algorand", index)
+        let addr = derive_address(&test_seed(), "algo", "algorand", index)
             .await
             .expect(&format!("Failed to derive address at index {}", index));
         assert!(!addr.is_empty(), "Address empty for index {}", index);

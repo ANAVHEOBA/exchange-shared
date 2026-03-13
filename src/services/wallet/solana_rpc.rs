@@ -112,6 +112,21 @@ struct BlockhashValue {
 }
 
 #[async_trait]
+impl super::rpc::BlockchainProvider for SolanaRpcClient {
+    async fn get_balance(&self, address: &str) -> Result<f64, RpcError> {
+        SolanaProvider::get_balance(self, address).await
+    }
+
+    async fn get_recent_blockhash(&self) -> Result<String, RpcError> {
+        SolanaProvider::get_recent_blockhash(self).await
+    }
+
+    async fn send_raw_transaction(&self, signed_hex: &str) -> Result<String, RpcError> {
+        self.send_transaction(signed_hex).await
+    }
+}
+
+#[async_trait]
 impl SolanaProvider for SolanaRpcClient {
     async fn get_balance(&self, address: &str) -> Result<f64, RpcError> {
         let result: BalanceResult = self

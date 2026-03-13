@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde::Deserialize;
 use crate::services::wallet::rpc::{BlockchainProvider, HttpRpcClient};
+use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
+use crate::services::wallet::solana_rpc::SolanaRpcClient;
+use crate::services::wallet::rest_rpc::RestRpcClient;
 
 #[derive(Debug, Deserialize)]
 pub struct ChainMetadata {
@@ -15,6 +18,7 @@ pub struct ChainMetadata {
 
 /// RPC Provider Configuration
 /// Centralizes blockchain RPC endpoint management with Alchemy, Ankr and Public fallbacks
+#[allow(dead_code)]
 pub struct RpcProviderConfig {
     providers: HashMap<String, Arc<dyn BlockchainProvider>>,
     metadata: HashMap<String, ChainMetadata>,
@@ -51,7 +55,21 @@ impl RpcProviderConfig {
                 Self::resolve_url(&meta, &alchemy_key, &ankr_id, &infura_id)
             };
 
-            providers.insert(chain_key.clone(), Arc::new(HttpRpcClient::new(rpc_url)));
+            // Dynamic Dispatch based on Family
+            let provider: Arc<dyn BlockchainProvider> = match meta.family.as_str() {
+                "btc" | "utxo" | "special" => {
+                    // Check if it's a REST explorer URL or a real node URL
+                    if rpc_url.contains("mempool.space") || rpc_url.contains("blockchair.com") || rpc_url.contains("blockcypher.com") {
+                        Arc::new(RestRpcClient::new(rpc_url))
+                    } else {
+                        Arc::new(BitcoinRpcClient::new(rpc_url))
+                    }
+                },
+                "solana" => Arc::new(SolanaRpcClient::new(rpc_url)),
+                _ => Arc::new(HttpRpcClient::new(rpc_url)), // Default to EVM/Generic
+            };
+
+            providers.insert(chain_key.clone(), provider);
             metadata_map.insert(chain_key, meta);
         }
 
@@ -103,12 +121,16 @@ impl RpcProviderConfig {
         // Common aliases
         let provider_key = match normalized.as_str() {
             "eth" | "ethereum" => "ethereum",
-            "matic" | "polygon" => "polygon_one",
+            "btc" | "bitcoin" => "bitcoin",
+            "sol" | "solana" => "solana",
+            "matic" | "polygon" => "polygon",
             "arb" | "arbitrum" => "arbitrum_one",
             "op" | "optimism" => "optimism",
             "avax" | "avalanche" => "avalanche_c-chain",
             "bnb" | "bsc" | "binance" => "bnb_smart_chain",
             "ftm" | "fantom" => "fantom",
+            "cro" | "cronos" => "cronos",
+            "xmr" | "monero" => "monero",
             _ => return None,
         };
         

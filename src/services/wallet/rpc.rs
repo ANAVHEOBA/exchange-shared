@@ -11,14 +11,24 @@ pub enum RpcError {
     Rpc(String),
     #[error("Parse error: {0}")]
     Parse(String),
+    #[error("Unsupported operation for this chain")]
+    Unsupported,
 }
 
 #[async_trait]
 pub trait BlockchainProvider: Send + Sync {
-    async fn get_transaction_count(&self, address: &str) -> Result<u64, RpcError>;
-    async fn get_gas_price(&self) -> Result<u64, RpcError>;
-    async fn send_raw_transaction(&self, signed_hex: &str) -> Result<String, RpcError>;
+    // EVM / Common methods
+    async fn get_transaction_count(&self, _address: &str) -> Result<u64, RpcError> { Err(RpcError::Unsupported) }
+    async fn get_gas_price(&self) -> Result<u64, RpcError> { Err(RpcError::Unsupported) }
+    async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> { Err(RpcError::Unsupported) }
     async fn get_balance(&self, address: &str) -> Result<f64, RpcError>;
+
+    // Bitcoin specific methods (added to unified trait)
+    async fn get_utxos(&self, _address: &str) -> Result<Vec<crate::services::wallet::bitcoin_rpc::BitcoinUtxo>, RpcError> { Err(RpcError::Unsupported) }
+    async fn estimate_fee(&self, _blocks: u32) -> Result<f64, RpcError> { Err(RpcError::Unsupported) }
+    
+    // Solana specific methods (added to unified trait)
+    async fn get_recent_blockhash(&self) -> Result<String, RpcError> { Err(RpcError::Unsupported) }
 }
 
 pub struct HttpRpcClient {

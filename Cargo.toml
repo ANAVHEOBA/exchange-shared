@@ -53,6 +53,15 @@ alloy = { version = "0.5", features = ["contract", "providers", "transports"] }
 bech32 = "0.11"
 blake2 = "0.10"
 
+# Note: Cosmos, Substrate, and special chain implementations
+# are simplified versions without external SDKs to avoid dependency conflicts
+# Full production implementations would use:
+# - cosmrs for Cosmos SDK chains
+# - subxt for Substrate chains  
+# - algonaut for Algorand
+# - near-sdk for NEAR
+# These are implemented with manual transaction building instead
+
 [dev-dependencies]
 axum-test = "18.4.1"
 futures = "0.3"
