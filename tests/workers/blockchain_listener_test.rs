@@ -78,7 +78,11 @@ async fn test_listener_detects_funds() {
     // Note: This test requires a mock RPC provider or testnet
     // In production, the listener would detect real blockchain events
     
-    let listener = BlockchainListener::new(ctx.db.clone());
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
+    let listener = BlockchainListener::new(ctx.db.clone(), rpc_manager);
     
     // Check stats
     let stats = listener.get_stats().await.unwrap();
@@ -159,7 +163,11 @@ async fn test_listener_handles_multiple_chains() {
         0.006,
     ).await;
     
-    let listener = BlockchainListener::new(ctx.db.clone());
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
+    let listener = BlockchainListener::new(ctx.db.clone(), rpc_manager);
     let stats = listener.get_stats().await.unwrap();
     
     assert!(stats.total_pending >= 2, "Expected at least 2 pending swaps, got {}", stats.total_pending);
@@ -212,7 +220,11 @@ async fn test_listener_ignores_old_swaps() {
     .await
     .unwrap();
     
-    let listener = BlockchainListener::new(ctx.db.clone());
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
+    let listener = BlockchainListener::new(ctx.db.clone(), rpc_manager);
     
     // Count only test swaps older than 24 hours
     let (old_count,): (i64,) = sqlx::query_as(

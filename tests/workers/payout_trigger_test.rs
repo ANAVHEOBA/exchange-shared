@@ -65,10 +65,15 @@ async fn test_finished_status_triggers_bridge_payout() {
     }).await.unwrap();
 
     // 3. Setup: Initialize Monitor Engine
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
     let engine = MonitorEngine::new(
         ctx.db.clone(), 
         ctx.redis.clone(), 
-        master_seed
+        master_seed,
+        rpc_manager
     );
 
     // 4. Execution: Verify the bridge logic

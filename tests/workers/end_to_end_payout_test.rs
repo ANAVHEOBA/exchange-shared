@@ -115,7 +115,11 @@ async fn test_end_to_end_payout_flow() {
     
     // 4. Run blockchain listener check (this should detect funds and trigger payout)
     // NOTE: This is where the integration happens - listener should call wallet_manager
-    let listener = BlockchainListener::new(ctx.db.clone())
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
+    let listener = BlockchainListener::new(ctx.db.clone(), rpc_manager)
         .with_wallet_mnemonic(seed_phrase.to_string());
     
     // Manually trigger the check (in production this runs in a loop)

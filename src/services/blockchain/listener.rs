@@ -1,30 +1,27 @@
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use sqlx::{MySql, Pool};
+use crate::services::rpc::{RpcManager, RpcManagerAdapter};
 use crate::services::wallet::rpc::BlockchainProvider;
 use crate::services::wallet::manager::WalletManager;
 use crate::modules::wallet::crud::WalletCrud;
 use crate::modules::wallet::schema::PayoutRequest;
-use crate::config::RpcProviderConfig;
 
 /// Blockchain event listener that monitors addresses for incoming funds
 /// This is the optimal approach - detects funds immediately without polling Trocador
 pub struct BlockchainListener {
     db: Pool<MySql>,
-    rpc_config: RpcProviderConfig,
+    rpc_manager: Arc<RpcManager>,
     check_interval: Duration,
     wallet_mnemonic: Option<String>,
 }
 
 impl BlockchainListener {
-    /// Create a new blockchain listener with RPC providers from config
-    pub fn new(db: Pool<MySql>) -> Self {
-        // Load RPC providers from centralized config
-        let rpc_config = RpcProviderConfig::from_env();
-        
+    /// Create a new blockchain listener with production RPC manager
+    pub fn new(db: Pool<MySql>, rpc_manager: Arc<RpcManager>) -> Self {
         Self {
             db,
-            rpc_config,
+            rpc_manager,
             check_interval: Duration::from_secs(30), // Check every 30 seconds
             wallet_mnemonic: None,
         }
@@ -133,7 +130,14 @@ impl BlockchainListener {
     
     /// Get RPC provider for a specific network
     fn get_provider_for_network(&self, network: &str) -> Option<Arc<dyn BlockchainProvider>> {
-        self.rpc_config.get_provider(network)
+        // Normalize network name to match config keys
+        let chain_key = network.to_lowercase().replace(' ', "_").replace("-", "_");
+        
+        // Create adapter for this chain using RpcManager
+        Some(Arc::new(RpcManagerAdapter::new(
+            self.rpc_manager.clone(),
+            chain_key,
+        )))
     }
     
     /// Trigger payout by updating swap status and executing the payout
@@ -272,10 +276,13 @@ impl BlockchainListener {
         .await
         .map_err(|e| format!("Failed to get stats: {}", e))?;
         
+        // Count active chains from RpcManager
+        let active_chains = 0; // TODO: Add method to RpcManager to count active chains
+        
         Ok(ListenerStats {
             total_pending: total_pending as u64,
             oldest_pending,
-            active_chains: self.rpc_config.provider_count(),
+            active_chains,
         })
     }
 }

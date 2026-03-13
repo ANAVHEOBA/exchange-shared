@@ -1,9 +1,10 @@
 use std::time::Duration;
+use std::sync::Arc;
 use sqlx::{MySql, Pool};
 use crate::modules::monitor::crud::MonitorCrud;
 use crate::services::trocador::TrocadorClient;
 use crate::services::wallet::manager::WalletManager;
-use crate::services::wallet::rpc::HttpRpcClient;
+use crate::services::rpc::{RpcManager, RpcManagerAdapter};
 use crate::services::redis_cache::RedisService;
 use crate::modules::monitor::model::PollingState;
 
@@ -14,15 +15,16 @@ pub struct MonitorEngine {
     redis: RedisService,
     master_seed: String,
     strategy: PollingStrategy,
+    rpc_manager: Arc<RpcManager>,
 }
 
 impl MonitorEngine {
-    pub fn new(db: Pool<MySql>, redis: RedisService, master_seed: String) -> Self {
+    pub fn new(db: Pool<MySql>, redis: RedisService, master_seed: String, rpc_manager: Arc<RpcManager>) -> Self {
         // Initialize strategy with default costs:
         // Cp = 1.0 (one poll)
         // Cd = 0.05 (20 seconds of delay equals cost of one poll)
         let strategy = PollingStrategy::new(1.0, 0.05);
-        Self { db, redis, master_seed, strategy }
+        Self { db, redis, master_seed, strategy, rpc_manager }
     }
 
     /// Start the background polling loop
@@ -65,9 +67,11 @@ impl MonitorEngine {
             
             // Blockchain listener detected funds, now execute payout
             let wallet_crud = crate::modules::wallet::crud::WalletCrud::new(self.db.clone());
-            let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://localhost:8545".to_string());
+            
+            // Use production RPC manager with circuit breaker
             let provider: std::sync::Arc<dyn crate::services::wallet::rpc::BlockchainProvider> = 
-                std::sync::Arc::new(HttpRpcClient::new(rpc_url));
+                std::sync::Arc::new(RpcManagerAdapter::new(self.rpc_manager.clone(), "ethereum".to_string()));
+            
             let wallet_manager = WalletManager::new(wallet_crud, self.master_seed.clone(), provider);
             
             match wallet_manager.process_payout(crate::modules::wallet::schema::PayoutRequest {
@@ -138,9 +142,8 @@ impl MonitorEngine {
             };
             
             // Check blockchain balance (fallback verification)
-            let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://localhost:8545".to_string());
             let provider: std::sync::Arc<dyn crate::services::wallet::rpc::BlockchainProvider> = 
-                std::sync::Arc::new(HttpRpcClient::new(rpc_url));
+                std::sync::Arc::new(RpcManagerAdapter::new(self.rpc_manager.clone(), "ethereum".to_string()));
             
             match provider.get_balance(&address_info.our_address).await {
                 Ok(balance) if balance >= 0.0001 => {

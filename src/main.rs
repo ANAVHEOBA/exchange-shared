@@ -4,8 +4,10 @@ use exchange_shared::services::{
     redis_cache::RedisService, 
     blockchain::BlockchainListener,
     monitor::MonitorEngine,
+    rpc::{RpcManager, build_default_rpc_configs},
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -31,11 +33,24 @@ async fn main() {
 
     let jwt_service = JwtService::new(config.jwt_secret);
 
+    // Initialize production RPC Manager with circuit breaker and health checks
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = Arc::new(RpcManager::new(rpc_configs));
+    tracing::info!("Initialized production RPC Manager with circuit breaker");
+    
+    // Start RPC health check loop in background
+    let health_check_manager = rpc_manager.clone();
+    tokio::spawn(async move {
+        health_check_manager.health_check_loop().await;
+    });
+    tracing::info!("Started RPC health check loop");
+
     // Start blockchain listener in background (PRIMARY: Direct blockchain monitoring)
     let listener_db = db.clone();
     let listener_mnemonic = config.wallet_mnemonic.clone();
+    let listener_rpc = rpc_manager.clone();
     tokio::spawn(async move {
-        let listener = BlockchainListener::new(listener_db)
+        let listener = BlockchainListener::new(listener_db, listener_rpc)
             .with_wallet_mnemonic(listener_mnemonic);
         listener.run().await;
     });
@@ -45,8 +60,9 @@ async fn main() {
     let monitor_db = db.clone();
     let monitor_redis = redis_service.clone();
     let monitor_mnemonic = config.wallet_mnemonic.clone();
+    let monitor_rpc = rpc_manager.clone();
     tokio::spawn(async move {
-        let monitor = MonitorEngine::new(monitor_db, monitor_redis, monitor_mnemonic);
+        let monitor = MonitorEngine::new(monitor_db, monitor_redis, monitor_mnemonic, monitor_rpc);
         monitor.run().await;
     });
     tracing::info!("Monitor engine started (adaptive polling with mathematical optimization)");

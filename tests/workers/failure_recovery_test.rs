@@ -38,7 +38,11 @@ async fn test_worker_lock_prevents_concurrency() {
     
     // 2. Try to process the poll via engine
     // Since we already hold the lock, the engine should skip it (return Ok)
-    let engine = MonitorEngine::new(ctx.db.clone(), ctx.redis.clone(), master_seed);
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
+    let engine = MonitorEngine::new(ctx.db.clone(), ctx.redis.clone(), master_seed, rpc_manager);
     let state = PollingState {
         swap_id: swap_id.clone(),
         last_polled_at: None,

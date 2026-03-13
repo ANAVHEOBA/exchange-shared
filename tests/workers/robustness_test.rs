@@ -37,7 +37,11 @@ async fn test_resilience_to_external_api_timeout() {
     .unwrap();
     
     // We intentionally don't set a real API key to trigger an error
-    let engine = MonitorEngine::new(ctx.db.clone(), ctx.redis.clone(), "seed".to_string());
+    use exchange_shared::services::rpc::{RpcManager, build_default_rpc_configs};
+    let rpc_configs = build_default_rpc_configs();
+    let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
+    
+    let engine = MonitorEngine::new(ctx.db.clone(), ctx.redis.clone(), "seed".to_string(), rpc_manager);
     
     let state = PollingState {
         swap_id: swap_id.clone(),

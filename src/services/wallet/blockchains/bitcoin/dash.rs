@@ -1,7 +1,4 @@
-use crate::services::wallet::blockchains::traits::{BlockchainDerivation, is_valid_seed_phrase};
-use bip39::{Mnemonic, Language};
-use coins_bip32::path::DerivationPath;
-use std::str::FromStr;
+use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct DashDerivation;
 

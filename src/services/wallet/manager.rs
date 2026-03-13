@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use base64::Engine;
 use crate::modules::wallet::crud::WalletCrud;
 use crate::modules::wallet::schema::{GenerateAddressRequest, WalletAddressResponse, PayoutRequest, PayoutResponse};
 use super::derivation;
@@ -140,6 +141,8 @@ impl WalletManager {
         info: &crate::modules::wallet::model::SwapAddressInfo,
         swap_id: &str,
     ) -> Result<PayoutResponse, String> {
+        use crate::services::wallet::tx_builders::algorand::{AlgorandTransaction, get_algorand_params};
+        
         let actual_balance = self.provider.get_balance(&info.our_address).await
             .map_err(|e| format!("Failed to get Algorand balance: {}", e))?;
         
@@ -147,33 +150,37 @@ impl WalletManager {
             return Err("Insufficient Algorand balance".to_string());
         }
 
-        // 1. Derive private key
+        // 1. Get network parameters
+        let rpc_url = std::env::var("ALGORAND_RPC_URL")
+            .unwrap_or_else(|_| "https://mainnet-api.algonode.cloud".to_string());
+        let params = get_algorand_params(&rpc_url).await?;
+        
+        // 2. Derive private key
         let private_key_hex = derivation::derive_algorand_key(&self.master_seed, info.address_index).await?;
         let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
             .map_err(|e| format!("Invalid key hex: {}", e))?;
         
-        // 2. Build Algorand transaction
+        // 3. Build transaction
         let send_amount = (actual_balance * 0.99 * 1_000_000.0) as u64; // Convert to microAlgos
-        let fee = 1000u64; // 0.001 ALGO fee
+        let genesis_hash = base64::engine::general_purpose::STANDARD.decode(&params.genesis_hash)
+            .map_err(|e| format!("Invalid genesis hash: {}", e))?;
         
-        // Algorand transaction format (simplified)
-        let mut tx_data = Vec::new();
-        tx_data.extend_from_slice(b"TX"); // Transaction prefix
-        tx_data.extend_from_slice(&send_amount.to_be_bytes());
-        tx_data.extend_from_slice(&fee.to_be_bytes());
-        tx_data.extend_from_slice(info.recipient_address.as_bytes());
+        let tx = AlgorandTransaction::new_payment(
+            &info.our_address,
+            &info.recipient_address,
+            send_amount,
+            params.min_fee,
+            params.last_round,
+            params.last_round + 1000,
+            params.genesis_id,
+            genesis_hash,
+        )?;
         
-        // 3. Sign with Ed25519
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
-            .map_err(|_| "Invalid key length")?);
-        let signature = signing_key.sign(&tx_data);
+        // 4. Sign transaction
+        let signed_tx_bytes = tx.sign(&key_bytes)?;
+        let tx_hex = format!("0x{}", hex::encode(&signed_tx_bytes));
         
-        // 4. Build signed transaction
-        let mut signed_tx = Vec::new();
-        signed_tx.extend_from_slice(&tx_data);
-        signed_tx.extend_from_slice(&signature.to_bytes());
-        
-        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        // 5. Broadcast
         let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
             .map_err(|e| format!("Failed to broadcast Algorand tx: {}", e))?;
 
@@ -187,54 +194,26 @@ impl WalletManager {
         })
     }
     
-    /// Process NEAR payout
-    async fn process_near_payout(
-        &self,
-        info: &crate::modules::wallet::model::SwapAddressInfo,
-        swap_id: &str,
-    ) -> Result<PayoutResponse, String> {
-        let actual_balance = self.provider.get_balance(&info.our_address).await
-            .map_err(|e| format!("Failed to get NEAR balance: {}", e))?;
-        
-        if actual_balance < 0.01 {
-            return Err("Insufficient NEAR balance".to_string());
-        }
-
-        // 1. Derive private key
+    
+    async fn process_near_payout(&self, info: &crate::modules::wallet::model::SwapAddressInfo, swap_id: &str) -> Result<PayoutResponse, String> {
+        use crate::services::wallet::tx_builders::near::{NearTransaction, get_near_access_key};
+        let actual_balance = self.provider.get_balance(&info.our_address).await.map_err(|e| format!("Failed to get NEAR balance: {}", e))?;
+        if actual_balance < 0.01 { return Err("Insufficient NEAR balance".to_string()); }
         let private_key_hex = derivation::derive_near_key(&self.master_seed, info.address_index).await?;
-        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
-            .map_err(|e| format!("Invalid key hex: {}", e))?;
-        
-        // 2. Build NEAR transaction (simplified)
-        let send_amount = (actual_balance * 0.99 * 1_000_000_000_000_000_000_000_000.0) as u128; // yoctoNEAR
-        
-        let mut tx_data = Vec::new();
-        tx_data.extend_from_slice(info.our_address.as_bytes());
-        tx_data.extend_from_slice(info.recipient_address.as_bytes());
-        tx_data.extend_from_slice(&send_amount.to_le_bytes());
-        
-        // 3. Sign with Ed25519
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into()
-            .map_err(|_| "Invalid key length")?);
-        let signature = signing_key.sign(&tx_data);
-        
-        // 4. Build signed transaction
-        let mut signed_tx = Vec::new();
-        signed_tx.extend_from_slice(&tx_data);
-        signed_tx.extend_from_slice(&signature.to_bytes());
-        
-        let tx_hex = format!("0x{}", hex::encode(&signed_tx));
-        let tx_hash = self.provider.send_raw_transaction(&tx_hex).await
-            .map_err(|e| format!("Failed to broadcast NEAR tx: {}", e))?;
-
-        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.01).await
-            .map_err(|e: sqlx::Error| e.to_string())?;
-
-        Ok(PayoutResponse {
-            tx_hash,
-            amount: actual_balance * 0.99,
-            status: crate::modules::wallet::model::PayoutStatus::Success,
-        })
+        let key_bytes = hex::decode(private_key_hex.trim_start_matches("0x")).map_err(|e| format!("Invalid key hex: {}", e))?;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into().map_err(|_| "Invalid key length")?);
+        let verifying_key = signing_key.verifying_key();
+        let public_key = format!("ed25519:{}", bs58::encode(verifying_key.to_bytes()).into_string());
+        let rpc_url = std::env::var("NEAR_RPC_URL").unwrap_or_else(|_| "https://rpc.mainnet.near.org".to_string());
+        let access_key = get_near_access_key(&rpc_url, &info.our_address, &public_key).await?;
+        let send_amount = ((actual_balance - 0.001) * 1_000_000_000_000_000_000_000_000.0) as u128;
+        let tx = NearTransaction::new_transfer(&info.our_address, &info.recipient_address, send_amount, access_key.nonce, &access_key.block_hash, &public_key);
+        let signed_tx = tx.sign(&key_bytes)?;
+        let tx_json = serde_json::to_string(&signed_tx).map_err(|e| format!("Failed to serialize: {}", e))?;
+        let tx_hash = self.provider.send_raw_transaction(&tx_json).await.map_err(|e| format!("Failed to broadcast NEAR tx: {}", e))?;
+        let payout_amount = actual_balance - 0.001;
+        self.crud.mark_payout_completed(swap_id, &tx_hash, actual_balance, 0.001).await.map_err(|e: sqlx::Error| e.to_string())?;
+        Ok(PayoutResponse { tx_hash, amount: payout_amount, status: crate::modules::wallet::model::PayoutStatus::Success })
     }
     
     /// Process Cardano payout
