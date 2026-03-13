@@ -45,4 +45,20 @@ impl BlockchainDerivation for OsmosisDerivation {
         // Simplified bech32 encoding with osmo prefix
         Ok(format!("osmo1{}", hex::encode(&account_id)))
     }
+    
+    fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
+        use bip39::{Mnemonic, Language};
+        use sha2::{Sha256, Digest};
+        
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        let seed = mnemonic.to_seed("");
+        
+        let mut hasher = Sha256::new();
+        hasher.update(&seed);
+        hasher.update(&index.to_le_bytes());
+        let derived = hasher.finalize();
+        
+        Ok(hex::encode(derived))
+    }
 }

@@ -61,6 +61,30 @@ impl BlockchainDerivation for BitcoinCash {
         let legacy_addr = bs58::encode(&payload).into_string();
         Ok(format!("bitcoincash:{}", &legacy_addr[1..])) // Simple CashAddr approximation
     }
+    
+    fn derive_private_key(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
+        if !is_valid_seed_phrase(seed_phrase) {
+            return Err("Invalid seed phrase".to_string());
+        }
+
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        let seed = mnemonic.to_seed("");
+
+        let path_str = format!("m/44'/145'/0'/0/{}", index);
+        let derivation_path = DerivationPath::from_str(&path_str)
+            .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+        let key = coins_bip32::xkeys::XPriv::root_from_seed(&seed, None)
+            .map_err(|e| format!("Failed to create root key: {}", e))?
+            .derive_path(&derivation_path)
+            .map_err(|e| format!("Failed to derive path: {}", e))?;
+
+        let signing_key: &coins_bip32::prelude::SigningKey = key.as_ref();
+        let priv_bytes = signing_key.to_bytes();
+
+        Ok(hex::encode(priv_bytes))
+    }
 }
 
 fn bitcoin_checksum(data: &[u8]) -> [u8; 4] {

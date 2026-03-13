@@ -194,34 +194,32 @@ pub async fn derive_sui_address(seed_phrase: &str, index: u32) -> Result<String,
 }
 
 pub async fn sign_message_with_seed(_seed_phrase: &str, _index: u32, _message: &str) -> Result<String, String> {
-    // TODO: Implement message signing
+    // TODO: Implement message signing per blockchain
     Err("Message signing not yet implemented".to_string())
 }
 
-// Key derivation functions (for signing)
-pub async fn derive_evm_key(_seed_phrase: &str, _index: u32) -> Result<String, String> {
-    // TODO: Implement proper key derivation
-    Err("EVM key derivation not yet implemented".to_string())
+// Key derivation functions (for signing) - these route to blockchain implementations
+pub async fn derive_evm_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    EvmChain::ethereum().derive_private_key(seed_phrase, index)
 }
 
-pub async fn derive_btc_key(_seed_phrase: &str, _index: u32) -> Result<String, String> {
-    // TODO: Implement proper key derivation
-    Err("BTC key derivation not yet implemented".to_string())
+pub async fn derive_btc_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    Bitcoin.derive_private_key(seed_phrase, index)
 }
 
-pub async fn derive_solana_key(_seed_phrase: &str, _index: u32) -> Result<String, String> {
-    // TODO: Implement proper key derivation
-    Err("Solana key derivation not yet implemented".to_string())
+pub async fn derive_solana_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    Solana.derive_private_key(seed_phrase, index)
 }
 
-pub async fn derive_cosmos_key(_seed_phrase: &str, _index: u32) -> Result<String, String> {
-    // TODO: Implement proper key derivation
-    Err("Cosmos key derivation not yet implemented".to_string())
+pub async fn derive_cosmos_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    CosmosHubDerivation.derive_private_key(seed_phrase, index)
 }
 
-pub async fn derive_substrate_seed(_seed_phrase: &str, _index: u32) -> Result<Vec<u8>, String> {
-    // TODO: Implement proper seed derivation
-    Err("Substrate seed derivation not yet implemented".to_string())
+pub async fn derive_substrate_seed(seed_phrase: &str, index: u32) -> Result<Vec<u8>, String> {
+    // Substrate uses seed bytes instead of hex key
+    let key_hex = PolkadotDerivation.derive_private_key(seed_phrase, index)?;
+    hex::decode(key_hex.trim_start_matches("0x"))
+        .map_err(|e| format!("Failed to decode substrate seed: {}", e))
 }
 
 

@@ -39,4 +39,25 @@ impl BlockchainDerivation for Solana {
 
         Ok(bs58::encode(&public_key_bytes).into_string())
     }
+    
+    fn derive_private_key(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
+        if !is_valid_seed_phrase(seed_phrase) {
+            return Err("Invalid seed phrase".to_string());
+        }
+
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed_phrase)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        let seed = mnemonic.to_seed("");
+
+        // Solana uses a deterministic derivation from seed + index
+        let mut hasher = Sha256::new();
+        hasher.update(&seed);
+        hasher.update(&index.to_le_bytes());
+        let derived_seed = hasher.finalize();
+
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&derived_seed[0..32]);
+
+        Ok(hex::encode(key_bytes))
+    }
 }

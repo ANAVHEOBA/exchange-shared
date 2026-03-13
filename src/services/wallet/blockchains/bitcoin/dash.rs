@@ -1,4 +1,7 @@
-use crate::services::wallet::blockchains::traits::BlockchainDerivation;
+use crate::services::wallet::blockchains::traits::{BlockchainDerivation, is_valid_seed_phrase};
+use bip39::{Mnemonic, Language};
+use coins_bip32::path::DerivationPath;
+use std::str::FromStr;
 
 pub struct DashDerivation;
 
@@ -45,5 +48,31 @@ impl BlockchainDerivation for DashDerivation {
         let dash_addr = format!("X{}", &btc_addr[1..]);
         
         Ok(dash_addr)
+    }
+    
+    fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
+        use bip39::{Mnemonic, Language};
+        use bitcoin::secp256k1::Secp256k1;
+        use bitcoin::bip32::{Xpriv, DerivationPath};
+        use bitcoin::Network;
+
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        
+        let seed = mnemonic.to_seed("");
+        let secp = Secp256k1::new();
+        
+        let root = Xpriv::new_master(Network::Bitcoin, &seed)
+            .map_err(|e| format!("Failed to create master key: {}", e))?;
+        
+        let path: DerivationPath = format!("m/44'/{}'/0'/0/{}", 5, index)
+            .parse()
+            .map_err(|e| format!("Invalid derivation path: {}", e))?;
+        
+        let child = root.derive_priv(&secp, &path)
+            .map_err(|e| format!("Failed to derive child key: {}", e))?;
+        
+        let priv_key = child.to_priv();
+        Ok(hex::encode(priv_key.to_bytes()))
     }
 }
