@@ -26,8 +26,8 @@ async fn test_seed_phrase_consistency() {
     let start = Instant::now();
     
     // Derive EVM key from seed
-    let evm_key_1 = derive_evm_key(&seed_phrase).await.unwrap();
-    let evm_key_2 = derive_evm_key(&seed_phrase).await.unwrap();
+    let evm_key_1 = derive_evm_key(&seed_phrase, 0).await.unwrap();
+    let evm_key_2 = derive_evm_key(&seed_phrase, 0).await.unwrap();
     
     let duration = start.elapsed();
     

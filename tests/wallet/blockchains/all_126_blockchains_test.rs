@@ -287,7 +287,7 @@ async fn test_special_chains() {
     
     println!("\n=== TESTING {} SPECIAL CHAINS ===\n", special_chains.len());
     
-    for (name, ticker, network, has_derivation, has_payout) in &special_chains {
+    for (name, ticker, network, _has_derivation, has_payout) in &special_chains {
         match derivation::derive_address(&seed, ticker, network, 0).await {
             Ok(addr) => {
                 if *has_payout {

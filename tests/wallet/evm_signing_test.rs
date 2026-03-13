@@ -20,7 +20,7 @@ async fn test_sign_evm_transaction() {
     let seed_phrase = common::test_wallet_mnemonic();
     
     // 1. Derive real key
-    let priv_key = derive_evm_key(&seed_phrase).await.unwrap();
+    let priv_key = derive_evm_key(&seed_phrase, 0).await.unwrap();
 
     // 2. Real transaction data
     let tx = EvmTransaction {
@@ -53,7 +53,7 @@ async fn test_sign_evm_transaction() {
 #[tokio::test]
 async fn test_different_txs_different_signatures() {
     let seed_phrase = common::test_wallet_mnemonic();
-    let priv_key = derive_evm_key(&seed_phrase).await.unwrap();
+    let priv_key = derive_evm_key(&seed_phrase, 0).await.unwrap();
 
     let tx1 = EvmTransaction {
         to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
@@ -88,7 +88,7 @@ async fn test_different_txs_different_signatures() {
 #[tokio::test]
 async fn test_polygon_signing_same_key() {
     let seed_phrase = common::test_wallet_mnemonic();
-    let priv_key = derive_evm_key(&seed_phrase).await.unwrap();
+    let priv_key = derive_evm_key(&seed_phrase, 0).await.unwrap();
 
     // Ethereum signature
     let eth_tx = EvmTransaction {
@@ -127,7 +127,7 @@ async fn test_polygon_signing_same_key() {
 #[tokio::test]
 async fn test_nonce_affects_signature() {
     let seed_phrase = common::test_wallet_mnemonic();
-    let priv_key = derive_evm_key(&seed_phrase).await.unwrap();
+    let priv_key = derive_evm_key(&seed_phrase, 0).await.unwrap();
 
     let tx1 = EvmTransaction {
         to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),

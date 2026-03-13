@@ -51,9 +51,94 @@ pub enum BlockchainProtocol {
 
 /// Load RPC configuration from environment variables
 pub fn load_rpc_config() -> HashMap<String, RpcEndpoint> {
+    // First load from chains.json
+    let mut config = load_from_chains_json();
+    
+    // Then add/override with manually configured chains for better control
+    let manual_config = load_manual_config();
+    config.extend(manual_config);
+    
+    config
+}
+
+/// Load RPC configuration from chains.json (133 chains)
+fn load_from_chains_json() -> HashMap<String, RpcEndpoint> {
     let mut config = HashMap::new();
     
-    // Get Alchemy API key from environment (optional)
+    // Load chains.json
+    let chains_json = include_str!("chains.json");
+    let chains: Vec<serde_json::Value> = serde_json::from_str(chains_json)
+        .expect("Failed to parse chains.json");
+    
+    // Get API keys from environment
+    let ankr_id = std::env::var("ANKR_ID")
+        .unwrap_or_else(|_| "255ef0129f301d346a2a784d9bef2bed6feb53f0584208e29751f1593d597662".to_string());
+    let alchemy_key = std::env::var("ALCHEMY_API_KEY").ok();
+    let infura_id = std::env::var("INFURA_API_KEY").ok();
+    
+    for chain in chains {
+        let name = chain["name"].as_str().unwrap_or("unknown");
+        let family = chain["family"].as_str().unwrap_or("special");
+        let ankr_slug = chain["ankr_slug"].as_str().unwrap_or("");
+        let alchemy_slug = chain["alchemy_slug"].as_str().unwrap_or("");
+        let infura_slug = chain["infura_slug"].as_str().unwrap_or("");
+        let public_rpc = chain["public_rpc"].as_str().unwrap_or("");
+        
+        // Determine primary RPC (priority: Ankr > Alchemy > Infura > Public)
+        let primary = if !ankr_slug.is_empty() {
+            format!("https://rpc.ankr.com/{}/{}", ankr_slug, ankr_id)
+        } else if !alchemy_slug.is_empty() && alchemy_key.is_some() {
+            format!("https://{}.g.alchemy.com/v2/{}", alchemy_slug, alchemy_key.as_ref().unwrap())
+        } else if !infura_slug.is_empty() && infura_id.is_some() {
+            format!("https://{}.infura.io/v3/{}", infura_slug, infura_id.as_ref().unwrap())
+        } else {
+            public_rpc.to_string()
+        };
+        
+        // Build fallbacks
+        let mut fallbacks = Vec::new();
+        if !alchemy_slug.is_empty() && alchemy_key.is_some() && !primary.contains("alchemy") {
+            fallbacks.push(format!("https://{}.g.alchemy.com/v2/{}", alchemy_slug, alchemy_key.as_ref().unwrap()));
+        }
+        if !infura_slug.is_empty() && infura_id.is_some() && !primary.contains("infura") {
+            fallbacks.push(format!("https://{}.infura.io/v3/{}", infura_slug, infura_id.as_ref().unwrap()));
+        }
+        if !public_rpc.is_empty() && primary != public_rpc {
+            fallbacks.push(public_rpc.to_string());
+        }
+        
+        // Determine protocol
+        let protocol = match family {
+            "evm" => BlockchainProtocol::EVM,
+            "btc" => BlockchainProtocol::Bitcoin,
+            "solana" => BlockchainProtocol::Solana,
+            "cardano" => BlockchainProtocol::Cardano,
+            _ => BlockchainProtocol::EVM, // Default to EVM for unknown
+        };
+        
+        // Use lowercase name with underscores as key (matches shell script naming)
+        let key = name.to_lowercase().replace(" ", "_").replace("-", "_");
+        
+        config.insert(
+            key,
+            RpcEndpoint {
+                primary,
+                fallbacks,
+                timeout: Duration::from_secs(10),
+                max_retries: 3,
+                protocol,
+                chain_id: None,
+            },
+        );
+    }
+    
+    config
+}
+
+/// Manually configured chains for fine-grained control
+fn load_manual_config() -> HashMap<String, RpcEndpoint> {
+    let mut config = HashMap::new();
+    
     let alchemy_key = std::env::var("ALCHEMY_API_KEY").ok();
     
     // Helper function to build Alchemy URL

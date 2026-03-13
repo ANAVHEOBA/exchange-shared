@@ -693,7 +693,7 @@ impl WalletManager {
         }
 
         let sender_address = derivation::derive_evm_address(&self.master_seed, info.address_index).await?;
-        let private_key = derivation::derive_evm_key(&self.master_seed).await?;
+        let private_key = derivation::derive_evm_key(&self.master_seed, info.address_index).await?;
 
         let nonce = self.provider.get_transaction_count(&sender_address).await
             .map_err(|e| format!("Failed to get nonce: {}", e))?;
@@ -787,8 +787,10 @@ impl WalletManager {
         let mut tx = build_solana_transaction(&from_address, &info.recipient_address, actual_balance * 0.99, &recent_blockhash)?;
 
         let keypair_seed = derivation::derive_solana_key(&self.master_seed, info.address_index).await?;
+        let keypair_seed_bytes = hex::decode(keypair_seed.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid keypair seed hex: {}", e))?;
         let mut keypair_bytes = vec![0u8; 64];
-        keypair_bytes[..32].copy_from_slice(&keypair_seed);
+        keypair_bytes[..32].copy_from_slice(&keypair_seed_bytes);
         
         sign_solana_transaction(&mut tx, &keypair_bytes)?;
 

@@ -1,0 +1,48 @@
+use crate::services::wallet::blockchains::traits::BlockchainDerivation;
+
+pub struct EosDerivation;
+
+impl BlockchainDerivation for EosDerivation {
+    fn coin_type(&self) -> u32 {
+        194
+    }
+    
+    fn name(&self) -> &'static str {
+        "EOS"
+    }
+    
+    fn derive_address(&self, seed: &str, index: u32) -> Result<String, String> {
+        use bip39::{Mnemonic, Language};
+        use secp256k1::{Secp256k1, SecretKey, PublicKey};
+        use sha2::{Sha256, Digest};
+        use ripemd::Ripemd160;
+        
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        let seed = mnemonic.to_seed("");
+        
+        let mut hasher = Sha256::new();
+        hasher.update(&seed);
+        hasher.update(&index.to_le_bytes());
+        let derived = hasher.finalize();
+        
+        let secret_key = SecretKey::from_slice(&derived)
+            .map_err(|e| format!("Invalid secret key: {}", e))?;
+        
+        let secp = Secp256k1::new();
+        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+        let pub_bytes = public_key.serialize();
+        
+        // EOS public key format: EOS + base58(public_key + checksum)
+        let mut hasher = Ripemd160::new();
+        hasher.update(&pub_bytes);
+        hasher.update(b"EOS");
+        let checksum = hasher.finalize();
+        
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&pub_bytes);
+        payload.extend_from_slice(&checksum[0..4]);
+        
+        Ok(format!("EOS{}", bs58::encode(&payload).into_string()))
+    }
+}
