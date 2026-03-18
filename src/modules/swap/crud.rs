@@ -91,17 +91,21 @@ impl SwapCrud {
     /// Internal helper to estimate gas cost for payout on the target network
     /// Get the amount Trocador should have sent to our address
     pub async fn get_expected_trocador_amount(&self, swap_id: &str) -> Result<f64, SwapError> {
-        let swap: (f64, f64) = sqlx::query_as(
-            "SELECT estimated_receive, platform_fee FROM swaps WHERE id = ?"
+        let swap = sqlx::query!(
+            r#"
+            SELECT CAST(estimated_receive AS DOUBLE) as "estimated_receive!: f64",
+                   CAST(platform_fee AS DOUBLE) as "platform_fee!: f64"
+            FROM swaps WHERE id = ?
+            "#,
+            swap_id
         )
-        .bind(swap_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
         
         // Trocador sends us: user_amount + our_commission
         // Because we told them to send to OUR address
-        Ok(swap.0 + swap.1)
+        Ok(swap.estimated_receive + swap.platform_fee)
     }
 
     async fn get_gas_cost_for_network(&self, network: &str) -> f64 {
@@ -115,7 +119,7 @@ impl SwapCrud {
 
     /// Check if currencies cache needs refresh using Probabilistic Early Recomputation (PER)
     pub async fn should_sync_currencies(&self) -> Result<bool, SwapError> {
-        let result: Option<(Option<chrono::DateTime<Utc>>,)> = sqlx::query_as(
+        let result = sqlx::query_scalar!(
             "SELECT MAX(last_synced_at) FROM currencies"
         )
         .fetch_optional(&self.pool)
@@ -123,7 +127,7 @@ impl SwapCrud {
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
         match result {
-            Some((Some(last_sync),)) => {
+            Some(Some(last_sync)) => {
                 let now = Utc::now();
                 let cache_age = now - last_sync;
                 let ttl_seconds = 300.0; // 5 minutes
@@ -419,7 +423,7 @@ impl SwapCrud {
 
     /// Check if providers cache needs refresh (>5 minutes old)
     pub async fn should_sync_providers(&self) -> Result<bool, SwapError> {
-        let result: Option<(Option<chrono::DateTime<Utc>>,)> = sqlx::query_as(
+        let result = sqlx::query_scalar!(
             "SELECT MAX(last_synced_at) FROM providers"
         )
         .fetch_optional(&self.pool)
@@ -427,7 +431,7 @@ impl SwapCrud {
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
         match result {
-            Some((Some(last_sync),)) => {
+            Some(Some(last_sync)) => {
                 let cache_age = Utc::now() - last_sync;
                 Ok(cache_age.num_minutes() > 5)
             }
@@ -611,17 +615,17 @@ impl SwapCrud {
         let slug = trocador_provider.name.to_lowercase().replace(" ", "-");
 
         // First, try to find existing provider by name (case-insensitive)
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM providers WHERE LOWER(name) = LOWER(?) LIMIT 1"
+        let existing = sqlx::query_scalar!(
+            "SELECT id FROM providers WHERE LOWER(name) = LOWER(?) LIMIT 1",
+            trocador_provider.name
         )
-        .bind(&trocador_provider.name)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
-        if let Some((existing_id,)) = existing {
+        if let Some(existing_id) = existing {
             // Update existing provider
-            sqlx::query(
+            sqlx::query!(
                 r#"
                 UPDATE providers SET
                     name = ?,
@@ -632,36 +636,36 @@ impl SwapCrud {
                     markup_enabled = ?,
                     last_synced_at = NOW()
                 WHERE id = ?
-                "#
+                "#,
+                trocador_provider.name,
+                slug,
+                trocador_provider.rating,
+                trocador_provider.insurance,
+                trocador_provider.eta as i32,
+                trocador_provider.enabled_markup,
+                existing_id
             )
-            .bind(&trocador_provider.name)
-            .bind(&slug)
-            .bind(&trocador_provider.rating)
-            .bind(trocador_provider.insurance)
-            .bind(trocador_provider.eta as i32)  // Convert f64 to i32
-            .bind(trocador_provider.enabled_markup)
-            .bind(&existing_id)
             .execute(&self.pool)
             .await
             .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
         } else {
             // Insert new provider
-            sqlx::query(
+            sqlx::query!(
                 r#"
                 INSERT INTO providers (
                     id, name, slug, is_active, kyc_rating,
                     insurance_percentage, eta_minutes, markup_enabled, last_synced_at
                 )
                 VALUES (?, ?, ?, TRUE, ?, ?, ?, ?, NOW())
-                "#
+                "#,
+                id,
+                trocador_provider.name,
+                slug,
+                trocador_provider.rating,
+                trocador_provider.insurance,
+                trocador_provider.eta as i32,
+                trocador_provider.enabled_markup
             )
-            .bind(&id)
-            .bind(&trocador_provider.name)
-            .bind(&slug)
-            .bind(&trocador_provider.rating)
-            .bind(trocador_provider.insurance)
-            .bind(trocador_provider.eta as i32)  // Convert f64 to i32
-            .bind(trocador_provider.enabled_markup)
             .execute(&self.pool)
             .await
             .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
@@ -1056,34 +1060,35 @@ impl SwapCrud {
         let normalized_provider_id = Self::normalize_provider_id(&request.provider);
 
         // Ensure provider exists in database (auto-insert if missing)
-        let provider_exists: Option<(i64,)> = sqlx::query_as(
-            "SELECT COUNT(*) FROM providers WHERE id = ?"
+        let provider_exists = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM providers WHERE id = ?",
+            normalized_provider_id
         )
-        .bind(&normalized_provider_id)
-        .fetch_optional(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
-        if provider_exists.map(|(count,)| count).unwrap_or(0) == 0 {
+        if provider_exists == 0 {
             // Provider doesn't exist, insert a minimal record
             tracing::warn!("Provider '{}' not found in database, auto-inserting", normalized_provider_id);
-            sqlx::query(
+            sqlx::query!(
                 r#"
                 INSERT INTO providers (id, name, slug, is_active, kyc_rating, insurance_percentage, eta_minutes, markup_enabled)
                 VALUES (?, ?, ?, TRUE, 'C', 0.015, 10, FALSE)
                 ON DUPLICATE KEY UPDATE id = id
-                "#
+                "#,
+                normalized_provider_id,
+                request.provider,
+                normalized_provider_id
             )
-            .bind(&normalized_provider_id)
-            .bind(&request.provider)
-            .bind(&normalized_provider_id)
             .execute(&self.pool)
             .await
             .map_err(|e| SwapError::DatabaseError(format!("Failed to auto-insert provider: {}", e)))?;
         }
 
         // 5. Save to database - SWAPS table FIRST
-        sqlx::query(
+        let rate = estimated_user_receive / request.amount;
+        sqlx::query!(
             r#"
             INSERT INTO swaps (
                 id, user_id, provider_id, provider_swap_id,
@@ -1097,30 +1102,30 @@ impl SwapCrud {
                 created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-            "#
+            "#,
+            swap_id,
+            user_id,
+            normalized_provider_id,
+            trocador_res.trade_id,
+            request.from,
+            request.network_from,
+            request.to,
+            request.network_to,
+            request.amount,
+            estimated_user_receive,
+            rate,
+            trocador_res.address_provider,
+            trocador_res.address_provider_memo,
+            request.recipient_address,
+            request.recipient_extra_id,
+            request.refund_address,
+            request.refund_extra_id,
+            platform_fee,
+            platform_fee,
+            status,
+            request.rate_type,
+            request.sandbox
         )
-        .bind(&swap_id)
-        .bind(user_id)
-        .bind(&normalized_provider_id)
-        .bind(&trocador_res.trade_id)
-        .bind(&request.from)
-        .bind(&request.network_from)
-        .bind(&request.to)
-        .bind(&request.network_to)
-        .bind(request.amount)
-        .bind(estimated_user_receive)
-        .bind(estimated_user_receive / request.amount) // rate
-        .bind(&trocador_res.address_provider)
-        .bind(&trocador_res.address_provider_memo)
-        .bind(&request.recipient_address) // User's real address
-        .bind(&request.recipient_extra_id)
-        .bind(&request.refund_address)
-        .bind(&request.refund_extra_id)
-        .bind(platform_fee)
-        .bind(platform_fee) // For now total platform fee is just our commission
-        .bind(status.clone())
-        .bind(&request.rate_type)
-        .bind(request.sandbox)
         .execute(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
@@ -1331,7 +1336,7 @@ impl SwapCrud {
             None
         };
 
-        sqlx::query(
+        sqlx::query!(
             r#"
             UPDATE swaps
             SET status = ?,
@@ -1341,14 +1346,14 @@ impl SwapCrud {
                 completed_at = COALESCE(?, completed_at),
                 updated_at = NOW()
             WHERE id = ?
-            "#
+            "#,
+            status,
+            actual_receive,
+            tx_hash_in,
+            tx_hash_out,
+            completed_at,
+            swap_id
         )
-        .bind(status)
-        .bind(actual_receive)
-        .bind(tx_hash_in)
-        .bind(tx_hash_out)
-        .bind(completed_at)
-        .bind(swap_id)
         .execute(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
@@ -1363,15 +1368,15 @@ impl SwapCrud {
         status: &super::schema::SwapStatus,
         message: Option<String>,
     ) -> Result<(), SwapError> {
-        sqlx::query(
+        sqlx::query!(
             r#"
             INSERT INTO swap_status_history (swap_id, status, message, created_at)
             VALUES (?, ?, ?, NOW())
-            "#
+            "#,
+            swap_id,
+            status,
+            message
         )
-        .bind(swap_id)
-        .bind(status)
-        .bind(message)
         .execute(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;

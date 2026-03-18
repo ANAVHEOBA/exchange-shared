@@ -44,20 +44,20 @@ impl<'a> UserCrud<'a> {
     }
 
     pub async fn create(&self, user: &User) -> Result<(), sqlx::Error> {
-        sqlx::query(
+        sqlx::query!(
             r#"
             INSERT INTO users (id, email, password_hash, email_verified, two_factor_enabled, two_factor_secret, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
+            user.id,
+            user.email,
+            user.password_hash,
+            user.email_verified,
+            user.two_factor_enabled,
+            user.two_factor_secret,
+            user.created_at,
+            user.updated_at
         )
-        .bind(&user.id)
-        .bind(&user.email)
-        .bind(&user.password_hash)
-        .bind(user.email_verified)
-        .bind(user.two_factor_enabled)
-        .bind(&user.two_factor_secret)
-        .bind(user.created_at)
-        .bind(user.updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -65,26 +65,46 @@ impl<'a> UserCrud<'a> {
     }
 
     pub async fn find_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
+        sqlx::query_as!(
+            User,
+            r#"SELECT 
+                id, email, password_hash,
+                email_verified as "email_verified: bool",
+                two_factor_enabled as "two_factor_enabled: bool",
+                two_factor_secret,
+                created_at, updated_at
+            FROM users WHERE id = ?"#,
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
     }
 
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
-            .bind(email)
-            .fetch_optional(&self.pool)
-            .await
+        sqlx::query_as!(
+            User,
+            r#"SELECT 
+                id, email, password_hash,
+                email_verified as "email_verified: bool",
+                two_factor_enabled as "two_factor_enabled: bool",
+                two_factor_secret,
+                created_at, updated_at
+            FROM users WHERE email = ?"#,
+            email
+        )
+        .fetch_optional(&self.pool)
+        .await
     }
 
     pub async fn email_exists(&self, email: &str) -> Result<bool, sqlx::Error> {
-        let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE email = ?")
-            .bind(email)
-            .fetch_one(&self.pool)
-            .await?;
+        let result = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM users WHERE email = ?",
+            email
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
-        Ok(result.0 > 0)
+        Ok(result > 0)
     }
 
     pub async fn login(&self, email: &str, password: &str) -> Result<LoginResult, AuthError> {
