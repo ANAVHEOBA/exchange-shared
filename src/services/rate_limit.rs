@@ -14,9 +14,9 @@ use tower::{Layer, Service};
 pub type GlobalRateLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>;
 
 pub fn create_rate_limiter(burst: u32) -> GlobalRateLimiter {
-    // 1 token per minute refill, with burst capacity
-    // Effectively limits to `burst` requests, then 1 per minute after
-    let quota = Quota::per_minute(NonZeroU32::new(1).unwrap())
+    // 60 tokens per minute (1 per second sustained), with burst capacity
+    // Allows `burst` requests initially, then 1 per second sustained
+    let quota = Quota::per_minute(NonZeroU32::new(60).unwrap())
         .allow_burst(NonZeroU32::new(burst).unwrap());
     Arc::new(RateLimiter::direct(quota))
 }

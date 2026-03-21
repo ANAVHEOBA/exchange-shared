@@ -169,6 +169,8 @@ pub struct RatesQuery {
     pub amount: f64,
     pub rate_type: Option<RateType>,
     pub provider: Option<String>,
+    /// Minimum KYC rating filter (A, B, C, D)
+    pub min_kycrating: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
@@ -341,6 +343,12 @@ pub struct CreateSwapRequest {
     pub rate_type: RateType,
     #[serde(default)]
     pub sandbox: bool,
+    /// Payment swap flag (true for payment, false for standard swap)
+    #[serde(default)]
+    pub payment: bool,
+    /// Minimum KYC rating filter (A, B, C, D)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_kycrating: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -348,7 +356,11 @@ pub struct CreateSwapResponse {
     pub swap_id: String,
     pub provider: String,
     pub from: String,
+    pub from_name: String,
     pub to: String,
+    pub to_name: String,
+    pub network_from: String,
+    pub network_to: String,
     pub deposit_address: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deposit_extra_id: Option<String>,
@@ -359,6 +371,7 @@ pub struct CreateSwapResponse {
     pub status: SwapStatus,
     pub rate_type: RateType,
     pub is_sandbox: bool,
+    pub is_payment: bool,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
@@ -372,6 +385,8 @@ pub struct TrocadorTradeResponse {
     pub network_from: String,
     pub ticker_to: String,
     pub network_to: String,
+    pub coin_from: Option<String>,
+    pub coin_to: Option<String>,
     pub amount_from: f64,
     pub amount_to: f64,
     pub provider: String,
@@ -383,6 +398,7 @@ pub struct TrocadorTradeResponse {
     pub refund_address_memo: Option<String>,
     pub id_provider: Option<String>,
     pub date: Option<String>,
+    pub payment: Option<bool>,
 }
 
 // =============================================================================

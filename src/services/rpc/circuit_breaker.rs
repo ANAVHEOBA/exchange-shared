@@ -197,36 +197,39 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_closed_to_open() {
-        let mut cb = CircuitBreaker::new(0.2, 5, 30, 3);
+        let mut cb = CircuitBreaker::new(0.5, 20, 60, 5);
         
-        // Record failures to trigger opening
-        for _ in 0..2 {
+        // Record failures to trigger opening (need 50% failure rate with 20+ requests)
+        for _ in 0..10 {
             cb.record_success();
         }
-        for _ in 0..4 {
+        for _ in 0..11 {
             cb.record_failure();
         }
         
-        // Should be open now (4/6 = 66% > 20%)
+        // Should be open now (11/21 = 52% > 50%)
         assert_eq!(cb.state, CircuitState::Open);
     }
 
     #[test]
     fn test_circuit_breaker_half_open_recovery() {
-        let mut cb = CircuitBreaker::new(0.2, 5, 0, 3);
+        let mut cb = CircuitBreaker::new(0.5, 20, 0, 5);
         
-        // Open the circuit
-        for _ in 0..6 {
+        // Open the circuit (need 50% failure with 20+ requests)
+        for _ in 0..10 {
+            cb.record_success();
+        }
+        for _ in 0..11 {
             cb.record_failure();
         }
         assert_eq!(cb.state, CircuitState::Open);
         
-        // Allow request should transition to half-open
-        assert!(cb.allow_request());
+        // Check and allow request should transition to half-open
+        assert!(cb.check_and_allow());
         assert_eq!(cb.state, CircuitState::HalfOpen);
         
-        // Record successes to close
-        for _ in 0..3 {
+        // Record successes to close (need 5 consecutive successes)
+        for _ in 0..5 {
             cb.record_success();
         }
         assert_eq!(cb.state, CircuitState::Closed);

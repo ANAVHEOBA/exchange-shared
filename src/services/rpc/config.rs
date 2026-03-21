@@ -68,28 +68,28 @@ pub struct CircuitBreakerConfig {
 }
 
 fn default_failure_threshold() -> f64 {
-    0.2
+    0.5  // 50% failure rate - more tolerant for transient issues
 }
 
 fn default_min_requests() -> u32 {
-    5
+    20  // Require 20 requests before evaluating - prevents premature opening
 }
 
 fn default_timeout_seconds() -> u64 {
-    30
+    60  // 60 seconds before attempting recovery - gives endpoints time to stabilize
 }
 
 fn default_half_open_max_requests() -> u32 {
-    3
+    5  // Test with 5 requests during recovery - more confidence before fully closing
 }
 
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
-            failure_threshold: 0.2,
-            min_requests: 5,
-            timeout_seconds: 30,
-            half_open_max_requests: 3,
+            failure_threshold: 0.5,  // 50% failure rate
+            min_requests: 20,         // Require 20 requests minimum
+            timeout_seconds: 60,      // 60 seconds recovery timeout
+            half_open_max_requests: 5, // Test with 5 requests
         }
     }
 }

@@ -914,6 +914,12 @@ impl SwapCrud {
         &self,
         query: &super::schema::RatesQuery,
     ) -> Result<super::schema::RatesResponse, SwapError> {
+        // Validate: Cannot swap same currency on same network
+        if query.from.eq_ignore_ascii_case(&query.to) && 
+           query.network_from.eq_ignore_ascii_case(&query.network_to) {
+            return Err(SwapError::PairNotAvailable);
+        }
+        
         // Rate limiting check
         if let Some(service) = &self.redis_service {
             let rate_limit_key = "api_calls:trocador:rates";
@@ -933,6 +939,7 @@ impl SwapCrud {
                     &query.to,
                     &query.network_to,
                     query.amount,
+                    query.min_kycrating.as_deref(),
                 )
                 .await
         })
@@ -977,6 +984,9 @@ impl SwapCrud {
         let swap_id = uuid::Uuid::new_v4().to_string();
 
         // MIDDLEMAN FLOW: 1. Generate our internal payout address (needed for Trocador call)
+        tracing::info!("🟢 Starting swap creation: {} {} -> {} {}, amount: {}, provider: {}", 
+            request.from, request.network_from, request.to, request.network_to, request.amount, request.provider);
+        
         let (internal_payout_address, address_index) = if let Some(mnemonic) = &self.wallet_mnemonic {
             let wallet_crud = crate::modules::wallet::crud::WalletCrud::new(self.pool.clone());
             
@@ -987,13 +997,31 @@ impl SwapCrud {
             let addr = crate::services::wallet::derivation::derive_address(mnemonic, &request.to, &request.network_to, index).await
                 .map_err(|e| SwapError::DatabaseError(format!("Derivation error: {}", e)))?;
             
-            tracing::info!("Generated internal payout address for {}: {}", request.to, addr);
+            tracing::info!("🟢 Generated internal payout address for {} on {}: {} (index: {})", 
+                request.to, request.network_to, addr, index);
             (addr, index)
         } else {
             return Err(SwapError::DatabaseError("Wallet mnemonic not configured".to_string()));
         };
 
-        // 2. Call Trocador API with OUR address as the recipient
+        // 2. Validate the generated address with Trocador
+        tracing::info!("🟡 Validating internal payout address with Trocador...");
+        let is_valid = trocador_client
+            .validate_address(&request.to, &request.network_to, &internal_payout_address)
+            .await
+            .map_err(|e| SwapError::ExternalApiError(format!("Address validation failed: {}", e)))?;
+        
+        if !is_valid {
+            tracing::error!("🔴 Generated address is invalid: {} for {} on {}", 
+                internal_payout_address, request.to, request.network_to);
+            return Err(SwapError::ExternalApiError(format!(
+                "Generated payout address is invalid for {} on {}. This is a system error - please contact support.",
+                request.to, request.network_to
+            )));
+        }
+        tracing::info!("✅ Address validated successfully");
+
+        // 3. Call Trocador API with OUR address as the recipient
         let fixed = matches!(request.rate_type, super::schema::RateType::Fixed);
 
         let trocador_res = self.call_trocador_with_retry(|| async {
@@ -1009,6 +1037,8 @@ impl SwapCrud {
                     request.refund_address.as_deref(),
                     &request.provider,
                     fixed,
+                    request.payment,
+                    request.min_kycrating.as_deref(),
                 )
                 .await;
             
@@ -1098,10 +1128,10 @@ impl SwapCrud {
                 recipient_address, recipient_extra_id,
                 refund_address, refund_extra_id,
                 platform_fee, total_fee,
-                status, rate_type, is_sandbox,
+                status, rate_type, is_sandbox, is_payment,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             "#,
             swap_id,
             user_id,
@@ -1124,7 +1154,8 @@ impl SwapCrud {
             platform_fee,
             status,
             request.rate_type,
-            request.sandbox
+            request.sandbox,
+            trocador_res.payment.unwrap_or(false)
         )
         .execute(&self.pool)
         .await
@@ -1145,9 +1176,13 @@ impl SwapCrud {
         // 7. Transform to response
         Ok(super::schema::CreateSwapResponse {
             swap_id,
-            provider: trocador_res.provider,
+            provider: trocador_res.provider.clone(),
             from: request.from.clone(),
+            from_name: trocador_res.coin_from.unwrap_or_else(|| request.from.clone()),
             to: request.to.clone(),
+            to_name: trocador_res.coin_to.unwrap_or_else(|| request.to.clone()),
+            network_from: request.network_from.clone(),
+            network_to: request.network_to.clone(),
             deposit_address: trocador_res.address_provider,
             deposit_extra_id: trocador_res.address_provider_memo,
             deposit_amount: request.amount,
@@ -1157,6 +1192,7 @@ impl SwapCrud {
             status,
             rate_type: request.rate_type.clone(),
             is_sandbox: request.sandbox,
+            is_payment: trocador_res.payment.unwrap_or(false),
             expires_at: Utc::now() + chrono::Duration::minutes(60),
             created_at: Utc::now(),
         })
@@ -1810,6 +1846,7 @@ impl SwapCrud {
             amount: query.amount,
             rate_type: None,
             provider: None,
+            min_kycrating: None,
         };
         
         let rates_response = self.fetch_rates_from_api(&rates_query).await?;

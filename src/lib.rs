@@ -32,8 +32,8 @@ pub async fn create_app(db: DbPool, redis: RedisService, jwt_service: JwtService
         wallet_mnemonic,
     });
 
-    // Rate limit: burst of 10, then 1 per minute
-    let rate_limiter = create_rate_limiter(10);
+    // Rate limit: burst of 100, then 60 per minute (1 per second sustained)
+    let rate_limiter = create_rate_limiter(100);
 
     Router::new()
         .route("/", get(root))

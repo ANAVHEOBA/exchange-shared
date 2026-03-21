@@ -108,10 +108,11 @@ impl TrocadorClient {
         ticker_to: &str,
         network_to: &str,
         amount: f64,
+        min_kycrating: Option<&str>,
     ) -> Result<crate::modules::swap::schema::TrocadorRatesResponse, TrocadorError> {
         let url = format!("{}/new_rate", self.base_url);
         
-        let params = [
+        let mut params = vec![
             ("ticker_from", ticker_from.to_string()),
             ("network_from", network_from.to_string()),
             ("ticker_to", ticker_to.to_string()),
@@ -119,6 +120,10 @@ impl TrocadorClient {
             ("amount_from", amount.to_string()),
             ("best_only", "false".to_string()),
         ];
+
+        if let Some(rating) = min_kycrating {
+            params.push(("min_kycrating", rating.to_string()));
+        }
 
         let response = self
             .client
@@ -158,6 +163,8 @@ impl TrocadorClient {
         refund: Option<&str>,
         provider: &str,
         fixed: bool,
+        payment: bool,
+        min_kycrating: Option<&str>,
     ) -> Result<TrocadorTradeResponse, TrocadorError> {
         let url = format!("{}/new_trade", self.base_url);
 
@@ -170,6 +177,7 @@ impl TrocadorClient {
             ("address", address.to_string()),
             ("provider", provider.to_string()),
             ("fixed", fixed.to_string()),
+            ("payment", payment.to_string()),
         ];
 
         if let Some(id) = trade_id {
@@ -178,6 +186,23 @@ impl TrocadorClient {
 
         if let Some(r) = refund {
             params.push(("refund", r.to_string()));
+        }
+
+        if let Some(rating) = min_kycrating {
+            params.push(("min_kycrating", rating.to_string()));
+        }
+
+        // Log the full request details
+        tracing::info!("🔵 Trocador create_trade request:");
+        tracing::info!("  URL: {}", url);
+        tracing::info!("  Parameters:");
+        for (key, value) in &params {
+            // Mask sensitive data
+            if key == &"address" || key == &"refund" {
+                tracing::info!("    {} = {}...{}", key, &value[..value.len().min(8)], &value[value.len().saturating_sub(4)..]);
+            } else {
+                tracing::info!("    {} = {}", key, value);
+            }
         }
 
         let response = self
@@ -189,18 +214,29 @@ impl TrocadorClient {
             .await
             .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
 
-        if !response.status().is_success() {
+        let status = response.status();
+        tracing::info!("🔵 Trocador response status: {}", status);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
+            tracing::error!("🔴 Trocador API error response: {}", error_text);
             return Err(TrocadorError::ApiError(format!(
                 "API returned error: {}",
                 error_text
             )));
         }
 
-        let trade_response: TrocadorTradeResponse = response
-            .json()
-            .await
-            .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
+        // Get the raw response text first for logging
+        let response_text = response.text().await
+            .map_err(|e| TrocadorError::ParseError(format!("Failed to read response: {}", e)))?;
+        
+        tracing::info!("🔵 Trocador raw response: {}", response_text);
+
+        // Parse the response
+        let trade_response: TrocadorTradeResponse = serde_json::from_str(&response_text)
+            .map_err(|e| TrocadorError::ParseError(format!("Failed to parse response: {}", e)))?;
+
+        tracing::info!("✅ Trocador trade created successfully: trade_id={}", trade_response.trade_id);
 
         Ok(trade_response)
     }

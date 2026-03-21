@@ -59,6 +59,9 @@ impl PricingEngine {
             let amount_to = quote.amount_to.parse::<f64>().unwrap_or(0.0);
             let waste = quote.waste.as_deref().unwrap_or("0.0").parse::<f64>().unwrap_or(0.0);
             
+            // Ensure provider fee is never negative (Trocador backend issue)
+            let provider_fee = waste.max(0.0);
+            
             // MATH: User_Receive = Max(0, Amount_To * (1 - Rate) - Gas_Floor)
             let mut platform_fee = amount_to * commission_rate;
             
@@ -77,9 +80,9 @@ impl PricingEngine {
                 min_amount: quote.min_amount.unwrap_or(0.0),
                 max_amount: quote.max_amount.unwrap_or(0.0),
                 network_fee: 0.0,
-                provider_fee: waste,
+                provider_fee,
                 platform_fee,
-                total_fee: waste + platform_fee,
+                total_fee: provider_fee + platform_fee,
                 rate_type: RateType::Floating, // Default
                 kyc_required: quote.kycrating.as_deref().unwrap_or("D") != "A",
                 kyc_rating: quote.kycrating.clone(),

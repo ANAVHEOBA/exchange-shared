@@ -38,12 +38,33 @@ pub use crate::services::wallet::blockchains::traits::is_valid_seed_phrase;
 /// Routes to the appropriate blockchain implementation based on network
 pub async fn derive_address(
     seed_phrase: &str,
-    _ticker: &str,
+    ticker: &str,
     network: &str,
     index: u32,
 ) -> Result<String, String> {
     let network_lower = network.to_lowercase();
+    let ticker_lower = ticker.to_lowercase();
 
+    // First, check ticker for unambiguous matches
+    match ticker_lower.as_str() {
+        "xmr" => return MoneroDerivation.derive_address(seed_phrase, index),
+        "btc" if network_lower == "bitcoin" || network_lower == "mainnet" => {
+            return Bitcoin.derive_address(seed_phrase, index);
+        }
+        "sol" => return Solana.derive_address(seed_phrase, index),
+        "algo" => return Algorand.derive_address(seed_phrase, index),
+        "near" => return Near.derive_address(seed_phrase, index),
+        "ada" => return CardanoDerivation.derive_address(seed_phrase, index),
+        "dot" => return PolkadotDerivation.derive_address(seed_phrase, index),
+        "ksm" => return KusamaDerivation.derive_address(seed_phrase, index),
+        "xrp" => return XrpDerivation.derive_address(seed_phrase, index),
+        "trx" => return TronDerivation.derive_address(seed_phrase, index),
+        "atom" => return CosmosHubDerivation.derive_address(seed_phrase, index),
+        "sui" => return SuiDerivation.derive_address(seed_phrase, index),
+        _ => {}
+    }
+
+    // Then check network for specific matches
     match network_lower.as_str() {
         // ===== BITCOIN FAMILY =====
         "bitcoin" | "btc" => Bitcoin.derive_address(seed_phrase, index),

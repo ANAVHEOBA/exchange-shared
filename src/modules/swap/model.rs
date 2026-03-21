@@ -119,6 +119,7 @@ pub struct Swap {
     pub status: SwapStatus,
     pub rate_type: RateType,
     pub is_sandbox: bool,
+    pub is_payment: bool,
     pub error: Option<String>,
 
     // Timestamps
