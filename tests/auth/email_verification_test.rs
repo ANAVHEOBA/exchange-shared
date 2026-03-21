@@ -3,17 +3,34 @@ use serde_json::json;
 
 use crate::common::{test_email, test_password, TestContext};
 
-async fn create_and_login(ctx: &TestContext) -> (String, String) {
+fn test_username() -> String {
+    format!("user_{}", uuid::Uuid::new_v4().to_string()[..8].to_string())
+}
+
+async fn create_unverified_user(ctx: &TestContext) -> String {
     let email = test_email();
 
     ctx.server
         .post("/auth/register")
         .json(&json!({
+            "username": test_username(),
             "email": &email,
             "password": test_password(),
             "password_confirm": test_password()
         }))
         .await;
+
+    email
+}
+
+// =============================================================================
+// EMAIL VERIFICATION REQUIREMENT
+// =============================================================================
+
+#[tokio::test]
+async fn unverified_user_cannot_login() {
+    let ctx = TestContext::new().await;
+    let email = create_unverified_user(&ctx).await;
 
     let response = ctx
         .server
@@ -24,188 +41,21 @@ async fn create_and_login(ctx: &TestContext) -> (String, String) {
         }))
         .await;
 
-    let body: serde_json::Value = response.json();
-    let access_token = body["access_token"].as_str().unwrap().to_string();
-
-    (email, access_token)
-}
-
-// =============================================================================
-// LAZY VERIFICATION - Login works without verification
-// =============================================================================
-
-#[tokio::test]
-async fn unverified_user_can_login_immediately_after_registration() {
-    let ctx = TestContext::new().await;
-    let email = test_email();
-
-    // Register
-    let register_response = ctx
-        .server
-        .post("/auth/register")
-        .json(&json!({
-            "email": &email,
-            "password": test_password(),
-            "password_confirm": test_password()
-        }))
-        .await;
-
-    register_response.assert_status(StatusCode::CREATED);
-
-    // Login immediately without verification
-    let login_response = ctx
-        .server
-        .post("/auth/login")
-        .json(&json!({
-            "email": &email,
-            "password": test_password()
-        }))
-        .await;
-
-    login_response.assert_status(StatusCode::OK);
-
-    let body: serde_json::Value = login_response.json();
-    assert!(body.get("access_token").is_some());
-
-    ctx.cleanup().await;
-}
-
-#[tokio::test]
-async fn unverified_user_can_access_basic_endpoints() {
-    let ctx = TestContext::new().await;
-    let (_, access_token) = create_and_login(&ctx).await;
-
-    // Can access /me endpoint
-    let response = ctx
-        .server
-        .get("/auth/me")
-        .authorization_bearer(&access_token)
-        .await;
-
-    response.assert_status(StatusCode::OK);
-
-    let body: serde_json::Value = response.json();
-    assert_eq!(body["email_verified"], false);
-
-    ctx.cleanup().await;
-}
-
-// =============================================================================
-// SENSITIVE FEATURES - Blocked for unverified users
-// =============================================================================
-
-#[tokio::test]
-async fn unverified_user_cannot_enable_2fa() {
-    let ctx = TestContext::new().await;
-    let (_, access_token) = create_and_login(&ctx).await;
-
-    let response = ctx
-        .server
-        .post("/auth/enable-2fa")
-        .authorization_bearer(&access_token)
-        .await;
-
     response.assert_status(StatusCode::FORBIDDEN);
 
     let body: serde_json::Value = response.json();
-    assert!(body["error"].as_str().unwrap().contains("verify")
-        || body["message"].as_str().unwrap_or("").contains("verify"));
+    assert!(body["error"].as_str().unwrap().contains("verify"));
 
     ctx.cleanup().await;
 }
 
 #[tokio::test]
-async fn unverified_user_cannot_request_password_reset() {
+async fn registration_creates_verification_token() {
     let ctx = TestContext::new().await;
-    let (email, _) = create_and_login(&ctx).await;
+    let email = create_unverified_user(&ctx).await;
 
-    // For unverified users, forgot-password should indicate they need to verify first
-    // Note: We still return 200 to prevent email enumeration, but no email is sent
-    let response = ctx
-        .server
-        .post("/auth/forgot-password")
-        .json(&json!({
-            "email": &email
-        }))
-        .await;
-
-    response.assert_status(StatusCode::OK);
-
-    // Verify no reset token was created for unverified user
-    let result = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM password_resets pr
-         JOIN users u ON pr.user_id = u.id
-         WHERE u.email = ? AND u.email_verified = false"
-    )
-    .bind(&email)
-    .fetch_one(&ctx.db)
-    .await
-    .unwrap();
-
-    assert_eq!(result, 0, "Password reset token should NOT be created for unverified user");
-
-    ctx.cleanup().await;
-}
-
-#[tokio::test]
-async fn unverified_user_cannot_purchase_gift_cards() {
-    let ctx = TestContext::new().await;
-    let (_, access_token) = create_and_login(&ctx).await;
-
-    let response = ctx
-        .server
-        .post("/gift-cards/purchase")
-        .authorization_bearer(&access_token)
-        .json(&json!({
-            "card_id": "amazon-50",
-            "amount": 50
-        }))
-        .await;
-
-    response.assert_status(StatusCode::FORBIDDEN);
-
-    let body: serde_json::Value = response.json();
-    assert!(body["error"].as_str().unwrap_or("").contains("verify")
-        || body["message"].as_str().unwrap_or("").contains("verify"));
-
-    ctx.cleanup().await;
-}
-
-// =============================================================================
-// EMAIL VERIFICATION FLOW
-// =============================================================================
-
-#[tokio::test]
-async fn request_verification_email_returns_success() {
-    let ctx = TestContext::new().await;
-    let (_, access_token) = create_and_login(&ctx).await;
-
-    let response = ctx
-        .server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
-        .await;
-
-    response.assert_status(StatusCode::OK);
-
-    let body: serde_json::Value = response.json();
-    assert!(body.get("message").is_some());
-
-    ctx.cleanup().await;
-}
-
-#[tokio::test]
-async fn request_verification_creates_token_in_database() {
-    let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
-
-    ctx.server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
-        .await;
-
-    // Verify token was created
-    let result = sqlx::query_scalar::<_, i64>(
+    // Check that verification token was created
+    let count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
          WHERE u.email = ?"
@@ -215,7 +65,7 @@ async fn request_verification_creates_token_in_database() {
     .await
     .unwrap();
 
-    assert!(result > 0, "Verification token should be created");
+    assert!(count.0 > 0, "Verification token should be created on registration");
 
     ctx.cleanup().await;
 }
@@ -223,13 +73,7 @@ async fn request_verification_creates_token_in_database() {
 #[tokio::test]
 async fn verify_email_with_valid_token_succeeds() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
-
-    // Request verification
-    ctx.server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
-        .await;
+    let email = create_unverified_user(&ctx).await;
 
     // Get token from database
     let token: String = sqlx::query_scalar(
@@ -244,16 +88,16 @@ async fn verify_email_with_valid_token_succeeds() {
     .await
     .unwrap();
 
-    // Verify email
+    // Verify email using GET endpoint with query param
     let response = ctx
         .server
-        .post("/auth/verify-email")
-        .json(&json!({
-            "token": &token
-        }))
+        .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
     response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert!(body["message"].as_str().unwrap().contains("verified"));
 
     ctx.cleanup().await;
 }
@@ -261,20 +105,13 @@ async fn verify_email_with_valid_token_succeeds() {
 #[tokio::test]
 async fn verify_email_updates_user_verified_status() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
+    let email = create_unverified_user(&ctx).await;
 
-    // Request and get token
-    ctx.server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
-        .await;
-
+    // Get token
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?
-         ORDER BY ev.created_at DESC
-         LIMIT 1"
+         WHERE u.email = ?"
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -283,21 +120,58 @@ async fn verify_email_updates_user_verified_status() {
 
     // Verify
     ctx.server
-        .post("/auth/verify-email")
+        .get(&format!("/auth/verify-email?token={}", token))
+        .await;
+
+    // Check user status in database
+    let verified: bool = sqlx::query_scalar(
+        "SELECT email_verified FROM users WHERE email = ?"
+    )
+    .bind(&email)
+    .fetch_one(&ctx.db)
+    .await
+    .unwrap();
+
+    assert_eq!(verified, true, "User should be verified");
+
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn verified_user_can_login() {
+    let ctx = TestContext::new().await;
+    let email = create_unverified_user(&ctx).await;
+
+    // Get and use verification token
+    let token: String = sqlx::query_scalar(
+        "SELECT token FROM email_verifications ev
+         JOIN users u ON ev.user_id = u.id
+         WHERE u.email = ?"
+    )
+    .bind(&email)
+    .fetch_one(&ctx.db)
+    .await
+    .unwrap();
+
+    ctx.server
+        .get(&format!("/auth/verify-email?token={}", token))
+        .await;
+
+    // Now login should work
+    let response = ctx
+        .server
+        .post("/auth/login")
         .json(&json!({
-            "token": &token
+            "email": &email,
+            "password": test_password()
         }))
         .await;
 
-    // Check user status
-    let response = ctx
-        .server
-        .get("/auth/me")
-        .authorization_bearer(&access_token)
-        .await;
+    response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
-    assert_eq!(body["email_verified"], true);
+    assert!(body.get("access_token").is_some());
+    assert!(body.get("refresh_token").is_some());
 
     ctx.cleanup().await;
 }
@@ -308,13 +182,13 @@ async fn verify_email_with_invalid_token_returns_bad_request() {
 
     let response = ctx
         .server
-        .post("/auth/verify-email")
-        .json(&json!({
-            "token": "invalid-token-12345"
-        }))
+        .get("/auth/verify-email?token=invalid-token-12345")
         .await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json();
+    assert!(body.get("error").is_some());
 
     ctx.cleanup().await;
 }
@@ -322,13 +196,7 @@ async fn verify_email_with_invalid_token_returns_bad_request() {
 #[tokio::test]
 async fn verify_email_with_expired_token_returns_bad_request() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
-
-    // Request verification
-    ctx.server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
-        .await;
+    let email = create_unverified_user(&ctx).await;
 
     // Expire the token manually
     sqlx::query(
@@ -354,13 +222,13 @@ async fn verify_email_with_expired_token_returns_bad_request() {
 
     let response = ctx
         .server
-        .post("/auth/verify-email")
-        .json(&json!({
-            "token": &token
-        }))
+        .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json();
+    assert!(body["error"].as_str().unwrap().contains("expired"));
 
     ctx.cleanup().await;
 }
@@ -368,13 +236,7 @@ async fn verify_email_with_expired_token_returns_bad_request() {
 #[tokio::test]
 async fn verification_token_can_only_be_used_once() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
-
-    // Request and get token
-    ctx.server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
-        .await;
+    let email = create_unverified_user(&ctx).await;
 
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
@@ -388,19 +250,13 @@ async fn verification_token_can_only_be_used_once() {
 
     // First verification
     ctx.server
-        .post("/auth/verify-email")
-        .json(&json!({
-            "token": &token
-        }))
+        .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
     // Second verification with same token
     let response = ctx
         .server
-        .post("/auth/verify-email")
-        .json(&json!({
-            "token": &token
-        }))
+        .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
@@ -408,59 +264,14 @@ async fn verification_token_can_only_be_used_once() {
     ctx.cleanup().await;
 }
 
-// =============================================================================
-// VERIFIED USER - Can access sensitive features
-// =============================================================================
-
 #[tokio::test]
-async fn verified_user_can_enable_2fa() {
+async fn verification_token_deleted_after_successful_verification() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
+    let email = create_unverified_user(&ctx).await;
 
-    // Manually verify user for this test
-    sqlx::query("UPDATE users SET email_verified = true WHERE email = ?")
-        .bind(&email)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
-
-    let response = ctx
-        .server
-        .post("/auth/enable-2fa")
-        .authorization_bearer(&access_token)
-        .await;
-
-    response.assert_status(StatusCode::OK);
-
-    let body: serde_json::Value = response.json();
-    assert!(body.get("secret").is_some());
-
-    ctx.cleanup().await;
-}
-
-#[tokio::test]
-async fn verified_user_can_request_password_reset() {
-    let ctx = TestContext::new().await;
-    let (email, _) = create_and_login(&ctx).await;
-
-    // Manually verify user
-    sqlx::query("UPDATE users SET email_verified = true WHERE email = ?")
-        .bind(&email)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
-
-    ctx.server
-        .post("/auth/forgot-password")
-        .json(&json!({
-            "email": &email
-        }))
-        .await;
-
-    // Verify reset token was created
-    let result = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM password_resets pr
-         JOIN users u ON pr.user_id = u.id
+    let token: String = sqlx::query_scalar(
+        "SELECT token FROM email_verifications ev
+         JOIN users u ON ev.user_id = u.id
          WHERE u.email = ?"
     )
     .bind(&email)
@@ -468,95 +279,219 @@ async fn verified_user_can_request_password_reset() {
     .await
     .unwrap();
 
-    assert!(result > 0, "Password reset token SHOULD be created for verified user");
+    // Verify
+    ctx.server
+        .get(&format!("/auth/verify-email?token={}", token))
+        .await;
+
+    // Check token is deleted
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM email_verifications WHERE token = ?"
+    )
+    .bind(&token)
+    .fetch_one(&ctx.db)
+    .await
+    .unwrap();
+
+    assert_eq!(count.0, 0, "Token should be deleted after verification");
 
     ctx.cleanup().await;
 }
 
+// =============================================================================
+// EXPIRED UNVERIFIED ACCOUNT REPLACEMENT
+// =============================================================================
+
 #[tokio::test]
-async fn verified_user_can_purchase_gift_cards() {
+async fn can_register_again_with_unverified_email() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
+    let email = test_email();
 
-    // Manually verify user
-    sqlx::query("UPDATE users SET email_verified = true WHERE email = ?")
-        .bind(&email)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
-
-    let response = ctx
+    // First registration
+    let response1 = ctx
         .server
-        .post("/gift-cards/purchase")
-        .authorization_bearer(&access_token)
+        .post("/auth/register")
         .json(&json!({
-            "card_id": "amazon-50",
-            "amount": 50
+            "username": "firstuser",
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
         }))
         .await;
 
-    // Should not be FORBIDDEN (might be other errors like payment required)
-    assert_ne!(response.status_code(), StatusCode::FORBIDDEN);
+    response1.assert_status(StatusCode::CREATED);
+    
+    // Give a moment for the database transaction to complete
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Second registration with same email (should replace unverified account)
+    let response2 = ctx
+        .server
+        .post("/auth/register")
+        .json(&json!({
+            "username": "seconduser",
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
+        }))
+        .await;
+
+    response2.assert_status(StatusCode::CREATED);
+    
+    // Give a moment for the database transaction to complete
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Only one user should exist
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+
+    assert_eq!(count.0, 1, "Only one user should exist");
+
+    // The username should be "seconduser"
+    let username: Option<String> = sqlx::query_scalar("SELECT username FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_optional(&ctx.db)
+        .await
+        .unwrap();
+
+    assert_eq!(username, Some("seconduser".to_string()), "Second registration should replace first");
 
     ctx.cleanup().await;
 }
 
-// =============================================================================
-// ALREADY VERIFIED - Edge cases
-// =============================================================================
-
 #[tokio::test]
-async fn already_verified_user_requesting_verification_returns_success() {
+async fn cannot_register_with_verified_email() {
     let ctx = TestContext::new().await;
-    let (email, access_token) = create_and_login(&ctx).await;
+    let email = test_email();
 
-    // Manually verify user
-    sqlx::query("UPDATE users SET email_verified = true WHERE email = ?")
+    // First registration
+    ctx.server
+        .post("/auth/register")
+        .json(&json!({
+            "username": test_username(),
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
+        }))
+        .await;
+
+    // Verify the user
+    sqlx::query("UPDATE users SET email_verified = TRUE WHERE email = ?")
         .bind(&email)
         .execute(&ctx.db)
         .await
         .unwrap();
 
-    // Request verification again
+    // Try to register again
     let response = ctx
         .server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
+        .post("/auth/register")
+        .json(&json!({
+            "username": test_username(),
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
+        }))
         .await;
 
-    // Should return OK with message that email is already verified
-    response.assert_status(StatusCode::OK);
+    response.assert_status(StatusCode::CONFLICT);
 
     let body: serde_json::Value = response.json();
-    assert!(body["message"].as_str().unwrap_or("").contains("already"));
+    assert!(body["error"].as_str().unwrap().contains("verified"));
 
     ctx.cleanup().await;
 }
 
 #[tokio::test]
-async fn rate_limits_verification_email_requests() {
+async fn old_verification_tokens_deleted_when_account_replaced() {
     let ctx = TestContext::new().await;
-    let (_, access_token) = create_and_login(&ctx).await;
+    let email = test_email();
 
-    // Send multiple requests rapidly
-    for _ in 0..5 {
-        ctx.server
-            .post("/auth/request-verification")
-            .authorization_bearer(&access_token)
-            .await;
-    }
-
-    // The 6th request might be rate limited
-    let response = ctx
-        .server
-        .post("/auth/request-verification")
-        .authorization_bearer(&access_token)
+    // First registration
+    ctx.server
+        .post("/auth/register")
+        .json(&json!({
+            "username": "firstuser",
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
+        }))
         .await;
 
-    // Either OK or TOO_MANY_REQUESTS
+    // Give time for email verification token to be created
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Get first token
+    let first_token: Option<String> = sqlx::query_scalar(
+        "SELECT token FROM email_verifications ev
+         JOIN users u ON ev.user_id = u.id
+         WHERE u.email = ?"
+    )
+    .bind(&email)
+    .fetch_optional(&ctx.db)
+    .await
+    .unwrap();
+
+    // If no token was created (email service not configured), skip this test
+    if first_token.is_none() {
+        ctx.cleanup().await;
+        return;
+    }
+    
+    let first_token = first_token.unwrap();
+
+    // Second registration (replaces first)
+    ctx.server
+        .post("/auth/register")
+        .json(&json!({
+            "username": "seconduser",
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
+        }))
+        .await;
+
+    // Give time for deletion to complete
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // First token should be invalid
+    let response = ctx
+        .server
+        .get(&format!("/auth/verify-email?token={}", first_token))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn verification_token_expires_after_24_hours() {
+    let ctx = TestContext::new().await;
+    let email = create_unverified_user(&ctx).await;
+
+    // Check token expiration is set to ~24 hours from now
+    let expires_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "SELECT expires_at FROM email_verifications ev
+         JOIN users u ON ev.user_id = u.id
+         WHERE u.email = ?"
+    )
+    .bind(&email)
+    .fetch_one(&ctx.db)
+    .await
+    .unwrap();
+
+    let now = chrono::Utc::now();
+    let hours_until_expiry = (expires_at - now).num_hours();
+
+    // Should be approximately 24 hours (allow 23-25 for test timing)
     assert!(
-        response.status_code() == StatusCode::OK
-        || response.status_code() == StatusCode::TOO_MANY_REQUESTS
+        hours_until_expiry >= 23 && hours_until_expiry <= 25,
+        "Token should expire in ~24 hours, got {} hours",
+        hours_until_expiry
     );
 
     ctx.cleanup().await;

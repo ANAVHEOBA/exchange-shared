@@ -3,19 +3,65 @@ use serde_json::json;
 
 use crate::common::{test_email, test_password, TestContext};
 
+fn test_username() -> String {
+    format!("user_{}", uuid::Uuid::new_v4().to_string()[..8].to_string())
+}
+
 async fn create_test_user(ctx: &TestContext) -> String {
     let email = test_email();
 
     ctx.server
         .post("/auth/register")
         .json(&json!({
+            "username": test_username(),
             "email": &email,
             "password": test_password(),
             "password_confirm": test_password()
         }))
         .await;
 
+    // Verify the user so they can login
+    sqlx::query("UPDATE users SET email_verified = TRUE WHERE email = ?")
+        .bind(&email)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
     email
+}
+
+#[tokio::test]
+async fn login_with_unverified_email_returns_forbidden() {
+    let ctx = TestContext::new().await;
+    let email = test_email();
+
+    // Register but don't verify
+    ctx.server
+        .post("/auth/register")
+        .json(&json!({
+            "username": test_username(),
+            "email": &email,
+            "password": test_password(),
+            "password_confirm": test_password()
+        }))
+        .await;
+
+    // Try to login
+    let response = ctx
+        .server
+        .post("/auth/login")
+        .json(&json!({
+            "email": &email,
+            "password": test_password()
+        }))
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    let body: serde_json::Value = response.json();
+    assert!(body["error"].as_str().unwrap().contains("verify"));
+
+    ctx.cleanup().await;
 }
 
 #[tokio::test]
@@ -203,12 +249,20 @@ async fn measure_register_and_login_times() {
     ctx.server
         .post("/auth/register")
         .json(&json!({
+            "username": test_username(),
             "email": &email,
             "password": test_password(),
             "password_confirm": test_password()
         }))
         .await;
     let reg_duration = reg_start.elapsed();
+
+    // Verify user so they can login
+    sqlx::query("UPDATE users SET email_verified = TRUE WHERE email = ?")
+        .bind(&email)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
 
     // Measure login
     let login_start = std::time::Instant::now();

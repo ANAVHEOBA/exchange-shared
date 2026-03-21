@@ -5,6 +5,7 @@ use sqlx::FromRow;
 pub struct User {
     pub id: String,
     pub email: String,
+    pub username: Option<String>,
     pub password_hash: String,
     pub email_verified: bool,
     pub two_factor_enabled: bool,

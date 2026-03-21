@@ -15,3 +15,4 @@ pub mod metrics;
 pub mod webhook;
 pub mod refund;
 pub mod token;
+pub mod email;

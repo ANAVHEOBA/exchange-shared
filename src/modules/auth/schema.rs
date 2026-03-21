@@ -7,6 +7,8 @@ use validator::Validate;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct RegisterRequest {
+    #[validate(length(min = 3, max = 50, message = "Username must be between 3 and 50 characters"))]
+    pub username: String,
     #[validate(email(message = "Invalid email format"))]
     pub email: String,
     pub password: String,
@@ -85,6 +87,7 @@ pub struct RefreshTokenResponse {
 pub struct UserResponse {
     pub id: String,
     pub email: String,
+    pub username: Option<String>,
     pub email_verified: bool,
     pub two_factor_enabled: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,

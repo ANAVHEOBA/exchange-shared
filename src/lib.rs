@@ -21,15 +21,25 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub jwt_service: JwtService,
     pub wallet_mnemonic: String,
+    pub email_service: Option<services::email::EmailService>,
 }
 
 pub async fn create_app(db: DbPool, redis: RedisService, jwt_service: JwtService, wallet_mnemonic: String) -> Router {
+    // Initialize email service (optional, won't fail if not configured)
+    let email_service = services::email::EmailService::from_env().ok();
+    if email_service.is_none() {
+        tracing::warn!("⚠️  Email service not configured - email verification will be disabled");
+    } else {
+        tracing::info!("✉️  Email service configured successfully");
+    }
+    
     let state = Arc::new(AppState {
         db,
         redis,
         http_client: reqwest::Client::new(),
         jwt_service,
         wallet_mnemonic,
+        email_service,
     });
 
     // Rate limit: burst of 100, then 60 per minute (1 per second sustained)
