@@ -1,5 +1,5 @@
-pub mod polkadot;
 pub mod kusama;
+pub mod polkadot;
 
-pub use polkadot::PolkadotDerivation;
 pub use kusama::KusamaDerivation;
+pub use polkadot::PolkadotDerivation;

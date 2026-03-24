@@ -1,19 +1,36 @@
 use axum::{
-    extract::{Query, State, Path},
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::{Response, IntoResponse},
+    response::{IntoResponse, Response},
     Json,
 };
 use std::sync::Arc;
 
-use crate::AppState;
-use super::crud::{SwapCrud, CurrenciesResult};
+use super::crud::{CurrenciesResult, SwapCrud};
 use super::schema::{
-    CurrenciesQuery, ProvidersQuery, SwapErrorResponse,
-    CreateSwapRequest, CreateSwapResponse, SwapStatusResponse, ValidateAddressRequest, ValidateAddressResponse,
-    HistoryQuery, HistoryResponse,
+    CreateSwapRequest, CreateSwapResponse, CurrenciesQuery, HistoryQuery, HistoryResponse,
+    ProvidersQuery, SwapErrorResponse, SwapStatusResponse, ValidateAddressRequest,
+    ValidateAddressResponse,
 };
+use super::service::SwapService;
 use crate::modules::auth::interface::{OptionalUser, User};
+use crate::AppState;
+
+fn swap_crud(state: &Arc<AppState>) -> SwapCrud {
+    SwapCrud::new(
+        state.db.clone(),
+        Some(state.redis.clone()),
+        Some(state.wallet_mnemonic.clone()),
+    )
+}
+
+fn swap_service(state: &Arc<AppState>) -> SwapService {
+    SwapService::new(
+        state.db.clone(),
+        Some(state.redis.clone()),
+        Some(state.wallet_mnemonic.clone()),
+    )
+}
 
 // ... (existing handlers)
 
@@ -26,16 +43,19 @@ pub async fn create_swap(
     user: OptionalUser,
     Json(payload): Json<CreateSwapRequest>,
 ) -> Result<(StatusCode, Json<CreateSwapResponse>), (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+    let service = swap_service(&state);
 
-    let response = crud.create_swap(&payload, user.0.map(|u| u.id)).await.map_err(|e| {
-        let status = match e {
-            super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
-            super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, Json(SwapErrorResponse::new(e.to_string())))
-    })?;
+    let response = service
+        .create_swap(&payload, user.0.map(|u| u.id))
+        .await
+        .map_err(|e| {
+            let status = match e {
+                super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
+                super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(SwapErrorResponse::new(e.to_string())))
+        })?;
 
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -44,7 +64,7 @@ pub async fn get_currencies(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CurrenciesQuery>,
 ) -> Result<Response, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+    let crud = swap_crud(&state);
 
     // The CRUD layer now handles caching, pagination, raw JSON, and background synchronization
     let result = crud.get_currencies_optimized(query).await.map_err(|e| {
@@ -58,7 +78,7 @@ pub async fn get_currencies(
         CurrenciesResult::Structured(responses) => {
             // Standard JSON response
             Ok(Json(responses).into_response())
-        },
+        }
         CurrenciesResult::RawJson(json_string) => {
             // Optimized raw JSON response (avoids serialization overhead)
             let response = Response::builder()
@@ -83,7 +103,7 @@ pub async fn get_providers(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProvidersQuery>,
 ) -> Result<Response, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+    let crud = swap_crud(&state);
 
     // The CRUD layer now handles caching, optimized filtering, and background synchronization
     let result = crud.get_providers_optimized(query).await.map_err(|e| {
@@ -97,7 +117,7 @@ pub async fn get_providers(
         super::crud::ProvidersResult::Structured(responses) => {
             // Standard JSON response
             Ok(Json(responses).into_response())
-        },
+        }
         super::crud::ProvidersResult::RawJson(json_string) => {
             // Optimized raw JSON response (avoids serialization overhead)
             let response = Response::builder()
@@ -121,8 +141,9 @@ pub async fn get_providers(
 pub async fn get_rates(
     State(state): State<Arc<AppState>>,
     Query(query): Query<super::schema::RatesQuery>,
-) -> Result<Json<super::schema::RatesResponse>, (StatusCode, Json<super::schema::SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+) -> Result<Json<super::schema::RatesResponse>, (StatusCode, Json<super::schema::SwapErrorResponse>)>
+{
+    let crud = swap_crud(&state);
 
     let response = crud.get_rates_optimized(&query).await.map_err(|e| {
         (
@@ -142,9 +163,9 @@ pub async fn get_swap_status(
     State(state): State<Arc<AppState>>,
     Path(swap_id): Path<String>,
 ) -> Result<Json<SwapStatusResponse>, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+    let service = swap_service(&state);
 
-    let response = crud.get_swap_status(&swap_id).await.map_err(|e| {
+    let response = service.get_swap_status(&swap_id).await.map_err(|e| {
         let status = match e {
             super::crud::SwapError::SwapNotFound => StatusCode::NOT_FOUND,
             super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -165,7 +186,7 @@ pub async fn validate_address(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ValidateAddressRequest>,
 ) -> Result<Json<ValidateAddressResponse>, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+    let crud = swap_crud(&state);
 
     let response = crud.validate_address(&payload).await.map_err(|e| {
         let status = match e {
@@ -185,27 +206,25 @@ pub async fn validate_address(
 
 pub async fn get_swap_history(
     State(state): State<Arc<AppState>>,
-    user: User,  // Requires authentication
+    user: User, // Requires authentication
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(
-        state.db.clone(),
-        Some(state.redis.clone()),
-        Some(state.wallet_mnemonic.clone())
-    );
-    
-    let response = crud.get_swap_history(&user.0.id, query).await.map_err(|e| {
-        let status = match e {
-            super::crud::SwapError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
-            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            _ => StatusCode::BAD_REQUEST,
-        };
-        (status, Json(SwapErrorResponse::new(e.to_string())))
-    })?;
-    
+    let crud = swap_crud(&state);
+
+    let response = crud
+        .get_swap_history(&user.0.id, query)
+        .await
+        .map_err(|e| {
+            let status = match e {
+                super::crud::SwapError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
+                super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (status, Json(SwapErrorResponse::new(e.to_string())))
+        })?;
+
     Ok(Json(response))
 }
-
 
 // =============================================================================
 // GET /swap/pairs - List available trading pairs
@@ -215,12 +234,8 @@ pub async fn get_pairs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<super::schema::PairsQuery>,
 ) -> Result<Json<super::schema::PairsResponse>, (StatusCode, Json<SwapErrorResponse>)> {
-    let crud = SwapCrud::new(
-        state.db.clone(),
-        Some(state.redis.clone()),
-        Some(state.wallet_mnemonic.clone())
-    );
-    
+    let crud = swap_crud(&state);
+
     let response = crud.get_pairs(query).await.map_err(|e| {
         let status = match e {
             super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -228,7 +243,7 @@ pub async fn get_pairs(
         };
         (status, Json(SwapErrorResponse::new(e.to_string())))
     })?;
-    
+
     Ok(Json(response))
 }
 
@@ -241,7 +256,7 @@ pub async fn get_estimate(
     Query(query): Query<super::schema::EstimateQuery>,
 ) -> Result<Json<super::schema::EstimateResponse>, (StatusCode, Json<SwapErrorResponse>)> {
     use validator::Validate;
-    
+
     // Validate query parameters
     if let Err(e) = query.validate() {
         return Err((
@@ -249,8 +264,8 @@ pub async fn get_estimate(
             Json(SwapErrorResponse::new(e.to_string())),
         ));
     }
-    
-    let crud = SwapCrud::new(state.db.clone(), Some(state.redis.clone()), Some(state.wallet_mnemonic.clone()));
+
+    let crud = swap_crud(&state);
 
     let response = crud.get_estimate_optimized(&query).await.map_err(|e| {
         let status = match e {

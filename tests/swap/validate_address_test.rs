@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::{json, Value};
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -28,14 +28,21 @@ async fn test_validate_address_valid_btc() {
 
     let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
-    
+
     let json: Value = response.json();
-    
-    assert!(json.get("valid").is_some(), "Response should have 'valid' field");
-    assert_eq!(json["valid"].as_bool().unwrap(), true, "BTC address should be valid");
+
+    assert!(
+        json.get("valid").is_some(),
+        "Response should have 'valid' field"
+    );
+    assert_eq!(
+        json["valid"].as_bool().unwrap(),
+        true,
+        "BTC address should be valid"
+    );
     assert_eq!(json["ticker"].as_str().unwrap(), "btc");
     assert_eq!(json["network"].as_str().unwrap(), "Mainnet");
-    
+
     println!("Valid BTC address validated successfully");
 }
 
@@ -55,12 +62,19 @@ async fn test_validate_address_invalid_btc() {
 
     let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
-    
+
     let json: Value = response.json();
-    
-    assert!(json.get("valid").is_some(), "Response should have 'valid' field");
-    assert_eq!(json["valid"].as_bool().unwrap(), false, "Invalid BTC address should be rejected");
-    
+
+    assert!(
+        json.get("valid").is_some(),
+        "Response should have 'valid' field"
+    );
+    assert_eq!(
+        json["valid"].as_bool().unwrap(),
+        false,
+        "Invalid BTC address should be rejected"
+    );
+
     println!("Invalid BTC address correctly rejected");
 }
 
@@ -80,12 +94,16 @@ async fn test_validate_address_valid_xmr() {
 
     let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
-    
+
     let json: Value = response.json();
-    
-    assert_eq!(json["valid"].as_bool().unwrap(), true, "XMR address should be valid");
+
+    assert_eq!(
+        json["valid"].as_bool().unwrap(),
+        true,
+        "XMR address should be valid"
+    );
     assert_eq!(json["ticker"].as_str().unwrap(), "xmr");
-    
+
     println!("Valid XMR address validated successfully");
 }
 
@@ -104,12 +122,15 @@ async fn test_validate_address_valid_eth() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // ETH validation might fail if Trocador doesn't support this exact network name
     // So we just verify we get a proper response structure
     if response.status_code().is_success() {
         let json: Value = response.json();
-        assert!(json.get("valid").is_some(), "Response should have 'valid' field");
+        assert!(
+            json.get("valid").is_some(),
+            "Response should have 'valid' field"
+        );
         println!("ETH address validation response: {}", json["valid"]);
     } else {
         println!("ETH validation returned error (might be network name issue with Trocador)");
@@ -131,7 +152,7 @@ async fn test_validate_address_invalid_eth() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // Similar to above, just verify we get a response
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -157,12 +178,15 @@ async fn test_validate_address_valid_ltc() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // LTC address validation might fail if format is wrong, so we check both cases
     if response.status_code().is_success() {
         let json: Value = response.json();
         // Just verify we get a response, don't assert validity since address format might vary
-        assert!(json.get("valid").is_some(), "Response should have 'valid' field");
+        assert!(
+            json.get("valid").is_some(),
+            "Response should have 'valid' field"
+        );
         println!("LTC address validation response: {}", json["valid"]);
     } else {
         println!("LTC validation returned error (might be address format issue)");
@@ -182,10 +206,13 @@ async fn test_validate_address_missing_ticker() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // Should return 400 Bad Request or 422 Unprocessable Entity
     let status = response.status_code().as_u16();
-    assert!(status >= 400 && status < 500, "Should return client error for missing ticker");
+    assert!(
+        status >= 400 && status < 500,
+        "Should return client error for missing ticker"
+    );
 }
 
 /// Test missing network field
@@ -201,9 +228,12 @@ async fn test_validate_address_missing_network() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     let status = response.status_code().as_u16();
-    assert!(status >= 400 && status < 500, "Should return client error for missing network");
+    assert!(
+        status >= 400 && status < 500,
+        "Should return client error for missing network"
+    );
 }
 
 /// Test missing address field
@@ -219,9 +249,12 @@ async fn test_validate_address_missing_address() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     let status = response.status_code().as_u16();
-    assert!(status >= 400 && status < 500, "Should return client error for missing address");
+    assert!(
+        status >= 400 && status < 500,
+        "Should return client error for missing address"
+    );
 }
 
 /// Test empty address string
@@ -239,11 +272,15 @@ async fn test_validate_address_empty_address() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // Should either return 400 or return valid: false
     if response.status_code().is_success() {
         let json: Value = response.json();
-        assert_eq!(json["valid"].as_bool().unwrap(), false, "Empty address should be invalid");
+        assert_eq!(
+            json["valid"].as_bool().unwrap(),
+            false,
+            "Empty address should be invalid"
+        );
     } else {
         assert!(response.status_code().as_u16() >= 400);
     }
@@ -264,10 +301,14 @@ async fn test_validate_address_whitespace_address() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     if response.status_code().is_success() {
         let json: Value = response.json();
-        assert_eq!(json["valid"].as_bool().unwrap(), false, "Whitespace address should be invalid");
+        assert_eq!(
+            json["valid"].as_bool().unwrap(),
+            false,
+            "Whitespace address should be invalid"
+        );
     } else {
         assert!(response.status_code().as_u16() >= 400);
     }
@@ -288,7 +329,7 @@ async fn test_validate_address_unsupported_coin() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // Should return error or valid: false
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -314,11 +355,15 @@ async fn test_validate_address_wrong_network() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // Should return error or valid: false
     if response.status_code().is_success() {
         let json: Value = response.json();
-        assert_eq!(json["valid"].as_bool().unwrap(), false, "Wrong network should be invalid");
+        assert_eq!(
+            json["valid"].as_bool().unwrap(),
+            false,
+            "Wrong network should be invalid"
+        );
     } else {
         assert!(response.status_code().as_u16() >= 400);
     }
@@ -339,7 +384,7 @@ async fn test_validate_address_case_insensitive_ticker() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     // Should work regardless of case
     if response.status_code().is_success() {
         let json: Value = response.json();
@@ -363,10 +408,14 @@ async fn test_validate_address_very_long_address() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     if response.status_code().is_success() {
         let json: Value = response.json();
-        assert_eq!(json["valid"].as_bool().unwrap(), false, "Very long address should be invalid");
+        assert_eq!(
+            json["valid"].as_bool().unwrap(),
+            false,
+            "Very long address should be invalid"
+        );
     }
 }
 
@@ -385,10 +434,14 @@ async fn test_validate_address_special_characters() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     if response.status_code().is_success() {
         let json: Value = response.json();
-        assert_eq!(json["valid"].as_bool().unwrap(), false, "Address with special chars should be invalid");
+        assert_eq!(
+            json["valid"].as_bool().unwrap(),
+            false,
+            "Address with special chars should be invalid"
+        );
     }
 }
 
@@ -400,7 +453,7 @@ async fn test_validate_address_multiple_rapid_calls() {
     let server = setup_test_server().await;
 
     let validate_url = "/swap/validate-address";
-    
+
     for i in 1..=5 {
         let payload = json!({
             "ticker": "btc",
@@ -409,18 +462,18 @@ async fn test_validate_address_multiple_rapid_calls() {
         });
 
         let response = timed_post(&server, validate_url, &payload).await;
-        
+
         if !response.status_code().is_success() {
             println!("Validation {} failed with: {}", i, response.status_code());
         }
-        
+
         // Should not return 500 errors
         assert!(
             response.status_code().as_u16() < 500,
             "Should not return server error on validation {}",
             i
         );
-        
+
         sleep(Duration::from_secs(1)).await;
     }
 }
@@ -441,10 +494,14 @@ async fn test_validate_address_performance() {
 
     let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
-    
+
     let json: Value = response.json();
-    assert_eq!(json["valid"].as_bool().unwrap(), true, "BTC address should be valid");
-    
+    assert_eq!(
+        json["valid"].as_bool().unwrap(),
+        true,
+        "BTC address should be valid"
+    );
+
     println!("✅ Address validation test passed");
 }
 
@@ -463,7 +520,7 @@ async fn test_validate_address_xrp_with_tag() {
     });
 
     let response = timed_post(&server, validate_url, &payload).await;
-    
+
     if response.status_code().is_success() {
         let json: Value = response.json();
         // XRP address should be valid (destination tag is optional for validation)
@@ -487,20 +544,32 @@ async fn test_validate_address_response_structure() {
 
     let response = timed_post(&server, validate_url, &payload).await;
     response.assert_status_ok();
-    
+
     let json: Value = response.json();
-    
+
     // Verify required fields
-    assert!(json.get("valid").is_some(), "Response should have 'valid' field");
-    assert!(json.get("ticker").is_some(), "Response should have 'ticker' field");
-    assert!(json.get("network").is_some(), "Response should have 'network' field");
-    assert!(json.get("address").is_some(), "Response should have 'address' field");
-    
+    assert!(
+        json.get("valid").is_some(),
+        "Response should have 'valid' field"
+    );
+    assert!(
+        json.get("ticker").is_some(),
+        "Response should have 'ticker' field"
+    );
+    assert!(
+        json.get("network").is_some(),
+        "Response should have 'network' field"
+    );
+    assert!(
+        json.get("address").is_some(),
+        "Response should have 'address' field"
+    );
+
     // Verify types
     assert!(json["valid"].is_boolean(), "'valid' should be boolean");
     assert!(json["ticker"].is_string(), "'ticker' should be string");
     assert!(json["network"].is_string(), "'network' should be string");
     assert!(json["address"].is_string(), "'address' should be string");
-    
+
     println!("Response structure validated successfully");
 }

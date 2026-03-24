@@ -13,12 +13,15 @@ mod common;
 #[tokio::test]
 async fn test_sign_bitcoin_transaction() {
     let seed_phrase = common::test_wallet_mnemonic();
-    
-    let tx = BtcTransaction { };
-    
+
+    let tx = BtcTransaction {};
+
     let signature = sign_bitcoin_transaction(&seed_phrase, 0, &tx).await;
-    
-    assert!(!signature.is_empty(), "Bitcoin transaction should be signed");
+
+    assert!(
+        !signature.is_empty(),
+        "Bitcoin transaction should be signed"
+    );
     println!("✅ Bitcoin transaction signed");
 }
 
@@ -30,11 +33,11 @@ async fn test_sign_bitcoin_transaction() {
 #[tokio::test]
 async fn test_bitcoin_utxo_signing() {
     let seed_phrase = common::test_wallet_mnemonic();
-    
-    let utxo_tx = BtcUtxoTransaction { };
-    
+
+    let utxo_tx = BtcUtxoTransaction {};
+
     let signature = sign_bitcoin_utxo_transaction(&seed_phrase, 0, &utxo_tx).await;
-    
+
     assert!(!signature.is_empty());
     println!("✅ Bitcoin UTXO transaction signed");
 }
@@ -44,21 +47,25 @@ async fn test_bitcoin_utxo_signing() {
 // =============================================================================
 
 #[allow(dead_code)]
-struct BtcTransaction { }
+struct BtcTransaction {}
 
 #[allow(dead_code)]
-struct BtcUtxoTransaction { }
+struct BtcUtxoTransaction {}
 
 #[allow(dead_code)]
-struct UtxoInput { }
+struct UtxoInput {}
 
 #[allow(dead_code)]
-struct UtxoOutput { }
+struct UtxoOutput {}
 
 async fn sign_bitcoin_transaction(_seed: &str, _index: u32, _tx: &BtcTransaction) -> String {
     "bitcoin_signature".to_string()
 }
 
-async fn sign_bitcoin_utxo_transaction(_seed: &str, _index: u32, _tx: &BtcUtxoTransaction) -> String {
+async fn sign_bitcoin_utxo_transaction(
+    _seed: &str,
+    _index: u32,
+    _tx: &BtcUtxoTransaction,
+) -> String {
     "bitcoin_utxo_signature".to_string()
 }

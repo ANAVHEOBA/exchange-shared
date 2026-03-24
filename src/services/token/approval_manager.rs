@@ -1,5 +1,5 @@
-use sqlx::MySqlPool;
 use alloy::primitives::{Address, U256};
+use sqlx::MySqlPool;
 
 use rust_decimal::Decimal;
 
@@ -13,7 +13,7 @@ impl ApprovalManager {
     pub fn new(pool: MySqlPool) -> Self {
         Self { pool }
     }
-    
+
     /// Check if approval is needed
     pub async fn needs_approval(
         &self,
@@ -26,7 +26,7 @@ impl ApprovalManager {
         let user_addr_str = format!("{:?}", user_address);
         let token_addr_str = format!("{:?}", token_address);
         let spender_addr_str = format!("{:?}", spender_address);
-        
+
         // Check database cache first
         let cached_approval = sqlx::query!(
             r#"
@@ -46,21 +46,22 @@ impl ApprovalManager {
         )
         .fetch_optional(&self.pool)
         .await?;
-        
+
         if let Some(approval) = cached_approval {
             // Parse remaining amount from database (it's a Decimal stored as string)
             let remaining_str = approval.remaining_amount.unwrap_or_else(|| "0".to_string());
-            let remaining = U256::from_str_radix(&remaining_str, 10)
-                .map_err(|e| TokenError::ContractCallFailed(format!("Failed to parse remaining amount: {}", e)))?;
-            
+            let remaining = U256::from_str_radix(&remaining_str, 10).map_err(|e| {
+                TokenError::ContractCallFailed(format!("Failed to parse remaining amount: {}", e))
+            })?;
+
             if remaining >= required_amount {
-                return Ok(false);  // Sufficient approval exists
+                return Ok(false); // Sufficient approval exists
             }
         }
-        
-        Ok(true)  // Need new approval
+
+        Ok(true) // Need new approval
     }
-    
+
     /// Calculate optimal approval amount (2x required for future swaps)
     pub fn calculate_approval_amount(&self, required_amount: U256) -> U256 {
         // Approve 2x the required amount for future swaps
@@ -72,7 +73,7 @@ impl ApprovalManager {
             required_amount
         }
     }
-    
+
     /// Record approval in database
     pub async fn record_approval(
         &self,
@@ -88,7 +89,7 @@ impl ApprovalManager {
         let token_addr_str = format!("{:?}", token_address);
         let spender_addr_str = format!("{:?}", spender_address);
         let approved_str = approved_amount.to_string();
-        
+
         sqlx::query!(
             r#"
             INSERT INTO token_approvals 
@@ -113,10 +114,10 @@ impl ApprovalManager {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Update remaining allowance after transfer
     pub async fn update_allowance(
         &self,
@@ -130,7 +131,7 @@ impl ApprovalManager {
         let token_addr_str = format!("{:?}", token_address);
         let spender_addr_str = format!("{:?}", spender_address);
         let used_str = used_amount.to_string();
-        
+
         sqlx::query!(
             r#"
             UPDATE token_approvals
@@ -150,10 +151,10 @@ impl ApprovalManager {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Revoke approval (set remaining to 0)
     pub async fn revoke_approval(
         &self,
@@ -165,7 +166,7 @@ impl ApprovalManager {
         let user_addr_str = format!("{:?}", user_address);
         let token_addr_str = format!("{:?}", token_address);
         let spender_addr_str = format!("{:?}", spender_address);
-        
+
         sqlx::query!(
             r#"
             UPDATE token_approvals
@@ -183,10 +184,10 @@ impl ApprovalManager {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Get approval statistics for monitoring
     pub async fn get_approval_stats(&self, network: &str) -> Result<ApprovalStats, TokenError> {
         let stats = sqlx::query!(
@@ -202,17 +203,18 @@ impl ApprovalManager {
         )
         .fetch_one(&self.pool)
         .await?;
-        
+
         let reuse_rate = if stats.total_approvals > 0 {
             stats.reused_approvals as f64 / stats.total_approvals as f64
         } else {
             0.0
         };
-        
-        let avg_remaining = stats.avg_remaining
+
+        let avg_remaining = stats
+            .avg_remaining
             .and_then(|s| Decimal::from_str_exact(&s).ok())
             .unwrap_or(Decimal::ZERO);
-        
+
         Ok(ApprovalStats {
             total_approvals: stats.total_approvals as u64,
             reused_approvals: stats.reused_approvals as u64,
@@ -233,23 +235,23 @@ pub struct ApprovalStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_calculate_approval_amount() {
         let manager = ApprovalManager::new(MySqlPool::connect_lazy("mysql://localhost").unwrap());
-        
+
         let required = U256::from(1000u64);
         let approved = manager.calculate_approval_amount(required);
         assert_eq!(approved, U256::from(2000u64));
     }
-    
+
     #[test]
     fn test_calculate_approval_amount_overflow() {
         let manager = ApprovalManager::new(MySqlPool::connect_lazy("mysql://localhost").unwrap());
-        
+
         // Test with max value
         let required = U256::MAX;
         let approved = manager.calculate_approval_amount(required);
-        assert_eq!(approved, required);  // Should not overflow, returns original
+        assert_eq!(approved, required); // Should not overflow, returns original
     }
 }

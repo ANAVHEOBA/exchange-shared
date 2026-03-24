@@ -1,6 +1,6 @@
-use sqlx::{MySql, Pool};
 use crate::modules::monitor::model::PollingState;
 use chrono::Utc;
+use sqlx::{MySql, Pool};
 
 pub struct MonitorCrud {
     pool: Pool<MySql>,
@@ -14,7 +14,7 @@ impl MonitorCrud {
     /// Get all swaps that are due for polling
     pub async fn get_due_polls(&self) -> Result<Vec<PollingState>, sqlx::Error> {
         sqlx::query_as::<_, PollingState>(
-            "SELECT * FROM polling_states WHERE next_poll_at <= NOW()"
+            "SELECT * FROM polling_states WHERE next_poll_at <= NOW()",
         )
         .fetch_all(&self.pool)
         .await
@@ -28,7 +28,7 @@ impl MonitorCrud {
         next_poll_in_secs: u64,
     ) -> Result<(), sqlx::Error> {
         let next_poll = Utc::now() + chrono::Duration::seconds(next_poll_in_secs as i64);
-        
+
         sqlx::query(
             r#"
             INSERT INTO polling_states (swap_id, last_polled_at, next_poll_at, poll_count, last_status)

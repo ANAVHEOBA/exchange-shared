@@ -6,7 +6,7 @@ use exchange_shared::services::wallet::derivation;
 #[tokio::test]
 async fn test_all_trocador_top_networks() {
     let seed = common::test_wallet_mnemonic();
-    
+
     // Test top Trocador networks (using their exact case from API)
     let test_networks = vec![
         ("ERC20", "Ethereum tokens"),
@@ -35,20 +35,25 @@ async fn test_all_trocador_top_networks() {
         ("zano", "Zano"),
         ("ZANO", "Zano (upper)"),
     ];
-    
+
     println!("\n{}", "=".repeat(80));
     println!("TESTING TROCADOR NETWORKS WITH ACTUAL DERIVATION");
     println!("{}", "=".repeat(80));
     println!();
-    
+
     let mut passed = 0;
     let mut failed_list = Vec::new();
-    
+
     for (network, description) in test_networks {
         match derivation::derive_address(&seed, "TEST", network, 0).await {
             Ok(addr) => {
                 passed += 1;
-                println!("✅ {:<25} ({:<30}) -> {}", network, description, &addr[..42.min(addr.len())]);
+                println!(
+                    "✅ {:<25} ({:<30}) -> {}",
+                    network,
+                    description,
+                    &addr[..42.min(addr.len())]
+                );
             }
             Err(e) => {
                 failed_list.push((network, description, e));
@@ -56,7 +61,7 @@ async fn test_all_trocador_top_networks() {
             }
         }
     }
-    
+
     println!();
     println!("{}", "=".repeat(80));
     if failed_list.is_empty() {
@@ -70,6 +75,6 @@ async fn test_all_trocador_top_networks() {
         }
     }
     println!();
-    
+
     assert!(failed_list.is_empty(), "Some networks failed derivation");
 }

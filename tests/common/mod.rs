@@ -1,8 +1,10 @@
+use async_trait::async_trait;
 use axum_test::TestServer;
 use exchange_shared::services::redis_cache::RedisService;
-use sqlx::{MySql, Pool};
-use async_trait::async_trait;
+use exchange_shared::services::rpc::{build_default_rpc_configs, RpcManager};
 use exchange_shared::services::wallet::rpc::{BlockchainProvider, RpcError};
+use sqlx::{MySql, Pool};
+use std::sync::Arc;
 
 pub mod rate_limiter;
 
@@ -38,24 +40,45 @@ impl TestContext {
             .unwrap_or_else(|_| "test-secret-key-for-testing-only".to_string());
         let jwt_service = exchange_shared::services::jwt::JwtService::new(jwt_secret);
 
-        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
         let redis_service = RedisService::new(&redis_url);
 
         let wallet_mnemonic = test_wallet_mnemonic();
+        let rpc_manager = Arc::new(RpcManager::new(build_default_rpc_configs()));
 
-        let app = exchange_shared::create_app(db.clone(), redis_service.clone(), jwt_service, wallet_mnemonic).await;
+        let app = exchange_shared::create_app(
+            db.clone(),
+            redis_service.clone(),
+            jwt_service,
+            wallet_mnemonic,
+            rpc_manager,
+        )
+        .await;
         let server = TestServer::new(app).expect("Failed to create test server");
 
-        Self { server, db, redis: redis_service }
+        Self {
+            server,
+            db,
+            redis: redis_service,
+        }
     }
 
     pub async fn cleanup(&self) {
         // Clean up Redis
-        if let Ok(mut conn) = self.redis.get_client().get_multiplexed_async_connection().await {
-            let _: () = redis::cmd("FLUSHDB").query_async(&mut conn).await.unwrap_or(());
+        if let Ok(mut conn) = self
+            .redis
+            .get_client()
+            .get_multiplexed_async_connection()
+            .await
+        {
+            let _: () = redis::cmd("FLUSHDB")
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(());
         }
 
-        /* 
+        /*
         // Clean up test data - Disabled to prevent cross-test interference
         sqlx::query("DELETE FROM polling_states").execute(&self.db).await.ok();
         sqlx::query("DELETE FROM swap_address_info").execute(&self.db).await.ok();
@@ -85,8 +108,7 @@ pub fn test_password() -> &'static str {
 #[allow(dead_code)]
 pub fn test_wallet_mnemonic() -> String {
     dotenvy::dotenv().ok();
-    std::env::var("WALLET_MNEMONIC")
-        .expect("WALLET_MNEMONIC must be set in .env")
+    std::env::var("WALLET_MNEMONIC").expect("WALLET_MNEMONIC must be set in .env")
 }
 
 // Helper to setup test server (simplified for swap tests)
@@ -106,7 +128,7 @@ pub async fn timed_get(server: &TestServer, path: &str) -> axum_test::TestRespon
     } else {
         None
     };
-    
+
     let start = std::time::Instant::now();
     let response = server.get(path).await;
     let duration = start.elapsed();
@@ -115,7 +137,11 @@ pub async fn timed_get(server: &TestServer, path: &str) -> axum_test::TestRespon
 }
 
 #[allow(dead_code)]
-pub async fn timed_post<T: serde::Serialize>(server: &TestServer, path: &str, body: &T) -> axum_test::TestResponse {
+pub async fn timed_post<T: serde::Serialize>(
+    server: &TestServer,
+    path: &str,
+    body: &T,
+) -> axum_test::TestResponse {
     // Rate limit POST calls (creating trades) with SEPARATE limiter
     // This allows GET and POST to happen independently without blocking each other
     // Both space out at 2000ms, but they don't share the same queue
@@ -124,7 +150,7 @@ pub async fn timed_post<T: serde::Serialize>(server: &TestServer, path: &str, bo
     } else {
         None
     };
-    
+
     let start = std::time::Instant::now();
     let response = server.post(path).json(body).await;
     let duration = start.elapsed();
@@ -142,12 +168,19 @@ pub struct NoOpProvider;
 
 #[async_trait]
 impl BlockchainProvider for NoOpProvider {
-    async fn get_transaction_count(&self, _address: &str) -> Result<u64, RpcError> { Ok(0) }
-    async fn get_gas_price(&self) -> Result<u64, RpcError> { Ok(0) }
-    async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> { Ok("".to_string()) }
-    async fn get_balance(&self, _address: &str) -> Result<f64, RpcError> { Ok(0.0) }
+    async fn get_transaction_count(&self, _address: &str) -> Result<u64, RpcError> {
+        Ok(0)
+    }
+    async fn get_gas_price(&self) -> Result<u64, RpcError> {
+        Ok(0)
+    }
+    async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> {
+        Ok("".to_string())
+    }
+    async fn get_balance(&self, _address: &str) -> Result<f64, RpcError> {
+        Ok(0.0)
+    }
 }
-
 
 // =============================================================================
 // TEST HELPERS FOR HISTORY TESTS
@@ -179,47 +212,65 @@ pub async fn setup_test_app() -> axum::Router {
     let redis_service = RedisService::new(&redis_url);
 
     let wallet_mnemonic = test_wallet_mnemonic();
+    let rpc_manager = Arc::new(RpcManager::new(build_default_rpc_configs()));
 
-    exchange_shared::create_app(db, redis_service, jwt_service, wallet_mnemonic).await
+    exchange_shared::create_app(db, redis_service, jwt_service, wallet_mnemonic, rpc_manager).await
 }
 
 #[allow(dead_code)]
-pub async fn create_test_user(server: &TestServer, email: &str, password: &str) -> (String, String) {
+pub async fn create_test_user(
+    server: &TestServer,
+    email: &str,
+    password: &str,
+) -> (String, String) {
     use serde_json::json;
-    
+
     // Make email unique by adding random number before @
     let parts: Vec<&str> = email.split('@').collect();
     let unique_email = if parts.len() == 2 {
-        format!("{}+{}@{}", parts[0], uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string(), parts[1])
+        format!(
+            "{}+{}@{}",
+            parts[0],
+            uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string(),
+            parts[1]
+        )
     } else {
-        format!("test_{}@test.com", uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string())
+        format!(
+            "test_{}@test.com",
+            uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string()
+        )
     };
-    
+
     // Register user
     let register_body = json!({
         "email": unique_email,
         "password": password,
         "password_confirm": password
     });
-    
+
     let register_response = server.post("/auth/register").json(&register_body).await;
-    assert_eq!(register_response.status_code(), 201, "Failed to register user: {}", register_response.text());
-    
+    assert_eq!(
+        register_response.status_code(),
+        201,
+        "Failed to register user: {}",
+        register_response.text()
+    );
+
     let register_json: serde_json::Value = register_response.json();
     let user_id = register_json["user"]["id"].as_str().unwrap().to_string();
-    
+
     // Login to get token
     let login_body = json!({
         "email": unique_email,
         "password": password
     });
-    
+
     let login_response = server.post("/auth/login").json(&login_body).await;
     assert_eq!(login_response.status_code(), 200, "Failed to login");
-    
+
     let login_json: serde_json::Value = login_response.json();
     let token = login_json["access_token"].as_str().unwrap().to_string();
-    
+
     (user_id, token)
 }
 
@@ -230,7 +281,7 @@ pub async fn create_test_swap(_server: &TestServer, user_id: &str, from: &str, t
     let db_url = std::env::var("TEST_DATABASE_URL")
         .unwrap_or_else(|_| std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"));
     let db = sqlx::mysql::MySqlPool::connect(&db_url).await.unwrap();
-    
+
     sqlx::query(
         "INSERT INTO swaps (
             id, user_id, provider_id, from_currency, from_network, 
@@ -239,7 +290,7 @@ pub async fn create_test_swap(_server: &TestServer, user_id: &str, from: &str, t
             platform_fee, total_fee, is_sandbox, created_at
         ) VALUES (?, ?, 'changenow', ?, 'mainnet', ?, 'mainnet', 0.1, 1.5, 15.0, 
                   'test_deposit', 'test_recipient', 'waiting', 'floating',
-                  0.01, 0.02, 1, NOW())"
+                  0.01, 0.02, 1, NOW())",
     )
     .bind(&swap_id)
     .bind(user_id)
@@ -248,6 +299,6 @@ pub async fn create_test_swap(_server: &TestServer, user_id: &str, from: &str, t
     .execute(&db)
     .await
     .expect("Failed to create test swap");
-    
+
     swap_id
 }

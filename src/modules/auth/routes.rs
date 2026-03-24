@@ -1,8 +1,11 @@
-use axum::{routing::{post, get}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use std::sync::Arc;
 
-use crate::AppState;
 use super::controller;
+use crate::AppState;
 
 pub fn auth_routes() -> Router<Arc<AppState>> {
     Router::new()

@@ -5,19 +5,19 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,        // user id
+    pub sub: String, // user id
     pub email: String,
-    pub exp: i64,           // expiration time
-    pub iat: i64,           // issued at
-    pub jti: String,        // unique token id
+    pub exp: i64,    // expiration time
+    pub iat: i64,    // issued at
+    pub jti: String, // unique token id
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RefreshClaims {
-    pub sub: String,        // user id
+    pub sub: String, // user id
     pub exp: i64,
     pub iat: i64,
-    pub jti: String,        // unique token id
+    pub jti: String, // unique token id
 }
 
 pub struct JwtService {
@@ -35,7 +35,11 @@ impl JwtService {
         }
     }
 
-    pub fn create_access_token(&self, user_id: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn create_access_token(
+        &self,
+        user_id: &str,
+        email: &str,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         let now = Utc::now();
         let exp = now + self.access_token_duration;
 
@@ -54,7 +58,10 @@ impl JwtService {
         )
     }
 
-    pub fn create_refresh_token(&self, user_id: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn create_refresh_token(
+        &self,
+        user_id: &str,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         let now = Utc::now();
         let exp = now + self.refresh_token_duration;
 
@@ -72,7 +79,10 @@ impl JwtService {
         )
     }
 
-    pub fn verify_access_token(&self, token: &str) -> Result<TokenData<Claims>, jsonwebtoken::errors::Error> {
+    pub fn verify_access_token(
+        &self,
+        token: &str,
+    ) -> Result<TokenData<Claims>, jsonwebtoken::errors::Error> {
         decode::<Claims>(
             token,
             &DecodingKey::from_secret(self.secret.as_bytes()),
@@ -80,7 +90,10 @@ impl JwtService {
         )
     }
 
-    pub fn verify_refresh_token(&self, token: &str) -> Result<TokenData<RefreshClaims>, jsonwebtoken::errors::Error> {
+    pub fn verify_refresh_token(
+        &self,
+        token: &str,
+    ) -> Result<TokenData<RefreshClaims>, jsonwebtoken::errors::Error> {
         decode::<RefreshClaims>(
             token,
             &DecodingKey::from_secret(self.secret.as_bytes()),

@@ -1,8 +1,14 @@
-use axum::{routing::{get, post}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use std::sync::Arc;
 
+use super::controller::{
+    create_swap, get_currencies, get_estimate, get_pairs, get_providers, get_rates,
+    get_swap_history, get_swap_status, validate_address,
+};
 use crate::AppState;
-use super::controller::{get_currencies, get_providers, get_rates, create_swap, get_swap_status, validate_address, get_swap_history, get_estimate, get_pairs};
 
 pub fn swap_routes() -> Router<Arc<AppState>> {
     Router::new()

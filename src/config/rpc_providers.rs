@@ -1,10 +1,10 @@
+use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
+use crate::services::wallet::rest_rpc::RestRpcClient;
+use crate::services::wallet::rpc::{BlockchainProvider, HttpRpcClient};
+use crate::services::wallet::solana_rpc::SolanaRpcClient;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde::Deserialize;
-use crate::services::wallet::rpc::{BlockchainProvider, HttpRpcClient};
-use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
-use crate::services::wallet::solana_rpc::SolanaRpcClient;
-use crate::services::wallet::rest_rpc::RestRpcClient;
 
 #[derive(Debug, Deserialize)]
 pub struct ChainMetadata {
@@ -29,11 +29,11 @@ impl RpcProviderConfig {
     pub fn from_env() -> Self {
         let mut providers: HashMap<String, Arc<dyn BlockchainProvider>> = HashMap::new();
         let mut metadata_map: HashMap<String, ChainMetadata> = HashMap::new();
-        
+
         // Load metadata from chains.json
         let chains_json = include_str!("chains.json");
-        let chains: Vec<ChainMetadata> = serde_json::from_str(chains_json)
-            .expect("Failed to parse chains.json");
+        let chains: Vec<ChainMetadata> =
+            serde_json::from_str(chains_json).expect("Failed to parse chains.json");
 
         // Secret keys from environment
         let alchemy_key = std::env::var("ALCHEMY_API_KEY").ok();
@@ -42,7 +42,7 @@ impl RpcProviderConfig {
 
         for meta in chains {
             let chain_key = meta.name.to_lowercase().replace(' ', "_");
-            
+
             // Priority 1: Individual Env Var (e.g. ETH_RPC_URL)
             let env_var_name = format!("{}_RPC_URL", chain_key.to_uppercase());
             let rpc_url = if let Ok(custom_url) = std::env::var(&env_var_name) {
@@ -59,12 +59,15 @@ impl RpcProviderConfig {
             let provider: Arc<dyn BlockchainProvider> = match meta.family.as_str() {
                 "btc" | "utxo" | "special" => {
                     // Check if it's a REST explorer URL or a real node URL
-                    if rpc_url.contains("mempool.space") || rpc_url.contains("blockchair.com") || rpc_url.contains("blockcypher.com") {
+                    if rpc_url.contains("mempool.space")
+                        || rpc_url.contains("blockchair.com")
+                        || rpc_url.contains("blockcypher.com")
+                    {
                         Arc::new(RestRpcClient::new(rpc_url))
                     } else {
                         Arc::new(BitcoinRpcClient::new(rpc_url))
                     }
-                },
+                }
                 "solana" => Arc::new(SolanaRpcClient::new(rpc_url)),
                 _ => Arc::new(HttpRpcClient::new(rpc_url)), // Default to EVM/Generic
             };
@@ -73,16 +76,22 @@ impl RpcProviderConfig {
             metadata_map.insert(chain_key, meta);
         }
 
-        tracing::info!("🌐 RPC providers initialized for {} chains dynamically", providers.len());
-        
-        Self { providers, metadata: metadata_map }
+        tracing::info!(
+            "🌐 RPC providers initialized for {} chains dynamically",
+            providers.len()
+        );
+
+        Self {
+            providers,
+            metadata: metadata_map,
+        }
     }
 
     fn resolve_url(
-        meta: &ChainMetadata, 
-        alchemy_key: &Option<String>, 
+        meta: &ChainMetadata,
+        alchemy_key: &Option<String>,
         ankr_id: &Option<String>,
-        infura_id: &Option<String>
+        infura_id: &Option<String>,
     ) -> String {
         // Priority 2: Alchemy
         if let Some(key) = alchemy_key {
@@ -108,16 +117,16 @@ impl RpcProviderConfig {
         // Priority 5: Public Fallback
         meta.public_rpc.clone()
     }
-    
+
     /// Get provider for a specific network
     pub fn get_provider(&self, network: &str) -> Option<Arc<dyn BlockchainProvider>> {
         let normalized = network.to_lowercase().replace(' ', "_");
-        
+
         // Direct match
         if let Some(provider) = self.providers.get(&normalized) {
             return Some(provider.clone());
         }
-        
+
         // Common aliases
         let provider_key = match normalized.as_str() {
             "eth" | "ethereum" => "ethereum",
@@ -133,15 +142,15 @@ impl RpcProviderConfig {
             "xmr" | "monero" => "monero",
             _ => return None,
         };
-        
+
         self.providers.get(provider_key).cloned()
     }
-    
+
     /// Get all configured providers
     pub fn get_all_providers(&self) -> &HashMap<String, Arc<dyn BlockchainProvider>> {
         &self.providers
     }
-    
+
     pub fn is_supported(&self, network: &str) -> bool {
         self.get_provider(network).is_some()
     }

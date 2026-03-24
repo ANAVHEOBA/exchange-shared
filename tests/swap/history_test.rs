@@ -1,9 +1,9 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::{setup_test_app, create_test_user, create_test_swap};
+use common::{create_test_swap, create_test_user, setup_test_app};
 
 use axum_test::TestServer;
 
@@ -19,7 +19,7 @@ async fn test_history_requires_authentication() {
 
     // Try to access history without authentication
     let response = server.get("/swap/history").await;
-    
+
     assert_eq!(response.status_code(), 401, "Should require authentication");
 }
 
@@ -39,7 +39,7 @@ async fn test_history_first_page_empty() {
         .await;
 
     assert_eq!(response.status_code(), 200);
-    
+
     let json: Value = response.json();
     assert!(json["swaps"].is_array());
     assert_eq!(json["swaps"].as_array().unwrap().len(), 0);
@@ -69,7 +69,7 @@ async fn test_history_first_page_with_swaps() {
         .await;
 
     assert_eq!(response.status_code(), 200);
-    
+
     let json: Value = response.json();
     assert_eq!(json["swaps"].as_array().unwrap().len(), 5);
     assert_eq!(json["pagination"]["limit"].as_u64().unwrap(), 10);
@@ -98,7 +98,7 @@ async fn test_history_keyset_pagination() {
         .await;
 
     assert_eq!(response.status_code(), 200);
-    
+
     let json: Value = response.json();
     assert_eq!(json["swaps"].as_array().unwrap().len(), 10);
     assert_eq!(json["pagination"]["has_more"].as_bool().unwrap(), true);
@@ -113,7 +113,7 @@ async fn test_history_keyset_pagination() {
         .await;
 
     assert_eq!(response2.status_code(), 200);
-    
+
     let json2: Value = response2.json();
     assert_eq!(json2["swaps"].as_array().unwrap().len(), 10);
     assert_eq!(json2["pagination"]["has_more"].as_bool().unwrap(), true);
@@ -126,7 +126,7 @@ async fn test_history_keyset_pagination() {
         .await;
 
     assert_eq!(response3.status_code(), 200);
-    
+
     let json3: Value = response3.json();
     assert_eq!(json3["swaps"].as_array().unwrap().len(), 5); // Remaining swaps
     assert_eq!(json3["pagination"]["has_more"].as_bool().unwrap(), false);
@@ -154,7 +154,7 @@ async fn test_history_filter_by_status() {
         .await;
 
     assert_eq!(response.status_code(), 200);
-    
+
     let json: Value = response.json();
     assert!(json["swaps"].is_array());
     assert!(json["filters_applied"]["status"].as_str().unwrap() == "waiting");
@@ -183,10 +183,10 @@ async fn test_history_filter_by_currency() {
         .await;
 
     assert_eq!(response.status_code(), 200);
-    
+
     let json: Value = response.json();
     let swaps = json["swaps"].as_array().unwrap();
-    
+
     // All swaps should have BTC as from_currency
     for swap in swaps {
         assert_eq!(swap["from_currency"].as_str().unwrap(), "BTC");

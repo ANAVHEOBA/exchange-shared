@@ -87,6 +87,7 @@ JWT_SECRET=your-secret-key-min-32-characters-long
 # Server
 HOST=0.0.0.0
 PORT=3000
+CORS_ORIGINS=https://app.yourdomain.com
 
 # Trocador API Key
 TROCADOR_API_KEY=your-api-key
@@ -94,6 +95,8 @@ TROCADOR_API_KEY=your-api-key
 # Environment
 RUST_LOG=exchange_shared=debug,tower_http=debug
 ```
+
+If `CORS_ORIGINS` is empty, cross-origin browser access is disabled by default.
 
 ### Database Setup
 

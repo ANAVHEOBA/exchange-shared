@@ -1,13 +1,13 @@
 use exchange_shared::config::{environment::Config, init_db};
 use exchange_shared::services::{
-    jwt::JwtService, 
-    redis_cache::RedisService, 
     blockchain::BlockchainListener,
+    jwt::JwtService,
     monitor::MonitorEngine,
-    rpc::{RpcManager, build_default_rpc_configs},
+    redis_cache::RedisService,
+    rpc::{build_default_rpc_configs, RpcManager},
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::sync::Arc;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
@@ -37,7 +37,7 @@ async fn main() {
     let rpc_configs = build_default_rpc_configs();
     let rpc_manager = Arc::new(RpcManager::new(rpc_configs));
     tracing::info!("Initialized production RPC Manager with circuit breaker");
-    
+
     // Start RPC health check loop in background
     let health_check_manager = rpc_manager.clone();
     tokio::spawn(async move {
@@ -67,7 +67,14 @@ async fn main() {
     });
     tracing::info!("Monitor engine started (adaptive polling with mathematical optimization)");
 
-    let app = exchange_shared::create_app(db, redis_service, jwt_service, config.wallet_mnemonic).await;
+    let app = exchange_shared::create_app(
+        db,
+        redis_service,
+        jwt_service,
+        config.wallet_mnemonic,
+        rpc_manager,
+    )
+    .await;
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     tracing::info!("Server running on http://localhost:3000");

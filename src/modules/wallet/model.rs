@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 // =============================================================================
 // DATABASE MODELS
@@ -17,11 +17,20 @@ pub struct SwapAddressInfo {
     pub commission_rate: f64,
     pub payout_tx_hash: Option<String>,
     pub payout_amount: Option<f64>,
+    pub actual_received: Option<f64>,
+    pub commission_taken: Option<f64>,
+    pub network_fee_paid: Option<f64>,
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub signed_at: Option<DateTime<Utc>>,
     pub broadcast_at: Option<DateTime<Utc>>,
     pub confirmed_at: Option<DateTime<Utc>>,
+    pub last_balance_check: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PayoutFeeQuote {
+    pub platform_fee: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

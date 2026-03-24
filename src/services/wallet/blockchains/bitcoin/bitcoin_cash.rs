@@ -1,9 +1,9 @@
-use crate::services::wallet::blockchains::traits::{BlockchainDerivation, is_valid_seed_phrase};
+use crate::services::wallet::blockchains::traits::{is_valid_seed_phrase, BlockchainDerivation};
 use bip39::{Language, Mnemonic};
 use coins_bip32::path::DerivationPath;
+use ripemd::Ripemd160;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use ripemd::Ripemd160;
 use std::str::FromStr;
 
 pub struct BitcoinCash;
@@ -12,11 +12,11 @@ impl BlockchainDerivation for BitcoinCash {
     fn coin_type(&self) -> u32 {
         145
     }
-    
+
     fn name(&self) -> &'static str {
         "Bitcoin Cash"
     }
-    
+
     fn derive_address(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
         if !is_valid_seed_phrase(seed_phrase) {
             return Err("Invalid seed phrase".to_string());
@@ -37,8 +37,8 @@ impl BlockchainDerivation for BitcoinCash {
 
         let signing_key: &coins_bip32::prelude::SigningKey = key.as_ref();
         let priv_bytes = signing_key.to_bytes();
-        let secret_key = SecretKey::from_slice(&priv_bytes)
-            .map_err(|e| format!("Invalid secret key: {}", e))?;
+        let secret_key =
+            SecretKey::from_slice(&priv_bytes).map_err(|e| format!("Invalid secret key: {}", e))?;
         let secp = Secp256k1::new();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         let pub_bytes_compressed = public_key.serialize();
@@ -51,17 +51,12 @@ impl BlockchainDerivation for BitcoinCash {
         hasher.update(&sha256_hash);
         let account_id = hasher.finalize();
 
-        // Return CashAddr format: bitcoincash:qph2v...
-        // For simplicity, return legacy format with BCH prefix
-        let mut payload = vec![0x00u8];
-        payload.extend_from_slice(&account_id);
-        let checksum = bitcoin_checksum(&payload);
-        payload.extend_from_slice(&checksum);
-
-        let legacy_addr = bs58::encode(&payload).into_string();
-        Ok(format!("bitcoincash:{}", &legacy_addr[1..])) // Simple CashAddr approximation
+        Ok(format!(
+            "bitcoincash:{}",
+            encode_cashaddr_payload(&account_id[..])
+        ))
     }
-    
+
     fn derive_private_key(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
         if !is_valid_seed_phrase(seed_phrase) {
             return Err("Invalid seed phrase".to_string());
@@ -87,16 +82,14 @@ impl BlockchainDerivation for BitcoinCash {
     }
 }
 
-fn bitcoin_checksum(data: &[u8]) -> [u8; 4] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let hash1 = hasher.finalize();
+fn encode_cashaddr_payload(data: &[u8]) -> String {
+    const CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
-    let mut hasher = Sha256::new();
-    hasher.update(&hash1);
-    let hash2 = hasher.finalize();
+    let mut encoded = String::with_capacity(data.len() * 2);
+    for byte in data {
+        encoded.push(CHARSET[((byte >> 3) & 0x1f) as usize] as char);
+        encoded.push(CHARSET[(byte & 0x1f) as usize] as char);
+    }
 
-    let mut checksum = [0u8; 4];
-    checksum.copy_from_slice(&hash2[0..4]);
-    checksum
+    encoded
 }

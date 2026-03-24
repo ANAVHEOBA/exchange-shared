@@ -4,14 +4,16 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::AppState;
 use crate::modules::auth::{
     crud::{AuthError, UserCrud},
     model::User,
     schema,
-    schema::{LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, UserResponse, ErrorResponse},
+    schema::{
+        ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, UserResponse,
+    },
 };
 use crate::services::hashing;
+use crate::AppState;
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
@@ -42,7 +44,10 @@ pub async fn register(
 
     // Check if email exists and is verified
     if let Some(existing_user) = crud.find_by_email(&req.email).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse::new(e.to_string())))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
     })? {
         if existing_user.email_verified {
             // Verified account exists - cannot register again
@@ -52,16 +57,24 @@ pub async fn register(
             ));
         } else {
             // Unverified account exists - delete it so user can start fresh
-            crud.delete_unverified_user(&existing_user.id).await.map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse::new(e.to_string())))
-            })?;
+            crud.delete_unverified_user(&existing_user.id)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse::new(e.to_string())),
+                    )
+                })?;
             tracing::info!("🗑️  Deleted expired unverified account for: {}", req.email);
         }
     }
 
     // Check if username is taken by a verified user (unverified usernames are freed up above)
     if let Some(existing_user) = crud.find_by_username(&req.username).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse::new(e.to_string())))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
     })? {
         if existing_user.email_verified {
             return Err((
@@ -70,15 +83,26 @@ pub async fn register(
             ));
         } else {
             // Unverified account with this username - delete it too
-            crud.delete_unverified_user(&existing_user.id).await.map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse::new(e.to_string())))
-            })?;
-            tracing::info!("🗑️  Deleted unverified account with username: {}", req.username);
+            crud.delete_unverified_user(&existing_user.id)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse::new(e.to_string())),
+                    )
+                })?;
+            tracing::info!(
+                "🗑️  Deleted unverified account with username: {}",
+                req.username
+            );
         }
     }
 
     let password_hash = hashing::hash_password(&req.password).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse::new(e.to_string())))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
     })?;
 
     let now = Utc::now();
@@ -105,14 +129,20 @@ pub async fn register(
     if let Some(email_service) = &state.email_service {
         let verification_token = Uuid::new_v4().to_string();
         let expires_at = Utc::now() + chrono::Duration::hours(24); // 24 hours expiration
-        
+
         // Save verification token to database
-        if let Err(e) = crud.create_email_verification(&user.id, &verification_token, expires_at).await {
+        if let Err(e) = crud
+            .create_email_verification(&user.id, &verification_token, expires_at)
+            .await
+        {
             tracing::error!("Failed to create email verification: {}", e);
             // Don't fail registration, just log the error
         } else {
             // Send email
-            if let Err(e) = email_service.send_verification_email(&user.email, &req.username, &verification_token).await {
+            if let Err(e) = email_service
+                .send_verification_email(&user.email, &req.username, &verification_token)
+                .await
+            {
                 tracing::error!("Failed to send verification email: {}", e);
                 // Don't fail registration, just log the error
             } else {
@@ -171,13 +201,14 @@ pub async fn login(
     ))
 }
 
-
 pub async fn verify_email(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<(StatusCode, Json<schema::VerifyEmailResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let token = params.get("token")
-        .ok_or((StatusCode::BAD_REQUEST, Json(ErrorResponse::new("Missing token parameter"))))?;
+    let token = params.get("token").ok_or((
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse::new("Missing token parameter")),
+    ))?;
 
     let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
 

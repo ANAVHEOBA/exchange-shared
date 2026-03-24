@@ -1,6 +1,6 @@
+use crate::services::redis_cache::RedisService;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::services::redis_cache::RedisService;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBucket {
@@ -16,7 +16,7 @@ impl TokenBucket {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         Self {
             tokens: capacity,
             last_refill: now,
@@ -27,7 +27,7 @@ impl TokenBucket {
 
     pub fn try_consume(&mut self, tokens: u32) -> bool {
         self.refill();
-        
+
         if self.tokens >= tokens {
             self.tokens -= tokens;
             true
@@ -41,10 +41,10 @@ impl TokenBucket {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         let time_passed = now - self.last_refill;
         let tokens_to_add = (time_passed * self.refill_rate as u64) as u32;
-        
+
         if tokens_to_add > 0 {
             self.tokens = (self.tokens + tokens_to_add).min(self.capacity);
             self.last_refill = now;
@@ -62,14 +62,14 @@ impl DistributedRateLimiter {
     pub fn new(redis: RedisService) -> Self {
         Self {
             redis,
-            default_capacity: 10, // 10 requests per bucket
+            default_capacity: 10,   // 10 requests per bucket
             default_refill_rate: 1, // 1 token per second
         }
     }
 
     pub async fn try_acquire(&self, key: &str, tokens: u32) -> Result<bool, String> {
         let bucket_key = format!("rate_limit:{}", key);
-        
+
         // Get current bucket state
         let mut bucket: TokenBucket = match self.redis.get_json(&bucket_key).await? {
             Some(bucket) => bucket,
@@ -78,21 +78,21 @@ impl DistributedRateLimiter {
 
         // Try to consume tokens
         let allowed = bucket.try_consume(tokens);
-        
+
         // Save updated bucket state with TTL
         self.redis.set_json(&bucket_key, &bucket, 3600).await?;
-        
+
         Ok(allowed)
     }
 
     pub async fn get_wait_time(&self, key: &str) -> Result<Duration, String> {
         let bucket_key = format!("rate_limit:{}", key);
-        
+
         let bucket: TokenBucket = match self.redis.get_json::<TokenBucket>(&bucket_key).await? {
             Some(mut bucket) => {
                 bucket.refill();
                 bucket
-            },
+            }
             None => return Ok(Duration::from_secs(0)),
         };
 

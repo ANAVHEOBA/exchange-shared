@@ -8,14 +8,14 @@ pub struct Config {
     pub jwt_secret: String,
     pub trocador_api_key: String,
     pub wallet_mnemonic: String,
-    
+
     // RPC Configuration
     pub alchemy_api_key: Option<String>,
     pub infura_api_key: Option<String>,
     pub quicknode_api_key: Option<String>,
     pub blockfrost_api_key: Option<String>,
     pub drpc_api_key: Option<String>,
-    
+
     // RPC Performance Settings
     pub rpc_timeout_ms: u64,
     pub rpc_retry_attempts: u32,
@@ -30,19 +30,19 @@ impl Config {
     pub fn from_env() -> Result<Self, String> {
         dotenvy::dotenv().ok();
 
-        let database_url = env::var("DATABASE_URL")
-            .map_err(|_| "DATABASE_URL must be set".to_string())?;
+        let database_url =
+            env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
 
         let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
 
-        let jwt_secret = env::var("JWT_SECRET")
-            .map_err(|_| "JWT_SECRET must be set".to_string())?;
+        let jwt_secret =
+            env::var("JWT_SECRET").map_err(|_| "JWT_SECRET must be set".to_string())?;
 
-        let trocador_api_key = env::var("TROCADOR_API_KEY")
-            .map_err(|_| "TROCADOR_API_KEY must be set".to_string())?;
+        let trocador_api_key =
+            env::var("TROCADOR_API_KEY").map_err(|_| "TROCADOR_API_KEY must be set".to_string())?;
 
-        let wallet_mnemonic = env::var("WALLET_MNEMONIC")
-            .map_err(|_| "WALLET_MNEMONIC must be set".to_string())?;
+        let wallet_mnemonic =
+            env::var("WALLET_MNEMONIC").map_err(|_| "WALLET_MNEMONIC must be set".to_string())?;
 
         // RPC API Keys (all optional)
         let alchemy_api_key = env::var("ALCHEMY_API_KEY").ok();
@@ -91,7 +91,9 @@ impl Config {
         if alchemy_api_key.is_some() {
             tracing::info!("✅ Alchemy API key detected - 70+ chains will auto-configure");
         } else {
-            tracing::warn!("⚠️  No Alchemy API key - using public endpoints (slower, rate limited)");
+            tracing::warn!(
+                "⚠️  No Alchemy API key - using public endpoints (slower, rate limited)"
+            );
             tracing::warn!("   Get free API key at: https://www.alchemy.com");
         }
 

@@ -1,12 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use solana_sdk::{
-    hash::Hash,
-    message::Message,
-    pubkey::Pubkey,
-    transaction::Transaction,
-};
+use solana_sdk::{hash::Hash, message::Message, pubkey::Pubkey, transaction::Transaction};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -132,7 +127,7 @@ impl SolanaProvider for SolanaRpcClient {
         let result: BalanceResult = self
             .call_rpc("getBalance", json!([address, {"commitment": "confirmed"}]))
             .await?;
-        
+
         // Convert lamports to SOL (1 SOL = 1e9 lamports)
         Ok(result.value as f64 / 1_000_000_000.0)
     }
@@ -141,7 +136,7 @@ impl SolanaProvider for SolanaRpcClient {
         let result: BlockhashResult = self
             .call_rpc("getLatestBlockhash", json!([{"commitment": "finalized"}]))
             .await?;
-        
+
         Ok(result.value.blockhash)
     }
 
@@ -152,7 +147,7 @@ impl SolanaProvider for SolanaRpcClient {
                 json!([tx_base64, {"encoding": "base64", "skipPreflight": false}]),
             )
             .await?;
-        
+
         Ok(result)
     }
 
@@ -160,7 +155,7 @@ impl SolanaProvider for SolanaRpcClient {
         let result: u64 = self
             .call_rpc("getMinimumBalanceForRentExemption", json!([0]))
             .await?;
-        
+
         Ok(result)
     }
 }
@@ -172,14 +167,12 @@ pub fn build_solana_transaction(
     amount_sol: f64,
     recent_blockhash: &str,
 ) -> Result<Transaction, String> {
-    let from = Pubkey::from_str(from_pubkey)
-        .map_err(|e| format!("Invalid from pubkey: {}", e))?;
-    
-    let to = Pubkey::from_str(to_pubkey)
-        .map_err(|e| format!("Invalid to pubkey: {}", e))?;
-    
-    let _blockhash = Hash::from_str(recent_blockhash)
-        .map_err(|e| format!("Invalid blockhash: {}", e))?;
+    let from = Pubkey::from_str(from_pubkey).map_err(|e| format!("Invalid from pubkey: {}", e))?;
+
+    let to = Pubkey::from_str(to_pubkey).map_err(|e| format!("Invalid to pubkey: {}", e))?;
+
+    let _blockhash =
+        Hash::from_str(recent_blockhash).map_err(|e| format!("Invalid blockhash: {}", e))?;
 
     // Convert SOL to lamports
     let lamports = (amount_sol * 1_000_000_000.0) as u64;
@@ -201,8 +194,8 @@ pub fn sign_solana_transaction(
 ) -> Result<(), String> {
     let keypair = solana_sdk::signature::Keypair::try_from(keypair_bytes)
         .map_err(|e| format!("Invalid keypair: {}", e))?;
-    
+
     transaction.sign(&[&keypair], transaction.message.recent_blockhash);
-    
+
     Ok(())
 }

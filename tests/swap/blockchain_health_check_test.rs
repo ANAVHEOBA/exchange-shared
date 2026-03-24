@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;

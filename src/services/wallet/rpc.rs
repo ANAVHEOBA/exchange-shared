@@ -18,17 +18,32 @@ pub enum RpcError {
 #[async_trait]
 pub trait BlockchainProvider: Send + Sync {
     // EVM / Common methods
-    async fn get_transaction_count(&self, _address: &str) -> Result<u64, RpcError> { Err(RpcError::Unsupported) }
-    async fn get_gas_price(&self) -> Result<u64, RpcError> { Err(RpcError::Unsupported) }
-    async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> { Err(RpcError::Unsupported) }
+    async fn get_transaction_count(&self, _address: &str) -> Result<u64, RpcError> {
+        Err(RpcError::Unsupported)
+    }
+    async fn get_gas_price(&self) -> Result<u64, RpcError> {
+        Err(RpcError::Unsupported)
+    }
+    async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> {
+        Err(RpcError::Unsupported)
+    }
     async fn get_balance(&self, address: &str) -> Result<f64, RpcError>;
 
     // Bitcoin specific methods (added to unified trait)
-    async fn get_utxos(&self, _address: &str) -> Result<Vec<crate::services::wallet::bitcoin_rpc::BitcoinUtxo>, RpcError> { Err(RpcError::Unsupported) }
-    async fn estimate_fee(&self, _blocks: u32) -> Result<f64, RpcError> { Err(RpcError::Unsupported) }
-    
+    async fn get_utxos(
+        &self,
+        _address: &str,
+    ) -> Result<Vec<crate::services::wallet::bitcoin_rpc::BitcoinUtxo>, RpcError> {
+        Err(RpcError::Unsupported)
+    }
+    async fn estimate_fee(&self, _blocks: u32) -> Result<f64, RpcError> {
+        Err(RpcError::Unsupported)
+    }
+
     // Solana specific methods (added to unified trait)
-    async fn get_recent_blockhash(&self) -> Result<String, RpcError> { Err(RpcError::Unsupported) }
+    async fn get_recent_blockhash(&self) -> Result<String, RpcError> {
+        Err(RpcError::Unsupported)
+    }
 }
 
 pub struct HttpRpcClient {
@@ -47,7 +62,11 @@ impl HttpRpcClient {
         }
     }
 
-    async fn call_rpc<T: for<'de> Deserialize<'de>>(&self, method: &str, params: serde_json::Value) -> Result<T, RpcError> {
+    async fn call_rpc<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, RpcError> {
         let payload = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -55,13 +74,16 @@ impl HttpRpcClient {
             "id": 1
         });
 
-        let response = self.client.post(&self.url)
+        let response = self
+            .client
+            .post(&self.url)
             .json(&payload)
             .send()
             .await
             .map_err(|e| RpcError::Network(e.to_string()))?;
 
-        let rpc_response: RpcResponse<T> = response.json()
+        let rpc_response: RpcResponse<T> = response
+            .json()
             .await
             .map_err(|e| RpcError::Parse(e.to_string()))?;
 
@@ -69,7 +91,9 @@ impl HttpRpcClient {
             return Err(RpcError::Rpc(err.message));
         }
 
-        rpc_response.result.ok_or_else(|| RpcError::Parse("Missing result".to_string()))
+        rpc_response
+            .result
+            .ok_or_else(|| RpcError::Parse("Missing result".to_string()))
     }
 }
 
@@ -87,7 +111,9 @@ struct RpcErrorObj {
 #[async_trait]
 impl BlockchainProvider for HttpRpcClient {
     async fn get_transaction_count(&self, address: &str) -> Result<u64, RpcError> {
-        let hex_count: String = self.call_rpc("eth_getTransactionCount", json!([address, "latest"])).await?;
+        let hex_count: String = self
+            .call_rpc("eth_getTransactionCount", json!([address, "latest"]))
+            .await?;
         u64::from_str_radix(hex_count.trim_start_matches("0x"), 16)
             .map_err(|e| RpcError::Parse(format!("Invalid nonce hex: {}", e)))
     }
@@ -99,11 +125,14 @@ impl BlockchainProvider for HttpRpcClient {
     }
 
     async fn send_raw_transaction(&self, signed_hex: &str) -> Result<String, RpcError> {
-        self.call_rpc("eth_sendRawTransaction", json!([signed_hex])).await
+        self.call_rpc("eth_sendRawTransaction", json!([signed_hex]))
+            .await
     }
 
     async fn get_balance(&self, address: &str) -> Result<f64, RpcError> {
-        let hex_balance: String = self.call_rpc("eth_getBalance", json!([address, "latest"])).await?;
+        let hex_balance: String = self
+            .call_rpc("eth_getBalance", json!([address, "latest"]))
+            .await?;
         let wei = u128::from_str_radix(hex_balance.trim_start_matches("0x"), 16)
             .map_err(|e| RpcError::Parse(format!("Invalid balance hex: {}", e)))?;
         Ok(wei as f64 / 1_000_000_000_000_000_000.0)

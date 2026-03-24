@@ -1,8 +1,8 @@
-use std::str::FromStr;
-use secp256k1::{Secp256k1, SecretKey, Message};
-use ed25519_dalek::{SigningKey, Signer};
-use sha3::{Keccak256, Digest};
+use ed25519_dalek::{Signer, SigningKey};
 use hex;
+use secp256k1::{Message, Secp256k1, SecretKey};
+use sha3::{Digest, Keccak256};
+use std::str::FromStr;
 
 use crate::modules::wallet::schema::EvmTransaction;
 
@@ -16,10 +16,10 @@ impl SigningService {
         tx: &EvmTransaction,
     ) -> Result<String, String> {
         let secp = Secp256k1::new();
-        
+
         let clean_key = private_key_hex.trim_start_matches("0x");
-        let secret_key = SecretKey::from_str(clean_key)
-            .map_err(|e| format!("Invalid private key: {}", e))?;
+        let secret_key =
+            SecretKey::from_str(clean_key).map_err(|e| format!("Invalid private key: {}", e))?;
 
         // 1. Prepare EIP-155 fields for RLP encoding
         // [nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0]
@@ -27,7 +27,8 @@ impl SigningService {
         rlp_fields.push(encode_u64(tx.nonce));
         rlp_fields.push(encode_u64(tx.gas_price));
         rlp_fields.push(encode_u64(21000)); // Default gas limit for transfer
-        rlp_fields.push(hex::decode(tx.to_address.trim_start_matches("0x")).map_err(|e| e.to_string())?);
+        rlp_fields
+            .push(hex::decode(tx.to_address.trim_start_matches("0x")).map_err(|e| e.to_string())?);
         rlp_fields.push(encode_f64_to_wei(tx.amount));
         rlp_fields.push(Vec::new()); // Empty data
         rlp_fields.push(encode_u64(tx.chain_id as u64));
@@ -63,12 +64,17 @@ impl SigningService {
     ) -> Result<String, String> {
         let clean_key = private_key_hex.trim_start_matches("0x");
         let key_bytes = hex::decode(clean_key).map_err(|e| e.to_string())?;
-        
-        let signing_key = SigningKey::from_bytes(key_bytes.as_slice().try_into().map_err(|_| "Invalid key length")?);
+
+        let signing_key = SigningKey::from_bytes(
+            key_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "Invalid key length")?,
+        );
         let message_bytes = hex::decode(tx_data_hex).map_err(|e| e.to_string())?;
-        
+
         let signature = signing_key.sign(&message_bytes);
-        
+
         Ok(format!("0x{}", hex::encode(signature.to_bytes())))
     }
 
@@ -80,12 +86,12 @@ impl SigningService {
         let secp = Secp256k1::new();
         let clean_key = private_key_hex.trim_start_matches("0x");
         let secret_key = SecretKey::from_str(clean_key).map_err(|e| e.to_string())?;
-        
+
         let hash_bytes = hex::decode(sighash_hex).map_err(|e| e.to_string())?;
         let message = Message::from_digest_slice(&hash_bytes).map_err(|e| e.to_string())?;
-        
+
         let sig = secp.sign_ecdsa(&message, &secret_key);
-        
+
         Ok(hex::encode(sig.serialize_der()))
     }
 
@@ -108,16 +114,16 @@ impl SigningService {
         let secp = Secp256k1::new();
         let clean_key = private_key_hex.trim_start_matches("0x");
         let secret_key = SecretKey::from_str(clean_key).map_err(|e| e.to_string())?;
-        
+
         // Cosmos signs the SHA256 of the sign doc
         let doc_bytes = hex::decode(sign_doc_hex).map_err(|e| e.to_string())?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&doc_bytes);
         let hash = hasher.finalize();
-        
+
         let message = Message::from_digest_slice(&hash).map_err(|e| e.to_string())?;
         let sig = secp.sign_ecdsa(&message, &secret_key);
-        
+
         // Cosmos expects the compact 64-byte signature [r, s]
         let sig_bytes = sig.serialize_compact();
         Ok(hex::encode(sig_bytes))

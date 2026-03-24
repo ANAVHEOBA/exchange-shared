@@ -1,10 +1,10 @@
-mod types;
-mod config;
 mod calculator;
+mod config;
+mod types;
 
-pub use types::{
-    SwapStatus, TimeoutStage, RefundStatus, Refund, RefundCalculation,
-    TimeoutDetection, TimeoutAction, RefundError,
-};
-pub use config::RefundConfig;
 pub use calculator::RefundCalculator;
+pub use config::RefundConfig;
+pub use types::{
+    Refund, RefundCalculation, RefundError, RefundStatus, SwapStatus, TimeoutAction,
+    TimeoutDetection, TimeoutStage,
+};

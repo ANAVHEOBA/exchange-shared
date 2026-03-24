@@ -11,7 +11,7 @@ use exchange_shared::services::monitor::strategy::PollingStrategy;
 #[tokio::test]
 async fn test_polling_interval_decay_logic() {
     let strategy = PollingStrategy::new(1.0, 0.05);
-    
+
     // 1. Fresh state (10s): Should poll slowly due to high uncertainty
     let interval_fresh = strategy.calculate_next_interval(10);
     assert!(interval_fresh.as_secs() >= 30);

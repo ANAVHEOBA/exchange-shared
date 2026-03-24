@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::model::PayoutStatus;
+use serde::{Deserialize, Serialize};
 
 // =============================================================================
 // REQUESTS

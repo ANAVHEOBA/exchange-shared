@@ -1,7 +1,7 @@
 // =============================================================================
 // COMPREHENSIVE PAYOUT CAPABILITY TEST
-// Tests which of the 133 blockchains can actually send money (payouts)
-// 
+// Tests which of the configured blockchains can actually send money (payouts)
+//
 // This test validates:
 // 1. Address derivation works
 // 2. Payout routing logic exists in manager.rs
@@ -13,13 +13,13 @@
 #[path = "../../common/mod.rs"]
 mod common;
 
-use exchange_shared::services::wallet::derivation;
-use exchange_shared::services::wallet::manager::WalletManager;
+use common::TestContext;
+use exchange_shared::config::rpc_config::get_rpc_config;
 use exchange_shared::modules::wallet::crud::WalletCrud;
 use exchange_shared::modules::wallet::schema::{GenerateAddressRequest, PayoutRequest};
+use exchange_shared::services::wallet::derivation;
+use exchange_shared::services::wallet::manager::WalletManager;
 use exchange_shared::services::wallet::rpc::HttpRpcClient;
-use exchange_shared::config::rpc_config::get_rpc_config;
-use common::TestContext;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -42,25 +42,25 @@ struct BlockchainCapability {
 
 #[derive(Debug, Clone, PartialEq)]
 enum BlockchainFamily {
-    EVM,           // Ethereum-compatible (60+ chains)
-    Bitcoin,       // Bitcoin mainnet
-    BitcoinLike,   // UTXO chains (Dash, Zcash, Litecoin, etc.)
-    Solana,        // Solana mainnet
-    Cosmos,        // Cosmos SDK chains (Osmosis, Juno, etc.)
-    Substrate,     // Polkadot/Kusama ecosystem
-    Special,       // Unique implementations (Cardano, Tron, XRP, etc.)
+    EVM,            // Ethereum-compatible (60+ chains)
+    Bitcoin,        // Bitcoin mainnet
+    BitcoinLike,    // UTXO chains (Dash, Zcash, Litecoin, etc.)
+    Solana,         // Solana mainnet
+    Cosmos,         // Cosmos SDK chains (Osmosis, Juno, etc.)
+    Substrate,      // Polkadot/Kusama ecosystem
+    Special,        // Unique implementations (Cardano, Tron, XRP, etc.)
     NotImplemented, // No payout support
 }
 
 // =============================================================================
 // COMPREHENSIVE BLOCKCHAIN INVENTORY
-// Based on chains.json (126 networks) and actual code implementation
+// Based on the current chains inventory and actual code implementation
 // =============================================================================
 
 fn get_all_blockchains() -> Vec<BlockchainCapability> {
     vec![
         // ===== TIER 1: FULLY IMPLEMENTED WITH PAYOUT SUPPORT =====
-        
+
         // EVM Family (All use same payout logic via coin_type 60)
         BlockchainCapability {
             name: "Ethereum",
@@ -142,7 +142,6 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
             has_signing: true,
             notes: "Uses EVM payout",
         },
-        
         // Bitcoin Family
         BlockchainCapability {
             name: "Bitcoin",
@@ -204,7 +203,6 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
             has_signing: true,
             notes: "Uses Bitcoin payout logic (coin_type 145)",
         },
-        
         // Solana
         BlockchainCapability {
             name: "Solana",
@@ -216,7 +214,6 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
             has_signing: true,
             notes: "Full Solana payout via process_solana_payout (coin_type 501)",
         },
-        
         // Cosmos Family
         BlockchainCapability {
             name: "Cosmos Hub",
@@ -238,7 +235,6 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
             has_signing: false,
             notes: "Uses Cosmos payout (coin_type 118)",
         },
-        
         // Substrate Family
         BlockchainCapability {
             name: "Polkadot",
@@ -260,9 +256,7 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
             has_signing: false,
             notes: "Uses Substrate payout (coin_type 434)",
         },
-        
         // ===== TIER 2: ADDRESS DERIVATION ONLY (NO PAYOUT) =====
-        
         BlockchainCapability {
             name: "Cardano",
             ticker: "ADA",
@@ -333,9 +327,7 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
             has_signing: false,
             notes: "Address derivation exists, no payout implementation",
         },
-        
         // ===== TIER 3: NO IMPLEMENTATION =====
-        
         BlockchainCapability {
             name: "Aptos",
             ticker: "APT",
@@ -377,37 +369,43 @@ fn get_all_blockchains() -> Vec<BlockchainCapability> {
 async fn test_address_derivation_coverage() {
     let seed_phrase = common::test_wallet_mnemonic();
     let blockchains = get_all_blockchains();
-    
+
     let mut derivation_working = 0;
     let mut derivation_missing = 0;
-    
+
     println!("\n=== ADDRESS DERIVATION TEST ===\n");
-    
+
     for chain in &blockchains {
-        let result = derivation::derive_address(
-            &seed_phrase,
-            chain.ticker,
-            chain.network,
-            0
-        ).await;
-        
+        let result = derivation::derive_address(&seed_phrase, chain.ticker, chain.network, 0).await;
+
         match result {
             Ok(address) => {
                 derivation_working += 1;
-                println!("✅ {:<20} | {:<10} | Address: {}", chain.name, chain.ticker, &address[..20.min(address.len())]);
+                println!(
+                    "✅ {:<20} | {:<10} | Address: {}",
+                    chain.name,
+                    chain.ticker,
+                    &address[..20.min(address.len())]
+                );
             }
             Err(e) => {
                 derivation_missing += 1;
-                println!("❌ {:<20} | {:<10} | Error: {}", chain.name, chain.ticker, e);
+                println!(
+                    "❌ {:<20} | {:<10} | Error: {}",
+                    chain.name, chain.ticker, e
+                );
             }
         }
     }
-    
+
     println!("\n=== SUMMARY ===");
     println!("✅ Working: {}", derivation_working);
     println!("❌ Missing: {}", derivation_missing);
     println!("📊 Total: {}", blockchains.len());
-    println!("📈 Coverage: {:.1}%\n", (derivation_working as f64 / blockchains.len() as f64) * 100.0);
+    println!(
+        "📈 Coverage: {:.1}%\n",
+        (derivation_working as f64 / blockchains.len() as f64) * 100.0
+    );
 }
 
 // =============================================================================
@@ -419,42 +417,47 @@ async fn test_payout_implementation_coverage() {
     let ctx = TestContext::new().await;
     let seed_phrase = common::test_wallet_mnemonic();
     let blockchains = get_all_blockchains();
-    
+
     let crud = WalletCrud::new(ctx.db.clone());
-    
+
     let mut payout_working = 0;
     let mut payout_missing = 0;
     let mut payout_partial = 0;
     let mut rpc_unavailable = 0;
-    
+
     println!("\n=== PAYOUT CAPABILITY TEST (REAL RPC) ===\n");
-    
+
     for chain in &blockchains {
         // Skip if no address derivation
         if !chain.has_address_derivation {
-            println!("⏭️  {:<20} | {:<10} | Skipped (no address derivation)", chain.name, chain.ticker);
+            println!(
+                "⏭️  {:<20} | {:<10} | Skipped (no address derivation)",
+                chain.name, chain.ticker
+            );
             payout_missing += 1;
             continue;
         }
-        
+
         // Get real RPC provider for this chain
         let rpc_name = chain.network.to_lowercase().replace(" ", "_");
         let provider = match get_rpc_config(&rpc_name) {
-            Some(config) => {
-                Arc::new(HttpRpcClient::new(config.primary.clone())) as Arc<dyn exchange_shared::services::wallet::rpc::BlockchainProvider>
-            }
+            Some(config) => Arc::new(HttpRpcClient::new(config.primary.clone()))
+                as Arc<dyn exchange_shared::services::wallet::rpc::BlockchainProvider>,
             None => {
-                println!("⚠️  {:<20} | {:<10} | No RPC config found", chain.name, chain.ticker);
+                println!(
+                    "⚠️  {:<20} | {:<10} | No RPC config found",
+                    chain.name, chain.ticker
+                );
                 rpc_unavailable += 1;
                 continue;
             }
         };
-        
+
         let manager = WalletManager::new(crud.clone(), seed_phrase.to_string(), provider);
-        
+
         let swap_id = Uuid::new_v4().to_string();
         let recipient = "test_recipient_address";
-        
+
         // Create swap in DB
         sqlx::query(
             r#"
@@ -463,7 +466,7 @@ async fn test_payout_implementation_coverage() {
                 amount, estimated_receive, rate, deposit_address, recipient_address, status
             )
             VALUES (?, 'test', 'BTC', 'bitcoin', ?, ?, 0.1, 1.0, 10.0, 'dep', ?, 'completed')
-            "#
+            "#,
         )
         .bind(&swap_id)
         .bind(chain.ticker)
@@ -472,60 +475,88 @@ async fn test_payout_implementation_coverage() {
         .execute(&ctx.db)
         .await
         .ok();
-        
+
         // Generate address
-        let addr_result = manager.get_or_generate_address(GenerateAddressRequest {
-            swap_id: swap_id.clone(),
-            ticker: chain.ticker.to_string(),
-            network: chain.network.to_string(),
-            user_recipient_address: recipient.to_string(),
-            user_recipient_extra_id: None,
-        }).await;
-        
+        let addr_result = manager
+            .get_or_generate_address(GenerateAddressRequest {
+                swap_id: swap_id.clone(),
+                ticker: chain.ticker.to_string(),
+                network: chain.network.to_string(),
+                user_recipient_address: recipient.to_string(),
+                user_recipient_extra_id: None,
+            })
+            .await;
+
         if addr_result.is_err() {
-            println!("❌ {:<20} | {:<10} | Address generation failed", chain.name, chain.ticker);
+            println!(
+                "❌ {:<20} | {:<10} | Address generation failed",
+                chain.name, chain.ticker
+            );
             payout_missing += 1;
             continue;
         }
-        
+
         // Try payout (will fail due to no funds, but tests the logic)
-        let payout_result = manager.process_payout(PayoutRequest {
-            swap_id: swap_id.clone(),
-        }).await;
-        
+        let payout_result = manager
+            .process_payout(PayoutRequest {
+                swap_id: swap_id.clone(),
+            })
+            .await;
+
         match payout_result {
             Ok(_) => {
                 if chain.has_signing {
                     payout_working += 1;
-                    println!("✅ {:<20} | {:<10} | Full payout support (REAL RPC)", chain.name, chain.ticker);
+                    println!(
+                        "✅ {:<20} | {:<10} | Full payout support (REAL RPC)",
+                        chain.name, chain.ticker
+                    );
                 } else {
                     payout_partial += 1;
-                    println!("⚠️  {:<20} | {:<10} | Partial (signing incomplete)", chain.name, chain.ticker);
+                    println!(
+                        "⚠️  {:<20} | {:<10} | Partial (signing incomplete)",
+                        chain.name, chain.ticker
+                    );
                 }
             }
             Err(e) => {
                 // Check if error is due to insufficient funds (expected) or missing implementation
                 let err_str = e.to_string().to_lowercase();
-                if err_str.contains("insufficient") || err_str.contains("no funds") || err_str.contains("balance") {
+                if err_str.contains("insufficient")
+                    || err_str.contains("no funds")
+                    || err_str.contains("balance")
+                {
                     payout_working += 1;
-                    println!("✅ {:<20} | {:<10} | Payout logic works (no funds)", chain.name, chain.ticker);
+                    println!(
+                        "✅ {:<20} | {:<10} | Payout logic works (no funds)",
+                        chain.name, chain.ticker
+                    );
                 } else {
                     payout_missing += 1;
-                    println!("❌ {:<20} | {:<10} | Payout failed: {}", chain.name, chain.ticker, e);
+                    println!(
+                        "❌ {:<20} | {:<10} | Payout failed: {}",
+                        chain.name, chain.ticker, e
+                    );
                 }
             }
         }
     }
-    
+
     println!("\n=== PAYOUT SUMMARY (REAL RPC) ===");
     println!("✅ Full Support: {}", payout_working);
     println!("⚠️  Partial Support: {}", payout_partial);
     println!("❌ No Support: {}", payout_missing);
     println!("🔌 RPC Unavailable: {}", rpc_unavailable);
     println!("📊 Total Tested: {}", blockchains.len());
-    println!("📈 Full Coverage: {:.1}%", (payout_working as f64 / blockchains.len() as f64) * 100.0);
-    println!("📈 Partial Coverage: {:.1}%\n", ((payout_working + payout_partial) as f64 / blockchains.len() as f64) * 100.0);
-    
+    println!(
+        "📈 Full Coverage: {:.1}%",
+        (payout_working as f64 / blockchains.len() as f64) * 100.0
+    );
+    println!(
+        "📈 Partial Coverage: {:.1}%\n",
+        ((payout_working + payout_partial) as f64 / blockchains.len() as f64) * 100.0
+    );
+
     ctx.cleanup().await;
 }
 
@@ -536,25 +567,34 @@ async fn test_payout_implementation_coverage() {
 #[tokio::test]
 async fn test_family_based_payout_routing() {
     println!("\n=== BLOCKCHAIN FAMILY ANALYSIS ===\n");
-    
+
     let blockchains = get_all_blockchains();
     let mut family_counts = std::collections::HashMap::new();
     let mut family_payout_support = std::collections::HashMap::new();
-    
+
     for chain in &blockchains {
-        *family_counts.entry(format!("{:?}", chain.family)).or_insert(0) += 1;
+        *family_counts
+            .entry(format!("{:?}", chain.family))
+            .or_insert(0) += 1;
         if chain.has_payout_impl {
-            *family_payout_support.entry(format!("{:?}", chain.family)).or_insert(0) += 1;
+            *family_payout_support
+                .entry(format!("{:?}", chain.family))
+                .or_insert(0) += 1;
         }
     }
-    
+
     println!("Family Distribution:");
     for (family, count) in &family_counts {
         let payout_count = family_payout_support.get(family).unwrap_or(&0);
-        println!("  {:<20} | Total: {:>3} | Payout: {:>3} | Coverage: {:.1}%",
-            family, count, payout_count, (*payout_count as f64 / *count as f64) * 100.0);
+        println!(
+            "  {:<20} | Total: {:>3} | Payout: {:>3} | Coverage: {:.1}%",
+            family,
+            count,
+            payout_count,
+            (*payout_count as f64 / *count as f64) * 100.0
+        );
     }
-    
+
     println!("\n=== COIN TYPE ROUTING (manager.rs) ===");
     println!("Coin Type 0, 2, 3, 5, 20, 22, 133, 145, 175 → process_bitcoin_payout");
     println!("Coin Type 501 → process_solana_payout");
@@ -571,57 +611,76 @@ async fn test_family_based_payout_routing() {
 #[tokio::test]
 async fn test_generate_comprehensive_report() {
     let blockchains = get_all_blockchains();
-    
+
     println!("\n=== COMPREHENSIVE BLOCKCHAIN CAPABILITY REPORT ===\n");
-    println!("{:<25} {:<10} {:<15} {:<10} {:<10} {:<10}",
-        "NAME", "TICKER", "FAMILY", "ADDRESS", "PAYOUT", "SIGNING");
+    println!(
+        "{:<25} {:<10} {:<15} {:<10} {:<10} {:<10}",
+        "NAME", "TICKER", "FAMILY", "ADDRESS", "PAYOUT", "SIGNING"
+    );
     println!("{}", "=".repeat(90));
-    
+
     for chain in &blockchains {
-        println!("{:<25} {:<10} {:<15} {:<10} {:<10} {:<10}",
+        println!(
+            "{:<25} {:<10} {:<15} {:<10} {:<10} {:<10}",
             chain.name,
             chain.ticker,
             format!("{:?}", chain.family),
-            if chain.has_address_derivation { "✅" } else { "❌" },
+            if chain.has_address_derivation {
+                "✅"
+            } else {
+                "❌"
+            },
             if chain.has_payout_impl { "✅" } else { "❌" },
             if chain.has_signing { "✅" } else { "❌" },
         );
     }
-    
+
     println!("\n=== FINAL VERDICT ===");
-    let can_send_money: Vec<_> = blockchains.iter()
+    let can_send_money: Vec<_> = blockchains
+        .iter()
         .filter(|c| c.has_address_derivation && c.has_payout_impl && c.has_signing)
         .collect();
-    
-    println!("\n✅ BLOCKCHAINS THAT CAN SEND MONEY ({} total):", can_send_money.len());
+
+    println!(
+        "\n✅ BLOCKCHAINS THAT CAN SEND MONEY ({} total):",
+        can_send_money.len()
+    );
     for chain in &can_send_money {
         println!("   • {} ({}) - {}", chain.name, chain.ticker, chain.notes);
     }
-    
+
     println!("\n⚠️  PARTIAL SUPPORT (address + payout, no signing):");
-    let partial: Vec<_> = blockchains.iter()
+    let partial: Vec<_> = blockchains
+        .iter()
         .filter(|c| c.has_address_derivation && c.has_payout_impl && !c.has_signing)
         .collect();
     for chain in &partial {
         println!("   • {} ({}) - {}", chain.name, chain.ticker, chain.notes);
     }
-    
+
     println!("\n❌ NO PAYOUT SUPPORT:");
-    let no_support: Vec<_> = blockchains.iter()
-        .filter(|c| !c.has_payout_impl)
-        .collect();
+    let no_support: Vec<_> = blockchains.iter().filter(|c| !c.has_payout_impl).collect();
     for chain in &no_support {
         println!("   • {} ({}) - {}", chain.name, chain.ticker, chain.notes);
     }
-    
+
     println!("\n📊 STATISTICS:");
-    println!("   Full Support: {} / {} ({:.1}%)",
-        can_send_money.len(), blockchains.len(),
-        (can_send_money.len() as f64 / blockchains.len() as f64) * 100.0);
-    println!("   Partial Support: {} / {} ({:.1}%)",
-        partial.len(), blockchains.len(),
-        (partial.len() as f64 / blockchains.len() as f64) * 100.0);
-    println!("   No Support: {} / {} ({:.1}%)\n",
-        no_support.len(), blockchains.len(),
-        (no_support.len() as f64 / blockchains.len() as f64) * 100.0);
+    println!(
+        "   Full Support: {} / {} ({:.1}%)",
+        can_send_money.len(),
+        blockchains.len(),
+        (can_send_money.len() as f64 / blockchains.len() as f64) * 100.0
+    );
+    println!(
+        "   Partial Support: {} / {} ({:.1}%)",
+        partial.len(),
+        blockchains.len(),
+        (partial.len() as f64 / blockchains.len() as f64) * 100.0
+    );
+    println!(
+        "   No Support: {} / {} ({:.1}%)\n",
+        no_support.len(),
+        blockchains.len(),
+        (no_support.len() as f64 / blockchains.len() as f64) * 100.0
+    );
 }

@@ -30,8 +30,7 @@ impl std::error::Error for EmailError {}
 impl EmailService {
     pub fn from_env() -> Result<Self, EmailError> {
         Ok(Self {
-            smtp_host: env::var("SMTP_HOST")
-                .unwrap_or_else(|_| "smtp.gmail.com".to_string()),
+            smtp_host: env::var("SMTP_HOST").unwrap_or_else(|_| "smtp.gmail.com".to_string()),
             smtp_port: env::var("SMTP_PORT")
                 .unwrap_or_else(|_| "587".to_string())
                 .parse()
@@ -42,10 +41,8 @@ impl EmailService {
                 .map_err(|_| EmailError::ConfigError("SMTP_PASSWORD not set".to_string()))?,
             from_email: env::var("SMTP_FROM_EMAIL")
                 .unwrap_or_else(|_| env::var("SMTP_USERNAME").unwrap_or_default()),
-            from_name: env::var("SMTP_FROM_NAME")
-                .unwrap_or_else(|_| "Trocador".to_string()),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            from_name: env::var("SMTP_FROM_NAME").unwrap_or_else(|_| "Trocador".to_string()),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
         })
     }
 
@@ -56,7 +53,7 @@ impl EmailService {
         token: &str,
     ) -> Result<(), EmailError> {
         let verification_link = format!("{}/auth/verify-email?token={}", self.base_url, token);
-        
+
         let subject = "Confirm your e-mail";
         let html_body = format!(
             r#"
@@ -108,7 +105,8 @@ impl EmailService {
             username, verification_link
         );
 
-        self.send_email(to_email, subject, &html_body, &text_body).await
+        self.send_email(to_email, subject, &html_body, &text_body)
+            .await
     }
 
     async fn send_email(

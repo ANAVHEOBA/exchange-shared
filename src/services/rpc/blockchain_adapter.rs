@@ -1,9 +1,9 @@
-use async_trait::async_trait;
-use std::sync::Arc;
-use serde_json::json;
-use crate::services::wallet::rpc::{BlockchainProvider, RpcError as WalletRpcError};
-use crate::services::wallet::bitcoin_rpc::BitcoinUtxo;
 use super::manager::RpcManager;
+use crate::services::wallet::bitcoin_rpc::BitcoinUtxo;
+use crate::services::wallet::rpc::{BlockchainProvider, RpcError as WalletRpcError};
+use async_trait::async_trait;
+use serde_json::json;
+use std::sync::Arc;
 
 /// Adapter that makes RpcManager compatible with BlockchainProvider trait
 pub struct RpcManagerAdapter {
@@ -15,26 +15,36 @@ impl RpcManagerAdapter {
     pub fn new(manager: Arc<RpcManager>, chain: String) -> Self {
         Self { manager, chain }
     }
+
+    fn btc_per_kvb_to_sat_per_vbyte(feerate_btc_per_kvb: f64) -> f64 {
+        feerate_btc_per_kvb * 100_000.0
+    }
 }
 
 #[async_trait]
 impl BlockchainProvider for RpcManagerAdapter {
     async fn get_transaction_count(&self, address: &str) -> Result<u64, WalletRpcError> {
-        let hex_count: String = self.manager
-            .call(&self.chain, "eth_getTransactionCount", json!([address, "latest"]))
+        let hex_count: String = self
+            .manager
+            .call(
+                &self.chain,
+                "eth_getTransactionCount",
+                json!([address, "latest"]),
+            )
             .await
             .map_err(|e| WalletRpcError::Network(e.to_string()))?;
-        
+
         u64::from_str_radix(hex_count.trim_start_matches("0x"), 16)
             .map_err(|e| WalletRpcError::Parse(format!("Invalid nonce hex: {}", e)))
     }
 
     async fn get_gas_price(&self) -> Result<u64, WalletRpcError> {
-        let hex_price: String = self.manager
+        let hex_price: String = self
+            .manager
             .call(&self.chain, "eth_gasPrice", json!([]))
             .await
             .map_err(|e| WalletRpcError::Network(e.to_string()))?;
-        
+
         u64::from_str_radix(hex_price.trim_start_matches("0x"), 16)
             .map_err(|e| WalletRpcError::Parse(format!("Invalid gas price hex: {}", e)))
     }
@@ -47,24 +57,26 @@ impl BlockchainProvider for RpcManagerAdapter {
     }
 
     async fn get_balance(&self, address: &str) -> Result<f64, WalletRpcError> {
-        let hex_balance: String = self.manager
+        let hex_balance: String = self
+            .manager
             .call(&self.chain, "eth_getBalance", json!([address, "latest"]))
             .await
             .map_err(|e| WalletRpcError::Network(e.to_string()))?;
-        
+
         let wei = u128::from_str_radix(hex_balance.trim_start_matches("0x"), 16)
             .map_err(|e| WalletRpcError::Parse(format!("Invalid balance hex: {}", e)))?;
-        
+
         Ok(wei as f64 / 1_000_000_000_000_000_000.0)
     }
 
     async fn get_utxos(&self, address: &str) -> Result<Vec<BitcoinUtxo>, WalletRpcError> {
         // Bitcoin UTXO fetching via RPC
-        let utxos: Vec<serde_json::Value> = self.manager
+        let utxos: Vec<serde_json::Value> = self
+            .manager
             .call(&self.chain, "listunspent", json!([0, 9999999, [address]]))
             .await
             .map_err(|e| WalletRpcError::Network(e.to_string()))?;
-        
+
         let mut result = Vec::new();
         for utxo in utxos {
             result.push(BitcoinUtxo {
@@ -74,27 +86,31 @@ impl BlockchainProvider for RpcManagerAdapter {
                 confirmations: utxo["confirmations"].as_u64().unwrap_or(0) as u32,
             });
         }
-        
+
         Ok(result)
     }
 
     async fn estimate_fee(&self, blocks: u32) -> Result<f64, WalletRpcError> {
-        let result: serde_json::Value = self.manager
+        let result: serde_json::Value = self
+            .manager
             .call(&self.chain, "estimatesmartfee", json!([blocks]))
             .await
             .map_err(|e| WalletRpcError::Network(e.to_string()))?;
-        
-        result["feerate"]
+
+        let feerate_btc_per_kvb = result["feerate"]
             .as_f64()
-            .ok_or_else(|| WalletRpcError::Parse("Missing feerate".to_string()))
+            .ok_or_else(|| WalletRpcError::Parse("Missing feerate".to_string()))?;
+
+        Ok(Self::btc_per_kvb_to_sat_per_vbyte(feerate_btc_per_kvb))
     }
 
     async fn get_recent_blockhash(&self) -> Result<String, WalletRpcError> {
-        let result: serde_json::Value = self.manager
+        let result: serde_json::Value = self
+            .manager
             .call(&self.chain, "getRecentBlockhash", json!([]))
             .await
             .map_err(|e| WalletRpcError::Network(e.to_string()))?;
-        
+
         result["value"]["blockhash"]
             .as_str()
             .map(|s| s.to_string())

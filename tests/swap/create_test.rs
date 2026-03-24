@@ -1,9 +1,9 @@
-use serial_test::serial;
 use serde_json::{json, Value};
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
-use common::{setup_test_server, timed_post, timed_get};
+use common::{setup_test_server, timed_get, timed_post};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -20,16 +20,26 @@ async fn test_create_swap_successful() {
 
     // 1. First, get a rate to generate a trade_id
     // BTC -> XMR
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
-    let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
-    let provider = rate_json["rates"][0]["provider"].as_str().expect("Should have provider");
-    let initial_estimated_amount = rate_json["rates"][0]["estimated_amount"].as_f64().expect("Should have estimated_amount");
 
-    println!("Got trade_id: {}, Initial Estimated: {}", trade_id, initial_estimated_amount);
+    let rate_json: Value = rate_response.json();
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
+    let provider = rate_json["rates"][0]["provider"]
+        .as_str()
+        .expect("Should have provider");
+    let initial_estimated_amount = rate_json["rates"][0]["estimated_amount"]
+        .as_f64()
+        .expect("Should have estimated_amount");
+
+    println!(
+        "Got trade_id: {}, Initial Estimated: {}",
+        trade_id, initial_estimated_amount
+    );
 
     // 2. Create the swap using the trade_id
     let create_url = "/swap/create";
@@ -50,7 +60,7 @@ async fn test_create_swap_successful() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Check for success (200 OK or 201 Created)
     if response.status_code() != 200 && response.status_code() != 201 {
         let error_body: Value = response.json();
@@ -61,27 +71,49 @@ async fn test_create_swap_successful() {
     let json: Value = response.json();
 
     // 3. Verify Response Structure and Middleman Logic
-    assert!(json.get("swap_id").is_some(), "Response should have swap_id");
-    assert!(json.get("deposit_address").is_some(), "Response should have deposit_address");
+    assert!(
+        json.get("swap_id").is_some(),
+        "Response should have swap_id"
+    );
+    assert!(
+        json.get("deposit_address").is_some(),
+        "Response should have deposit_address"
+    );
     assert!(json.get("status").is_some(), "Response should have status");
-    
+
     let swap_id = json["swap_id"].as_str().unwrap();
-    let estimated_receive = json["estimated_receive"].as_f64().expect("Should have estimated_receive");
-    println!("Created swap_id: {}, Estimated Receive: {}", swap_id, estimated_receive);
+    let estimated_receive = json["estimated_receive"]
+        .as_f64()
+        .expect("Should have estimated_receive");
+    println!(
+        "Created swap_id: {}, Estimated Receive: {}",
+        swap_id, estimated_receive
+    );
 
     // Verify estimate matches initial net quote (allow 5% variance for market volatility)
     // initial_estimated_amount already had 1% removed in get_rates
     // estimated_receive should match it (within market volatility and processing delays)
-    let diff_percent = (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
-    println!("Initial Quote: {}, Final Estimated: {}, Diff: {:.4}%", 
-             initial_estimated_amount, estimated_receive, diff_percent * 100.0);
-    
-    assert!(diff_percent < 0.05, "Final estimate should be close to initial net quote (max 5% variance)");
+    let diff_percent =
+        (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
+    println!(
+        "Initial Quote: {}, Final Estimated: {}, Diff: {:.4}%",
+        initial_estimated_amount,
+        estimated_receive,
+        diff_percent * 100.0
+    );
+
+    assert!(
+        diff_percent < 0.05,
+        "Final estimate should be close to initial net quote (max 5% variance)"
+    );
 
     // Check if the returned data matches input
     assert_eq!(json["from"].as_str().unwrap(), "btc");
     assert_eq!(json["to"].as_str().unwrap(), "xmr");
-    assert_eq!(json["recipient_address"].as_str().unwrap(), recipient_address);
+    assert_eq!(
+        json["recipient_address"].as_str().unwrap(),
+        recipient_address
+    );
 }
 
 #[serial]
@@ -103,15 +135,18 @@ async fn test_create_swap_without_trade_id_should_fail() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Trocador API should reject requests without trade_id
     // Expect 400 Bad Request or 500 Internal Server Error (from external API)
     let status = response.status_code().as_u16();
     assert!(status >= 400, "Expected error status, got {}", status);
-    
+
     let err: Value = response.json();
     println!("Error response without trade_id: {:?}", err);
-    assert!(err.get("error").is_some(), "Response should contain error field");
+    assert!(
+        err.get("error").is_some(),
+        "Response should contain error field"
+    );
 }
 
 #[serial]
@@ -152,12 +187,12 @@ async fn test_create_swap_small_amount() {
         "to": "xmr",
         "network_to": "Mainnet",
         "amount": 0.00000001,
-        "provider": "changenow", 
+        "provider": "changenow",
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -169,21 +204,26 @@ async fn test_create_swap_fixed_rate() {
     let server = setup_test_server().await;
 
     // 1. First, get rates to obtain a trade_id
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
+
     let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
-    
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
+
     // 2. Try to find a provider that might support fixed rates
     // If no provider supports fixed, this test will fail gracefully
-    let rates = rate_json["rates"].as_array().expect("Should have rates array");
+    let rates = rate_json["rates"]
+        .as_array()
+        .expect("Should have rates array");
     if rates.is_empty() {
         println!("No rates available, skipping fixed rate test");
         return;
     }
-    
+
     let provider = rates[0]["provider"].as_str().expect("Should have provider");
     println!("Testing fixed rate with provider: {}", provider);
 
@@ -202,7 +242,7 @@ async fn test_create_swap_fixed_rate() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Fixed rate might not be available for all providers/pairs
     // Accept success or client error (400) if fixed rate not supported
     let status = response.status_code();
@@ -211,7 +251,7 @@ async fn test_create_swap_fixed_rate() {
         "Expected success or client error, got {}",
         status
     );
-    
+
     if status.is_success() {
         let json: Value = response.json();
         println!("Fixed rate swap created: {:?}", json);
@@ -237,11 +277,11 @@ async fn test_create_swap_invalid_refund_address() {
         "amount": 0.001,
         "provider": "changenow",
         "recipient_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve",
-        "refund_address": "INVALID_REFUND_ADDRESS" 
+        "refund_address": "INVALID_REFUND_ADDRESS"
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail validation
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -264,7 +304,7 @@ async fn test_create_swap_unsupported_pair() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should likely fail as "No trade to be made"
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -287,7 +327,7 @@ async fn test_create_swap_amount_too_high() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -313,7 +353,7 @@ async fn test_create_swap_missing_memo_for_xrp() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Our implementation might default to "0" or fail. Trocador says "Use '0' for no memo".
     // If our code doesn't handle this, it might fail.
     // Asserting we get a response, either success (if handled) or error (if strict).
@@ -336,12 +376,15 @@ async fn test_create_swap_invalid_provider() {
     let server = setup_test_server().await;
 
     // Get a valid trade_id first
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
+
     let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
 
     let create_url = "/swap/create";
     let payload = json!({
@@ -356,7 +399,7 @@ async fn test_create_swap_invalid_provider() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail with 400 or 500 error
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -379,7 +422,7 @@ async fn test_create_swap_wrong_network_for_currency() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail - invalid network for currency
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -403,7 +446,7 @@ async fn test_create_swap_expired_trade_id() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail with error about invalid/expired trade_id
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -415,13 +458,18 @@ async fn test_create_swap_rate_type_mismatch() {
     let server = setup_test_server().await;
 
     // Get a floating rate quote
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
+
     let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
-    let provider = rate_json["rates"][0]["provider"].as_str().expect("Should have provider");
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
+    let provider = rate_json["rates"][0]["provider"]
+        .as_str()
+        .expect("Should have provider");
 
     let create_url = "/swap/create";
     let payload = json!({
@@ -437,11 +485,14 @@ async fn test_create_swap_rate_type_mismatch() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // May succeed (if provider supports both) or fail (if strict validation)
     // Just verify we get a valid response
     let status = response.status_code().as_u16();
-    assert!(status >= 200 && status < 600, "Should get valid HTTP status");
+    assert!(
+        status >= 200 && status < 600,
+        "Should get valid HTTP status"
+    );
 }
 
 #[serial]
@@ -462,7 +513,7 @@ async fn test_create_swap_empty_recipient_address() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail validation
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -485,7 +536,7 @@ async fn test_create_swap_whitespace_recipient_address() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should fail validation
     assert!(response.status_code().as_u16() >= 400);
 }
@@ -497,30 +548,38 @@ async fn test_create_swap_exactly_minimum_amount() {
     let server = setup_test_server().await;
 
     // Get rates to find minimum amount
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
+
     let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
     let rates = rate_json["rates"].as_array().expect("Should have rates");
-    
+
     if rates.is_empty() {
         println!("No rates available, skipping minimum amount test");
         return;
     }
-    
+
     let min_amount = rates[0]["min_amount"].as_f64().unwrap_or(0.0);
     let provider = rates[0]["provider"].as_str().expect("Should have provider");
-    let initial_estimated_amount = rates[0]["estimated_amount"].as_f64().expect("Should have estimated_amount");
-    
+    let initial_estimated_amount = rates[0]["estimated_amount"]
+        .as_f64()
+        .expect("Should have estimated_amount");
+
     // Skip test if min_amount is 0 or invalid
     if min_amount <= 0.0 {
         println!("Min amount is {} (invalid), skipping test", min_amount);
         return;
     }
-    
-    println!("Testing with minimum amount: {}, Initial Estimated: {}", min_amount, initial_estimated_amount);
+
+    println!(
+        "Testing with minimum amount: {}, Initial Estimated: {}",
+        min_amount, initial_estimated_amount
+    );
 
     let create_url = "/swap/create";
     let payload = json!({
@@ -535,7 +594,7 @@ async fn test_create_swap_exactly_minimum_amount() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should succeed at minimum amount
     let status = response.status_code();
     if !status.is_success() {
@@ -547,8 +606,12 @@ async fn test_create_swap_exactly_minimum_amount() {
     if status.is_success() {
         let json: Value = response.json();
         let estimated_receive = json["estimated_receive"].as_f64().unwrap();
-        let diff_percent = (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
-        assert!(diff_percent < 0.01, "Final estimate should be close to initial net quote at minimum amount");
+        let diff_percent =
+            (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
+        assert!(
+            diff_percent < 0.01,
+            "Final estimate should be close to initial net quote at minimum amount"
+        );
     }
 }
 
@@ -559,33 +622,41 @@ async fn test_create_swap_exactly_maximum_amount() {
     let server = setup_test_server().await;
 
     // Get rates to find maximum amount
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
+
     let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
     let rates = rate_json["rates"].as_array().expect("Should have rates");
-    
+
     if rates.is_empty() {
         println!("No rates available, skipping maximum amount test");
         return;
     }
-    
+
     let max_amount = rates[0]["max_amount"].as_f64().unwrap_or(0.0);
     let provider = rates[0]["provider"].as_str().expect("Should have provider");
-    let initial_estimated_amount = rates[0]["estimated_amount"].as_f64().expect("Should have estimated_amount");
-    
+    let initial_estimated_amount = rates[0]["estimated_amount"]
+        .as_f64()
+        .expect("Should have estimated_amount");
+
     // Skip test if max_amount is 0 or invalid
     if max_amount <= 0.0 {
         println!("Max amount is {} (invalid), skipping test", max_amount);
         return;
     }
-    
+
     // Use a reasonable test amount (not the full max which might be too high)
     // Use the smaller of: max_amount or 0.1 BTC
     let test_amount = max_amount.min(0.1);
-    println!("Testing with amount: {} (max: {}), Initial Estimated: {}", test_amount, max_amount, initial_estimated_amount);
+    println!(
+        "Testing with amount: {} (max: {}), Initial Estimated: {}",
+        test_amount, max_amount, initial_estimated_amount
+    );
 
     let create_url = "/swap/create";
     let payload = json!({
@@ -600,7 +671,7 @@ async fn test_create_swap_exactly_maximum_amount() {
     });
 
     let response = timed_post(&server, create_url, &payload).await;
-    
+
     // Should succeed or fail gracefully if liquidity unavailable
     let status = response.status_code();
     if !status.is_success() {
@@ -625,14 +696,21 @@ async fn test_create_swap_concurrent_same_trade_id() {
     let server = setup_test_server().await;
 
     // Get a trade_id
-    let rate_url = "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
+    let rate_url =
+        "/swap/rates?from=btc&to=xmr&amount=0.001&network_from=Mainnet&network_to=Mainnet";
     let rate_response = timed_get(&server, rate_url).await;
     rate_response.assert_status_ok();
-    
+
     let rate_json: Value = rate_response.json();
-    let trade_id = rate_json["trade_id"].as_str().expect("Should have trade_id");
-    let provider = rate_json["rates"][0]["provider"].as_str().expect("Should have provider");
-    let initial_estimated_amount = rate_json["rates"][0]["estimated_amount"].as_f64().expect("Should have estimated_amount");
+    let trade_id = rate_json["trade_id"]
+        .as_str()
+        .expect("Should have trade_id");
+    let provider = rate_json["rates"][0]["provider"]
+        .as_str()
+        .expect("Should have provider");
+    let initial_estimated_amount = rate_json["rates"][0]["estimated_amount"]
+        .as_f64()
+        .expect("Should have estimated_amount");
 
     let create_url = "/swap/create";
     let payload = json!({
@@ -649,31 +727,36 @@ async fn test_create_swap_concurrent_same_trade_id() {
     // First swap
     let response1 = timed_post(&server, create_url, &payload).await;
     let status1 = response1.status_code();
-    
+
     if status1.is_success() {
         let json: Value = response1.json();
         let estimated_receive = json["estimated_receive"].as_f64().unwrap();
-        let diff_percent = (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
+        let diff_percent =
+            (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
         // Allow 5% variance to account for market volatility and processing delays
         assert!(diff_percent < 0.05, "First concurrent swap: Final estimate should match initial net quote (max 5% variance)");
     }
-    
+
     sleep(Duration::from_millis(500)).await;
-    
+
     // Second swap with same trade_id
     let response2 = timed_post(&server, create_url, &payload).await;
     let status2 = response2.status_code();
-    
+
     if status2.is_success() {
         let json: Value = response2.json();
         let estimated_receive = json["estimated_receive"].as_f64().unwrap();
-        let diff_percent = (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
+        let diff_percent =
+            (estimated_receive - initial_estimated_amount).abs() / initial_estimated_amount;
         // Allow 5% variance to account for market volatility and processing delays
         assert!(diff_percent < 0.05, "Second concurrent swap: Final estimate should match initial net quote (max 5% variance)");
     }
-    
-    println!("First swap status: {}, Second swap status: {}", status1, status2);
-    
+
+    println!(
+        "First swap status: {}, Second swap status: {}",
+        status1, status2
+    );
+
     // At least one should succeed or both should fail gracefully
     assert!(
         status1.as_u16() >= 200 && status1.as_u16() < 600,

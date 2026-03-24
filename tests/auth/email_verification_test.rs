@@ -58,14 +58,17 @@ async fn registration_creates_verification_token() {
     let count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
     .await
     .unwrap();
 
-    assert!(count.0 > 0, "Verification token should be created on registration");
+    assert!(
+        count.0 > 0,
+        "Verification token should be created on registration"
+    );
 
     ctx.cleanup().await;
 }
@@ -81,7 +84,7 @@ async fn verify_email_with_valid_token_succeeds() {
          JOIN users u ON ev.user_id = u.id
          WHERE u.email = ?
          ORDER BY ev.created_at DESC
-         LIMIT 1"
+         LIMIT 1",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -111,7 +114,7 @@ async fn verify_email_updates_user_verified_status() {
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -124,13 +127,11 @@ async fn verify_email_updates_user_verified_status() {
         .await;
 
     // Check user status in database
-    let verified: bool = sqlx::query_scalar(
-        "SELECT email_verified FROM users WHERE email = ?"
-    )
-    .bind(&email)
-    .fetch_one(&ctx.db)
-    .await
-    .unwrap();
+    let verified: bool = sqlx::query_scalar("SELECT email_verified FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
 
     assert_eq!(verified, true, "User should be verified");
 
@@ -146,7 +147,7 @@ async fn verified_user_can_login() {
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -203,7 +204,7 @@ async fn verify_email_with_expired_token_returns_bad_request() {
         "UPDATE email_verifications ev
          JOIN users u ON ev.user_id = u.id
          SET ev.expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR)
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .execute(&ctx.db)
@@ -213,7 +214,7 @@ async fn verify_email_with_expired_token_returns_bad_request() {
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -241,7 +242,7 @@ async fn verification_token_can_only_be_used_once() {
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -272,7 +273,7 @@ async fn verification_token_deleted_after_successful_verification() {
     let token: String = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -285,13 +286,11 @@ async fn verification_token_deleted_after_successful_verification() {
         .await;
 
     // Check token is deleted
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM email_verifications WHERE token = ?"
-    )
-    .bind(&token)
-    .fetch_one(&ctx.db)
-    .await
-    .unwrap();
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM email_verifications WHERE token = ?")
+        .bind(&token)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
 
     assert_eq!(count.0, 0, "Token should be deleted after verification");
 
@@ -320,7 +319,7 @@ async fn can_register_again_with_unverified_email() {
         .await;
 
     response1.assert_status(StatusCode::CREATED);
-    
+
     // Give a moment for the database transaction to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -337,7 +336,7 @@ async fn can_register_again_with_unverified_email() {
         .await;
 
     response2.assert_status(StatusCode::CREATED);
-    
+
     // Give a moment for the database transaction to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -357,7 +356,11 @@ async fn can_register_again_with_unverified_email() {
         .await
         .unwrap();
 
-    assert_eq!(username, Some("seconduser".to_string()), "Second registration should replace first");
+    assert_eq!(
+        username,
+        Some("seconduser".to_string()),
+        "Second registration should replace first"
+    );
 
     ctx.cleanup().await;
 }
@@ -428,7 +431,7 @@ async fn old_verification_tokens_deleted_when_account_replaced() {
     let first_token: Option<String> = sqlx::query_scalar(
         "SELECT token FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_optional(&ctx.db)
@@ -440,7 +443,7 @@ async fn old_verification_tokens_deleted_when_account_replaced() {
         ctx.cleanup().await;
         return;
     }
-    
+
     let first_token = first_token.unwrap();
 
     // Second registration (replaces first)
@@ -477,7 +480,7 @@ async fn verification_token_expires_after_24_hours() {
     let expires_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
         "SELECT expires_at FROM email_verifications ev
          JOIN users u ON ev.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)

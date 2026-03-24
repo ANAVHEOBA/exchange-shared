@@ -1,14 +1,21 @@
-use crate::modules::swap::schema::{TrocadorQuote, RateResponse, RateType, EstimateQuery, EstimateResponse};
-use super::strategy::{PricingStrategy, PricingContext, AdaptivePricingStrategy};
+use super::commission::CommissionService;
+use crate::modules::swap::schema::{
+    EstimateQuery, EstimateResponse, RateResponse, RateType, TrocadorQuote,
+};
 
 pub struct PricingEngine {
-    strategy: Box<dyn PricingStrategy>,
+    commission_service: CommissionService,
 }
 
 impl PricingEngine {
+    fn parse_optional_f64(raw: Option<&str>) -> Option<f64> {
+        raw.and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+    }
+
     pub fn new() -> Self {
         Self {
-            strategy: Box::new(AdaptivePricingStrategy::default()),
+            commission_service: CommissionService::new(),
         }
     }
 
@@ -17,85 +24,119 @@ impl PricingEngine {
         &self,
         quotes: &[TrocadorQuote],
         amount_from: f64,
-        ticker_from: &str, // Changed from _network_to to ticker_from
-        gas_cost_native: f64, // Fetched from RpcClient
+        amount_usd: f64,
+        ticker_from: &str,
+        gas_cost_native: f64,
     ) -> Vec<RateResponse> {
         if quotes.is_empty() {
             return vec![];
         }
 
-        // 1. Calculate Provider Spread (Volatility Index)
-        let amounts: Vec<f64> = quotes.iter()
-            .map(|q| q.amount_to.parse::<f64>().unwrap_or(0.0))
-            .filter(|&a| a > 0.0)
+        let provider_spread = self.commission_service.calculate_quote_spread(quotes);
+
+        self.apply_optimal_markup_with_spread(
+            quotes,
+            amount_from,
+            amount_usd,
+            ticker_from,
+            gas_cost_native,
+            provider_spread,
+        )
+    }
+
+    pub fn apply_optimal_markup_with_spread(
+        &self,
+        quotes: &[TrocadorQuote],
+        amount_from: f64,
+        amount_usd: f64,
+        _ticker_from: &str,
+        gas_cost_native: f64,
+        provider_spread: f64,
+    ) -> Vec<RateResponse> {
+        if quotes.is_empty() {
+            return vec![];
+        }
+
+        // Transform and sort with a shared commission calculation.
+        let mut results: Vec<RateResponse> = quotes
+            .iter()
+            .map(|quote| {
+                let amount_to = quote.amount_to.parse::<f64>().unwrap_or(0.0);
+                let spread_percentage = quote
+                    .waste
+                    .as_deref()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|value| value.is_finite());
+                let waste = spread_percentage.unwrap_or(0.0);
+
+                // Ensure provider fee is never negative (Trocador backend issue)
+                let provider_fee = waste.max(0.0);
+                let commission = self.commission_service.calculate_commission(
+                    amount_usd,
+                    amount_to,
+                    gas_cost_native,
+                    provider_spread,
+                );
+                let network_fee = gas_cost_native.max(0.0);
+                let estimated_amount = (commission.user_receive - network_fee).max(0.0);
+                let amount_to_usd = Self::parse_optional_f64(quote.amount_to_usd.as_deref());
+                let estimated_amount_usd = amount_to_usd.and_then(|quoted_usd| {
+                    if amount_to > 0.0 {
+                        Some((quoted_usd * estimated_amount / amount_to).max(0.0))
+                    } else {
+                        None
+                    }
+                });
+                let rate_type = quote.rate_type();
+
+                RateResponse {
+                    provider: quote.provider.clone(),
+                    provider_name: quote.provider.clone(),
+                    rate: if amount_from > 0.0 {
+                        estimated_amount / amount_from
+                    } else {
+                        0.0
+                    },
+                    amount_to,
+                    estimated_amount,
+                    min_amount: quote.min_amount.unwrap_or(0.0),
+                    max_amount: quote.max_amount.unwrap_or(0.0),
+                    network_fee,
+                    provider_fee,
+                    platform_fee: commission.platform_fee,
+                    total_fee: provider_fee + commission.platform_fee + network_fee,
+                    spread_percentage,
+                    rate_type: rate_type.clone(),
+                    fixed: rate_type == RateType::Fixed,
+                    kyc_required: quote.kycrating.as_deref().unwrap_or("D") != "A",
+                    kyc_rating: quote.kycrating.clone(),
+                    privacy_rating: quote.kycrating.clone(),
+                    logpolicy: quote.logpolicy.clone(),
+                    insurance: quote.insurance,
+                    provider_logo: quote.provider_logo.clone(),
+                    rate_id: quote.rate_id.clone(),
+                    amount_from_usd: Self::parse_optional_f64(quote.amount_from_usd.as_deref()),
+                    amount_to_usd,
+                    estimated_amount_usd,
+                    unadjusted_amount_to: quote.unadjusted_amount_to,
+                    usd_total_cost_percentage: Self::parse_optional_f64(
+                        quote.usd_total_cost_percentage.as_deref(),
+                    ),
+                    eta_minutes: quote.eta.map(|e| e as u32).or(Some(15)),
+                }
+            })
             .collect();
 
-        let max_amount = amounts.iter().fold(0.0f64, |a, &b| a.max(b));
-        let min_amount = amounts.iter().fold(f64::MAX, |a, &b| a.min(b));
-        let spread = if max_amount > 0.0 { (max_amount - min_amount) / max_amount } else { 0.0 };
-
-        // 2. USD Price Estimation (Heuristic for tiering)
-        let usd_price = match ticker_from.to_lowercase().as_str() {
-            "btc" => 60000.0,
-            "eth" => 3000.0,
-            "xmr" => 150.0,
-            "usdt" | "usdc" | "dai" => 1.0,
-            _ => 1.0, // Default to 1.0 for others (safe side)
-        };
-        let amount_usd = amount_from * usd_price;
-
-        // 3. Prepare Context
-        let ctx = PricingContext {
-            amount_usd,
-            network_gas_cost_native: gas_cost_native,
-            provider_spread_percentage: spread,
-        };
-
-        // 4. Get Optimal Rates from Strategy
-        let (commission_rate, gas_floor) = self.strategy.calculate_fees(&ctx);
-
-        // 4. Transform and Sort
-        let mut results: Vec<RateResponse> = quotes.iter().map(|quote| {
-            let amount_to = quote.amount_to.parse::<f64>().unwrap_or(0.0);
-            let waste = quote.waste.as_deref().unwrap_or("0.0").parse::<f64>().unwrap_or(0.0);
-            
-            // Ensure provider fee is never negative (Trocador backend issue)
-            let provider_fee = waste.max(0.0);
-            
-            // MATH: User_Receive = Max(0, Amount_To * (1 - Rate) - Gas_Floor)
-            let mut platform_fee = amount_to * commission_rate;
-            
-            // If platform fee doesn't cover gas floor, bump it up
-            if platform_fee < gas_floor {
-                platform_fee = gas_floor;
-            }
-
-            let final_user_receive = (amount_to - platform_fee).max(0.0);
-            
-            RateResponse {
-                provider: quote.provider.clone(),
-                provider_name: quote.provider.clone(),
-                rate: if amount_from > 0.0 { final_user_receive / amount_from } else { 0.0 },
-                estimated_amount: final_user_receive,
-                min_amount: quote.min_amount.unwrap_or(0.0),
-                max_amount: quote.max_amount.unwrap_or(0.0),
-                network_fee: 0.0,
-                provider_fee,
-                platform_fee,
-                total_fee: provider_fee + platform_fee,
-                rate_type: RateType::Floating, // Default
-                kyc_required: quote.kycrating.as_deref().unwrap_or("D") != "A",
-                kyc_rating: quote.kycrating.clone(),
-                eta_minutes: quote.eta.map(|e| e as u32).or(Some(15)),
-            }
-        }).collect();
-
         // Sort by best rate for user
-        results.sort_by(|a, b| b.estimated_amount.partial_cmp(&a.estimated_amount).unwrap_or(std::cmp::Ordering::Equal));
-        
+        results.sort_by(|a, b| {
+            b.estimated_amount
+                .partial_cmp(&a.estimated_amount)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         results
     }
-    
+
     /// Generate warnings based on trade conditions
     pub fn generate_warnings(
         &self,
@@ -105,7 +146,7 @@ impl PricingEngine {
         spread: f64,
     ) -> Vec<String> {
         let mut warnings = Vec::new();
-        
+
         // High slippage warning
         if slippage_pct > 2.0 {
             warnings.push(format!(
@@ -113,21 +154,18 @@ impl PricingEngine {
                 slippage_pct
             ));
         }
-        
+
         // Large trade warning
         if amount_usd > 10000.0 {
-            warnings.push(
-                "Large trade detected. Actual execution may vary significantly.".to_string()
-            );
+            warnings
+                .push("Large trade detected. Actual execution may vary significantly.".to_string());
         }
-        
+
         // Low liquidity warning
         if provider_count < 2 {
-            warnings.push(
-                "Limited liquidity. Only one provider available.".to_string()
-            );
+            warnings.push("Limited liquidity. Only one provider available.".to_string());
         }
-        
+
         // High volatility warning
         if spread > 0.05 {
             warnings.push(format!(
@@ -135,15 +173,16 @@ impl PricingEngine {
                 spread * 100.0
             ));
         }
-        
+
         warnings
     }
-    
+
     /// Build estimate response from rate responses
     pub fn build_estimate_response(
         &self,
         rates: Vec<RateResponse>,
         query: &EstimateQuery,
+        trade_id: Option<String>,
         provider_spread: f64,
         amount_usd: f64,
         cached: bool,
@@ -151,11 +190,20 @@ impl PricingEngine {
         expires_in_seconds: i64,
     ) -> EstimateResponse {
         let best_rate = rates.first().expect("No rates available");
-        
+
         // Calculate slippage
-        let slippage_pct = self.strategy.estimate_slippage(amount_usd, provider_spread);
+        let slippage_pct = self
+            .commission_service
+            .estimate_slippage(amount_usd, provider_spread);
         let slippage_amount = best_rate.estimated_amount * slippage_pct;
-        
+        let estimated_receive_usd = best_rate.amount_to_usd.and_then(|quoted_usd| {
+            if best_rate.amount_to > 0.0 {
+                Some((quoted_usd * best_rate.estimated_amount / best_rate.amount_to).max(0.0))
+            } else {
+                None
+            }
+        });
+
         // Generate warnings
         let warnings = self.generate_warnings(
             amount_usd,
@@ -163,7 +211,7 @@ impl PricingEngine {
             rates.len(),
             provider_spread,
         );
-        
+
         EstimateResponse {
             from: query.from.clone(),
             to: query.to.clone(),
@@ -182,6 +230,23 @@ impl PricingEngine {
             price_impact: provider_spread * 100.0,
             best_provider: best_rate.provider.clone(),
             provider_count: rates.len(),
+            trade_id,
+            rate_type: Some(best_rate.rate_type.clone()),
+            fixed: Some(best_rate.fixed),
+            kyc_required: Some(best_rate.kyc_required),
+            kyc_rating: best_rate.kyc_rating.clone(),
+            privacy_rating: best_rate.privacy_rating.clone(),
+            logpolicy: best_rate.logpolicy.clone(),
+            insurance: best_rate.insurance,
+            provider_logo: best_rate.provider_logo.clone(),
+            rate_id: best_rate.rate_id.clone(),
+            spread_percentage: best_rate.spread_percentage,
+            amount_from_usd: best_rate.amount_from_usd.or(Some(amount_usd)),
+            amount_to: Some(best_rate.amount_to),
+            amount_to_usd: best_rate.amount_to_usd,
+            estimated_receive_usd,
+            unadjusted_amount_to: best_rate.unadjusted_amount_to,
+            usd_total_cost_percentage: best_rate.usd_total_cost_percentage,
             cached,
             cache_age_seconds,
             expires_in_seconds,

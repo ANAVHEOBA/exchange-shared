@@ -68,39 +68,41 @@ pub struct CircuitBreakerConfig {
 }
 
 fn default_failure_threshold() -> f64 {
-    0.5  // 50% failure rate - more tolerant for transient issues
+    0.5 // 50% failure rate - more tolerant for transient issues
 }
 
 fn default_min_requests() -> u32 {
-    20  // Require 20 requests before evaluating - prevents premature opening
+    20 // Require 20 requests before evaluating - prevents premature opening
 }
 
 fn default_timeout_seconds() -> u64 {
-    60  // 60 seconds before attempting recovery - gives endpoints time to stabilize
+    60 // 60 seconds before attempting recovery - gives endpoints time to stabilize
 }
 
 fn default_half_open_max_requests() -> u32 {
-    5  // Test with 5 requests during recovery - more confidence before fully closing
+    5 // Test with 5 requests during recovery - more confidence before fully closing
 }
 
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
-            failure_threshold: 0.5,  // 50% failure rate
-            min_requests: 20,         // Require 20 requests minimum
-            timeout_seconds: 60,      // 60 seconds recovery timeout
+            failure_threshold: 0.5,    // 50% failure rate
+            min_requests: 20,          // Require 20 requests minimum
+            timeout_seconds: 60,       // 60 seconds recovery timeout
             half_open_max_requests: 5, // Test with 5 requests
         }
     }
 }
 
 /// Load RPC configuration from JSON file with environment variable substitution
-pub fn load_rpc_config(path: &str) -> Result<std::collections::HashMap<String, RpcConfig>, Box<dyn std::error::Error>> {
+pub fn load_rpc_config(
+    path: &str,
+) -> Result<std::collections::HashMap<String, RpcConfig>, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
-    
+
     // Substitute environment variables
     let content = substitute_env_vars(&content);
-    
+
     let configs: std::collections::HashMap<String, RpcConfig> = serde_json::from_str(&content)?;
     Ok(configs)
 }
@@ -108,17 +110,17 @@ pub fn load_rpc_config(path: &str) -> Result<std::collections::HashMap<String, R
 /// Substitute ${VAR_NAME} with environment variable values
 fn substitute_env_vars(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Find all ${VAR_NAME} patterns
     let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").unwrap();
-    
+
     for cap in re.captures_iter(content) {
         let var_name = &cap[1];
         if let Ok(value) = std::env::var(var_name) {
             result = result.replace(&format!("${{{}}}", var_name), &value);
         }
     }
-    
+
     result
 }
 

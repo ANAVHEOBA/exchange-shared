@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -31,8 +31,14 @@ async fn test_get_all_providers_from_trocador() {
     let first = &providers[0];
     assert!(first.get("name").is_some(), "Missing 'name' field");
     assert!(first.get("rating").is_some(), "Missing 'rating' field");
-    assert!(first.get("insurance").is_some(), "Missing 'insurance' field");
-    assert!(first.get("markup_enabled").is_some(), "Missing 'markup_enabled' field");
+    assert!(
+        first.get("insurance").is_some(),
+        "Missing 'insurance' field"
+    );
+    assert!(
+        first.get("markup_enabled").is_some(),
+        "Missing 'markup_enabled' field"
+    );
     assert!(first.get("eta").is_some(), "Missing 'eta' field");
 
     // Validate data types
@@ -189,7 +195,10 @@ async fn test_filter_providers_without_markup() {
 
     let providers: Vec<Value> = response.json();
 
-    assert!(!providers.is_empty(), "Should have providers without markup");
+    assert!(
+        !providers.is_empty(),
+        "Should have providers without markup"
+    );
 
     for provider in &providers {
         assert_eq!(provider["markup_enabled"].as_bool().unwrap(), false);
@@ -328,7 +337,7 @@ async fn test_providers_sorted_by_name() {
 
     // Check that providers are returned (may be sorted by default)
     assert!(!names.is_empty(), "Should have providers");
-    
+
     // Just verify we got valid provider names
     for name in &names {
         assert!(!name.is_empty(), "Provider name should not be empty");
@@ -380,7 +389,10 @@ async fn test_cache_improves_provider_response_time() {
     assert_eq!(providers1.len(), providers2.len());
     assert!(providers1.len() > 0, "Should have providers");
 
-    println!("✅ Cache test passed - both requests returned {} providers", providers1.len());
+    println!(
+        "✅ Cache test passed - both requests returned {} providers",
+        providers1.len()
+    );
 }
 
 #[serial]

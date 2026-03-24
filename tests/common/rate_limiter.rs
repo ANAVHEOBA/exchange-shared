@@ -1,8 +1,8 @@
+use lazy_static::lazy_static;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, Duration};
-use std::sync::Mutex;
-use lazy_static::lazy_static;
 
 /// Global test rate limiter to prevent overwhelming Trocador API
 /// Uses token bucket algorithm with automatic backoff
@@ -35,11 +35,11 @@ impl TestRateLimiter {
 
         // Enforce minimum delay between calls
         let mut last_call = self.last_call.lock().unwrap();
-        
+
         if let Some(last) = *last_call {
             let elapsed = last.elapsed();
             let elapsed_ms = elapsed.as_millis() as u64;
-            
+
             if elapsed_ms < self.min_delay_ms {
                 let wait_ms = self.min_delay_ms - elapsed_ms;
                 drop(last_call); // Release lock before sleeping
@@ -66,15 +66,15 @@ lazy_static! {
     /// Global rate limiter for Trocador GET API calls (rates, currencies, etc)
     /// Limits to 1 concurrent call with 2000ms (2 second) minimum delay
     /// This prevents 429 rate limit errors during test runs
-    /// 
+    ///
     /// Trocador's rate limit is around 60 requests per minute
     /// We use 2 second delay = 30 requests/minute (2x safety margin)
-    pub static ref TROCADOR_RATE_LIMITER: TestRateLimiter = 
+    pub static ref TROCADOR_RATE_LIMITER: TestRateLimiter =
         TestRateLimiter::new(1, 2000);
 
     /// Separate rate limiter for POST calls (create trades)
     /// Uses same timing but independent queue to prevent trade_id expiry
     /// When both GET and POST acquire separately, they don't block each other
-    pub static ref TROCADOR_POST_LIMITER: TestRateLimiter = 
+    pub static ref TROCADOR_POST_LIMITER: TestRateLimiter =
         TestRateLimiter::new(1, 2000);
 }

@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use ed25519_dalek::{SigningKey, Signer};
 use blake2::{Blake2b512, Digest};
+use ed25519_dalek::{Signer, SigningKey};
+use serde::{Deserialize, Serialize};
 
 /// Waves transaction builder
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,28 +36,29 @@ impl WavesTransaction {
                 .as_millis() as u64,
         }
     }
-    
+
     /// Sign with Curve25519 (Waves uses Curve25519, not Ed25519)
     pub fn sign(&self, private_key: &[u8]) -> Result<String, String> {
         // Serialize transaction
         let tx_bytes = self.to_bytes()?;
-        
+
         // Hash with Blake2b-256
         let mut hasher = Blake2b512::new();
         hasher.update(&tx_bytes);
         let hash = hasher.finalize();
         let hash_256 = &hash[..32];
-        
+
         // Sign (Waves uses Curve25519)
         let signing_key = SigningKey::from_bytes(
-            private_key[..32].try_into()
-                .map_err(|_| "Invalid key length")?
+            private_key[..32]
+                .try_into()
+                .map_err(|_| "Invalid key length")?,
         );
         let signature = signing_key.sign(hash_256);
-        
+
         Ok(bs58::encode(signature.to_bytes()).into_string())
     }
-    
+
     /// Convert to bytes for signing
     fn to_bytes(&self) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::new();
@@ -65,8 +66,8 @@ impl WavesTransaction {
         bytes.push(self.version);
         // Add other fields in Waves binary format
         // This is simplified - production should use proper binary encoding
-        let json = serde_json::to_string(self)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
+        let json =
+            serde_json::to_string(self).map_err(|e| format!("Failed to serialize: {}", e))?;
         bytes.extend_from_slice(json.as_bytes());
         Ok(bytes)
     }

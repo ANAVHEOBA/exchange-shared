@@ -111,7 +111,7 @@ impl TrocadorClient {
         min_kycrating: Option<&str>,
     ) -> Result<crate::modules::swap::schema::TrocadorRatesResponse, TrocadorError> {
         let url = format!("{}/new_rate", self.base_url);
-        
+
         let mut params = vec![
             ("ticker_from", ticker_from.to_string()),
             ("network_from", network_from.to_string()),
@@ -135,8 +135,8 @@ impl TrocadorClient {
             .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
 
         if !response.status().is_success() {
-             let error_text = response.text().await.unwrap_or_default();
-             return Err(TrocadorError::ApiError(format!(
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
                 "API returned error: {}",
                 error_text
             )));
@@ -197,9 +197,13 @@ impl TrocadorClient {
         tracing::info!("  URL: {}", url);
         tracing::info!("  Parameters:");
         for (key, value) in &params {
-            // Mask sensitive data
             if key == &"address" || key == &"refund" {
-                tracing::info!("    {} = {}...{}", key, &value[..value.len().min(8)], &value[value.len().saturating_sub(4)..]);
+                tracing::info!(
+                    "    {} = {}...{}",
+                    key,
+                    &value[..value.len().min(8)],
+                    &value[value.len().saturating_sub(4)..]
+                );
             } else {
                 tracing::info!("    {} = {}", key, value);
             }
@@ -226,25 +230,31 @@ impl TrocadorClient {
             )));
         }
 
-        // Get the raw response text first for logging
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .map_err(|e| TrocadorError::ParseError(format!("Failed to read response: {}", e)))?;
-        
+
         tracing::info!("🔵 Trocador raw response: {}", response_text);
 
-        // Parse the response
         let trade_response: TrocadorTradeResponse = serde_json::from_str(&response_text)
             .map_err(|e| TrocadorError::ParseError(format!("Failed to parse response: {}", e)))?;
 
-        tracing::info!("✅ Trocador trade created successfully: trade_id={}", trade_response.trade_id);
+        tracing::info!(
+            "✅ Trocador trade created successfully: trade_id={}",
+            trade_response.trade_id
+        );
 
         Ok(trade_response)
     }
 
     /// Get trade status from Trocador (trade)
-    pub async fn get_trade_status(&self, trade_id: &str) -> Result<TrocadorTradeResponse, TrocadorError> {
+    pub async fn get_trade_status(
+        &self,
+        trade_id: &str,
+    ) -> Result<TrocadorTradeResponse, TrocadorError> {
         let url = format!("{}/trade", self.base_url);
-        
+
         let params = [("id", trade_id.to_string())];
 
         let response = self
@@ -280,7 +290,7 @@ impl TrocadorClient {
         address: &str,
     ) -> Result<bool, TrocadorError> {
         let url = format!("{}/validateaddress", self.base_url);
-        
+
         let params = [
             ("ticker", ticker.to_string()),
             ("network", network.to_string()),
@@ -304,7 +314,6 @@ impl TrocadorClient {
             )));
         }
 
-        // Parse response: {"result": true} or {"result": false}
         let response_json: serde_json::Value = response
             .json()
             .await

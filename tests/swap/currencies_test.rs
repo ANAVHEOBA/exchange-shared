@@ -1,10 +1,9 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
 use common::{setup_test_server, timed_get};
-
 
 // =============================================================================
 // INTEGRATION TESTS - CURRENCIES ENDPOINT
@@ -59,7 +58,10 @@ async fn test_filter_currencies_by_ticker_btc() {
     response.assert_status_ok();
 
     let currencies: Vec<Value> = response.json();
-    let networks: Vec<String> = currencies.iter().map(|c| c["network"].as_str().unwrap().to_string()).collect();
+    let networks: Vec<String> = currencies
+        .iter()
+        .map(|c| c["network"].as_str().unwrap().to_string())
+        .collect();
     println!("BTC networks: {:?}", networks);
 
     // BTC exists on multiple networks (Mainnet, BEP20, Lightning, SOL, Optimism)
@@ -86,9 +88,13 @@ async fn test_filter_currencies_by_ticker_btc() {
     assert!(has_mainnet, "Missing Bitcoin Mainnet");
 
     // Should have Bitcoin Lightning (check case-insensitively)
-    let _has_lightning = currencies
-        .iter()
-        .any(|c| c["network"].as_str().unwrap().to_lowercase().contains("lightning"));
+    let _has_lightning = currencies.iter().any(|c| {
+        c["network"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("lightning")
+    });
     // Note: Lightning network might not always be available, so just check we have multiple networks
     assert!(currencies.len() >= 3, "Should have at least 3 BTC networks");
 }
@@ -112,10 +118,7 @@ async fn test_filter_currencies_by_ticker_usdt() {
 
     // All results should have ticker "usdt"
     for currency in &currencies {
-        assert_eq!(
-            currency["ticker"].as_str().unwrap().to_lowercase(),
-            "usdt"
-        );
+        assert_eq!(currency["ticker"].as_str().unwrap().to_lowercase(), "usdt");
     }
 
     // Should have common networks
@@ -125,15 +128,21 @@ async fn test_filter_currencies_by_ticker_usdt() {
         .collect();
 
     assert!(
-        networks.iter().any(|n| n.contains("TRC20") || n.contains("TRON")),
+        networks
+            .iter()
+            .any(|n| n.contains("TRC20") || n.contains("TRON")),
         "Missing USDT TRC20"
     );
     assert!(
-        networks.iter().any(|n| n.contains("ERC20") || n.contains("ethereum")),
+        networks
+            .iter()
+            .any(|n| n.contains("ERC20") || n.contains("ethereum")),
         "Missing USDT ERC20"
     );
     assert!(
-        networks.iter().any(|n| n.contains("BEP20") || n.contains("BSC")),
+        networks
+            .iter()
+            .any(|n| n.contains("BEP20") || n.contains("BSC")),
         "Missing USDT BEP20"
     );
 }
@@ -158,8 +167,12 @@ async fn test_filter_currencies_by_network_mainnet() {
     // All results should have network "Mainnet" (case-insensitive check)
     for currency in &currencies {
         let network = currency["network"].as_str().unwrap();
-        assert_eq!(network.to_lowercase(), "mainnet", 
-            "Expected network 'mainnet' (case-insensitive), got: {}", network);
+        assert_eq!(
+            network.to_lowercase(),
+            "mainnet",
+            "Expected network 'mainnet' (case-insensitive), got: {}",
+            network
+        );
     }
 
     // Should include Bitcoin
@@ -325,7 +338,10 @@ async fn test_currency_minimum_maximum_values() {
     response.assert_status_ok();
 
     let currencies: Vec<Value> = response.json();
-    let networks: Vec<String> = currencies.iter().map(|c| c["network"].as_str().unwrap().to_string()).collect();
+    let networks: Vec<String> = currencies
+        .iter()
+        .map(|c| c["network"].as_str().unwrap().to_string())
+        .collect();
     println!("XMR networks: {:?}", networks);
     assert!(!currencies.is_empty(), "Should have XMR results");
 
@@ -427,19 +443,23 @@ async fn test_currency_name_completeness() {
     let server = setup_test_server().await;
 
     // Try both "Mainnet" and "MAINNET" since Trocador uses uppercase
-    let response = server
-        .get("/swap/currencies?ticker=eth")
-        .await;
-    
+    let response = server.get("/swap/currencies?ticker=eth").await;
+
     response.assert_status_ok();
     let currencies: Vec<Value> = response.json();
     for c in &currencies {
-        println!("ETH variant: ticker={}, network={}, name={}", c["ticker"], c["network"], c["name"]);
+        println!(
+            "ETH variant: ticker={}, network={}, name={}",
+            c["ticker"], c["network"], c["name"]
+        );
     }
-    
+
     // ETH might be on different network, just check we got some ETH variant
     if currencies.is_empty() {
-        assert!(!currencies.is_empty(), "Should have at least one ETH variant");
+        assert!(
+            !currencies.is_empty(),
+            "Should have at least one ETH variant"
+        );
         return;
     }
 
@@ -506,7 +526,10 @@ async fn test_cache_improves_response_time() {
     assert_eq!(currencies1.len(), currencies2.len());
     assert!(currencies1.len() > 2000, "Should have many currencies");
 
-    println!("✅ Cache test passed - both requests returned {} currencies", currencies1.len());
+    println!(
+        "✅ Cache test passed - both requests returned {} currencies",
+        currencies1.len()
+    );
 }
 
 #[serial]
@@ -554,9 +577,7 @@ async fn test_error_handling_invalid_query_params() {
 
     // Should either return 400 Bad Request or ignore invalid param
     // Based on implementation, adjust assertion
-    assert!(
-        response.status_code().is_success() || response.status_code().is_client_error()
-    );
+    assert!(response.status_code().is_success() || response.status_code().is_client_error());
 }
 
 #[serial]
@@ -585,18 +606,21 @@ async fn test_pagination_performance_is_under_50ms() {
 
     // Warm up cache
     let _ = timed_get(&server, "/swap/currencies").await;
-    
+
     // Wait for cache
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Test pagination
     let response = timed_get(&server, "/swap/currencies?limit=20&page=1").await;
     response.assert_status_ok();
-    
+
     let currencies: Vec<Value> = response.json();
-    
+
     assert!(!currencies.is_empty());
     assert!(currencies.len() <= 20, "Should return at most 20 items");
-    
-    println!("✅ Pagination test passed - returned {} items", currencies.len());
+
+    println!(
+        "✅ Pagination test passed - returned {} items",
+        currencies.len()
+    );
 }

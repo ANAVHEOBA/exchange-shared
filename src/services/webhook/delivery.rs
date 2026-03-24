@@ -2,8 +2,7 @@ use reqwest::Client;
 use std::time::{Duration, Instant};
 
 use crate::services::webhook::{
-    WebhookError, DeliveryStatus, RetryConfig, WebhookPayload,
-    generate_signature,
+    generate_signature, DeliveryStatus, RetryConfig, WebhookError, WebhookPayload,
 };
 
 /// Webhook delivery client
@@ -18,13 +17,13 @@ impl WebhookDeliveryClient {
             .timeout(retry_config.timeout())
             .build()
             .unwrap_or_default();
-        
+
         Self {
             client,
             retry_config,
         }
     }
-    
+
     /// Deliver webhook to endpoint
     pub async fn deliver(
         &self,
@@ -33,16 +32,17 @@ impl WebhookDeliveryClient {
         payload: &WebhookPayload,
     ) -> Result<DeliveryResult, WebhookError> {
         let start = Instant::now();
-        
+
         // Serialize payload
         let payload_json = serde_json::to_string(payload)?;
-        
+
         // Generate signature
         let timestamp = payload.created_at;
         let signature = generate_signature(secret_key, timestamp, &payload_json);
-        
+
         // Build request
-        let request = self.client
+        let request = self
+            .client
             .post(url)
             .header("Content-Type", "application/json")
             .header("X-Webhook-Signature", &signature)
@@ -51,13 +51,13 @@ impl WebhookDeliveryClient {
             .header("User-Agent", "ExchangePlatform-Webhooks/1.0")
             .body(payload_json)
             .timeout(self.retry_config.timeout());
-        
+
         // Send request
         let response = match request.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 let duration = start.elapsed();
-                
+
                 if e.is_timeout() {
                     return Ok(DeliveryResult {
                         status: DeliveryStatus::Timeout,
@@ -67,7 +67,7 @@ impl WebhookDeliveryClient {
                         error_message: Some("Request timeout".to_string()),
                     });
                 }
-                
+
                 return Ok(DeliveryResult {
                     status: DeliveryStatus::Failure,
                     response_status: None,
@@ -77,18 +77,18 @@ impl WebhookDeliveryClient {
                 });
             }
         };
-        
+
         let duration = start.elapsed();
         let status_code = response.status().as_u16();
         let response_body = response.text().await.ok();
-        
+
         // Determine delivery status
         let status = if status_code >= 200 && status_code < 300 {
             DeliveryStatus::Success
         } else {
             DeliveryStatus::Failure
         };
-        
+
         Ok(DeliveryResult {
             status,
             response_status: Some(status_code as i32),
@@ -119,7 +119,7 @@ impl DeliveryResult {
     pub fn is_success(&self) -> bool {
         matches!(self.status, DeliveryStatus::Success)
     }
-    
+
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.status,
@@ -147,7 +147,7 @@ mod tests {
             duration: Duration::from_millis(100),
             error_message: None,
         };
-        
+
         assert!(result.is_success());
         assert!(!result.is_retryable());
     }
@@ -161,7 +161,7 @@ mod tests {
             duration: Duration::from_millis(100),
             error_message: Some("Server error".to_string()),
         };
-        
+
         assert!(!result.is_success());
         assert!(result.is_retryable());
     }
@@ -175,7 +175,7 @@ mod tests {
             duration: Duration::from_secs(30),
             error_message: Some("Request timeout".to_string()),
         };
-        
+
         assert!(!result.is_success());
         assert!(result.is_retryable());
     }
