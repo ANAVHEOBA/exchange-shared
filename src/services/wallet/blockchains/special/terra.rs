@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::{bech32_encode, hash160};
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct TerraDerivation;
@@ -38,15 +39,8 @@ impl BlockchainDerivation for TerraDerivation {
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         let pub_bytes = public_key.serialize();
 
-        // Hash public key
-        let mut hasher = Sha256::new();
-        hasher.update(&pub_bytes);
-        let hash = hasher.finalize();
+        let address_bytes = hash160(&pub_bytes);
 
-        // Take first 20 bytes
-        let address_bytes = &hash[0..20];
-
-        // Bech32 encode with "terra" prefix
-        Ok(format!("terra1{}", hex::encode(address_bytes)))
+        bech32_encode("terra", &address_bytes)
     }
 }

@@ -79,17 +79,16 @@ async fn test_algorand_address_derivation() {
         .await
         .expect("Failed to derive Algorand address");
 
-    // Current implementation returns the public key as uppercase hex.
+    // Algorand account addresses are 58-char RFC4648 base32 with checksum.
     assert_eq!(
         addr.len(),
-        64,
-        "Algorand address should be 64 chars, got: {}",
+        58,
+        "Algorand address should be 58 chars, got: {}",
         addr.len()
     );
     assert!(
-        addr.chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
-        "Algorand address should be uppercase hex"
+        addr.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7')),
+        "Algorand address should be uppercase base32"
     );
     println!("✓ Algorand address (index 0): {}", addr);
 }
@@ -141,16 +140,16 @@ async fn test_stellar_address_derivation() {
         .await
         .expect("Failed to derive Stellar address");
 
-    // Current implementation returns a simplified base58 representation.
+    // Stellar account IDs are StrKey-encoded and start with G.
     assert!(
-        addr.starts_with('5'),
-        "Stellar address should start with the simplified version byte prefix, got: {}",
+        addr.starts_with('G'),
+        "Stellar address should start with G, got: {}",
         addr
     );
     assert_eq!(
         addr.len(),
-        48,
-        "Stellar address should be 48 chars, got: {}",
+        56,
+        "Stellar address should be 56 chars, got: {}",
         addr.len()
     );
     println!("✓ Stellar address (index 0): {}", addr);
@@ -321,7 +320,11 @@ async fn test_stacks_address_derivation() {
         .await
         .expect("Failed to derive Stacks address");
 
-    // Stacks addresses are base58 encoded
+    assert!(
+        addr.starts_with("SP"),
+        "Stacks mainnet single-sig address should start with SP, got: {}",
+        addr
+    );
     assert!(addr.len() >= 30, "Stacks address too short: {}", addr);
     println!("✓ Stacks address (index 0): {}", addr);
 }

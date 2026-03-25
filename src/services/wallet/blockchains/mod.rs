@@ -1,6 +1,7 @@
 pub mod bitcoin;
 pub mod cardano;
 pub mod cosmos;
+pub(crate) mod encoding;
 pub mod evm;
 pub mod icon;
 pub mod monero;

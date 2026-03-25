@@ -5,6 +5,8 @@ use common::TestContext;
 use exchange_shared::modules::wallet::crud::WalletCrud;
 use exchange_shared::modules::wallet::schema::GenerateAddressRequest;
 use exchange_shared::services::wallet::{derivation, manager::WalletManager};
+use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -38,14 +40,28 @@ fn test_coin_type_resolution_matches_derivation_families() {
     let cases = [
         ("ETH", "ethereum", 60),
         ("LTC", "litecoin", 2),
+        ("LTC", "Mainnet", 2),
+        ("DOGE", "Mainnet", 3),
+        ("BCH", "Mainnet", 145),
         ("SOL", "solana", 501),
         ("ATOM", "cosmos", 118),
+        ("OSMO", "Mainnet", 118),
         ("DOT", "polkadot", 354),
         ("TRX", "tron", 195),
         ("ALGO", "algorand", 283),
         ("ADA", "cardano", 1815),
         ("XRP", "ripple", 144),
         ("TON", "ton", 607),
+        ("TON", "Mainnet", 607),
+        ("EGLD", "Mainnet", 508),
+        ("APT", "Mainnet", 637),
+        ("HBAR", "Mainnet", 3030),
+        ("XLM", "Mainnet", 148),
+        ("XTZ", "Mainnet", 1729),
+        ("FLOW", "Mainnet", 539),
+        ("ZIL", "Mainnet", 313),
+        ("TAO", "Mainnet", 354),
+        ("XPRT", "Mainnet", 118),
     ];
 
     for (ticker, network, expected) in cases {
@@ -56,6 +72,47 @@ fn test_coin_type_resolution_matches_derivation_families() {
             "Unexpected coin type for {ticker}/{network}"
         );
     }
+}
+
+#[derive(Deserialize)]
+struct SnapshotCurrency {
+    ticker: String,
+    network: String,
+}
+
+#[tokio::test]
+async fn test_bundled_trocador_snapshot_pairs_can_derive_addresses() {
+    let snapshot: Vec<SnapshotCurrency> =
+        serde_json::from_str(include_str!("../../trocador_currencies_full.json"))
+            .expect("Failed to parse bundled Trocador snapshot");
+
+    let seed = common::test_wallet_mnemonic();
+    let mut seen = BTreeSet::new();
+    let mut failures = Vec::new();
+
+    for currency in snapshot {
+        let key = (
+            currency.ticker.to_ascii_lowercase(),
+            currency.network.to_ascii_lowercase(),
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+
+        match derivation::derive_address(&seed, &currency.ticker, &currency.network, 0).await {
+            Ok(_) => {}
+            Err(err) => failures.push(format!(
+                "{} / {} -> {}",
+                currency.ticker, currency.network, err
+            )),
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Bundled snapshot still has unresolved derivation pairs:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[tokio::test]

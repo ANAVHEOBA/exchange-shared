@@ -1,9 +1,8 @@
+use crate::services::wallet::blockchains::encoding::{cashaddr_encode, hash160};
 use crate::services::wallet::blockchains::traits::{is_valid_seed_phrase, BlockchainDerivation};
 use bip39::{Language, Mnemonic};
 use coins_bip32::path::DerivationPath;
-use ripemd::Ripemd160;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use sha2::{Digest, Sha256};
 use std::str::FromStr;
 
 pub struct BitcoinCash;
@@ -43,18 +42,8 @@ impl BlockchainDerivation for BitcoinCash {
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         let pub_bytes_compressed = public_key.serialize();
 
-        let mut hasher = Sha256::new();
-        hasher.update(&pub_bytes_compressed);
-        let sha256_hash = hasher.finalize();
-
-        let mut hasher = Ripemd160::new();
-        hasher.update(&sha256_hash);
-        let account_id = hasher.finalize();
-
-        Ok(format!(
-            "bitcoincash:{}",
-            encode_cashaddr_payload(&account_id[..])
-        ))
+        let account_id = hash160(&pub_bytes_compressed);
+        cashaddr_encode("bitcoincash", 0, &account_id)
     }
 
     fn derive_private_key(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
@@ -80,16 +69,4 @@ impl BlockchainDerivation for BitcoinCash {
 
         Ok(hex::encode(priv_bytes))
     }
-}
-
-fn encode_cashaddr_payload(data: &[u8]) -> String {
-    const CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-
-    let mut encoded = String::with_capacity(data.len() * 2);
-    for byte in data {
-        encoded.push(CHARSET[((byte >> 3) & 0x1f) as usize] as char);
-        encoded.push(CHARSET[(byte & 0x1f) as usize] as char);
-    }
-
-    encoded
 }

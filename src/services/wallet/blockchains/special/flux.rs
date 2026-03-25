@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::{base58check_encode, hash160};
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct FluxDerivation;
@@ -19,7 +20,6 @@ impl BlockchainDerivation for FluxDerivation {
         use bip39::{Language, Mnemonic};
         use bitcoin::bip32::{DerivationPath, Xpriv};
         use bitcoin::secp256k1::Secp256k1;
-        use bitcoin::Network;
 
         let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
             .map_err(|e| format!("Invalid mnemonic: {}", e))?;
@@ -27,7 +27,7 @@ impl BlockchainDerivation for FluxDerivation {
         let seed = mnemonic.to_seed("");
         let secp = Secp256k1::new();
 
-        let root = Xpriv::new_master(Network::Bitcoin, &seed)
+        let root = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
             .map_err(|e| format!("Failed to create master key: {}", e))?;
 
         let path: DerivationPath = format!("m/44'/{}'/0'/0/{}", 19167, index)
@@ -39,12 +39,9 @@ impl BlockchainDerivation for FluxDerivation {
             .map_err(|e| format!("Failed to derive child key: {}", e))?;
 
         let public_key = child.to_priv().public_key(&secp);
-        let address = bitcoin::Address::p2pkh(&public_key, Network::Bitcoin);
+        let account_id = hash160(&public_key.to_bytes());
 
-        // Flux addresses start with 't1' instead of '1'
-        let btc_addr = address.to_string();
-        let flux_addr = format!("t1{}", &btc_addr[1..]);
-
-        Ok(flux_addr)
+        // Flux inherited the Zcash-style transparent t1 address format from ZelCash.
+        Ok(base58check_encode(&[0x1c, 0xb8], &account_id))
     }
 }

@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::bech32_encode;
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct ZilliqaDerivation;
@@ -40,7 +41,6 @@ impl BlockchainDerivation for ZilliqaDerivation {
         // Take last 20 bytes for address
         let address_bytes = &hash[12..];
 
-        // Simplified: return hex (actual Zilliqa uses bech32 with "zil1" prefix)
-        Ok(format!("zil1{}", hex::encode(address_bytes)))
+        bech32_encode("zil", address_bytes)
     }
 }

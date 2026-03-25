@@ -4,6 +4,9 @@
 /// blockchain-specific implementation in the blockchains/ folder.
 ///
 /// All actual derivation logic lives in src/services/wallet/blockchains/
+use crate::services::wallet::blockchains::encoding::{
+    base58check_decode, base58check_encode, bech32_encode, hash160,
+};
 use crate::services::wallet::blockchains::{
     Algorand, AptosDerivation, AvalancheXDerivation, BeamDerivation, BinanceChainDerivation,
     Bitcoin, BitcoinCash, BitcoinLightningDerivation, BitcoinSvDerivation, BitcoinzDerivation,
@@ -17,6 +20,7 @@ use crate::services::wallet::blockchains::{
     TezosDerivation, ThetaDerivation, TonDerivation, TronDerivation, VechainDerivation,
     WavesDerivation, XrpDerivation, ZanoDerivation, ZcashDerivation, ZilliqaDerivation,
 };
+use crate::services::wallet::catalog::{mainnet_family, MainnetFamily};
 
 // Re-export key derivation functions
 pub use crate::services::wallet::blockchains::special::{derive_algorand_key, derive_near_key};
@@ -40,7 +44,6 @@ impl BlockchainDerivation for GenericCosmosDerivation {
 
     fn derive_address(&self, seed: &str, index: u32) -> Result<String, String> {
         use bip39::{Language, Mnemonic};
-        use ripemd::Ripemd160;
         use secp256k1::{PublicKey, Secp256k1, SecretKey};
         use sha2::{Digest, Sha256};
 
@@ -60,16 +63,9 @@ impl BlockchainDerivation for GenericCosmosDerivation {
         let secp = Secp256k1::new();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         let pub_bytes = public_key.serialize();
+        let account_id = hash160(&pub_bytes);
 
-        let mut hasher = Sha256::new();
-        hasher.update(&pub_bytes);
-        let sha_hash = hasher.finalize();
-
-        let mut hasher = Ripemd160::new();
-        hasher.update(&sha_hash);
-        let account_id = hasher.finalize();
-
-        Ok(format!("{}1{}", self.prefix, hex::encode(account_id)))
+        bech32_encode(self.prefix, &account_id)
     }
 
     fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
@@ -164,12 +160,13 @@ impl BlockchainDerivation for MonacoinDerivation {
 
     fn derive_address(&self, seed: &str, index: u32) -> Result<String, String> {
         let litecoin_address = Litecoin.derive_address(seed, index)?;
+        let body = base58check_decode(&litecoin_address, bs58::Alphabet::DEFAULT)?;
 
-        if let Some(rest) = litecoin_address.strip_prefix('L') {
-            Ok(format!("M{}", rest))
-        } else {
-            Ok(format!("M{}", litecoin_address))
+        if body.len() < 2 {
+            return Err("Litecoin payload is too short to convert to Monacoin".to_string());
         }
+
+        Ok(base58check_encode(&[0x32], &body[1..]))
     }
 
     fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
@@ -197,292 +194,272 @@ pub fn resolve_coin_type(ticker: &str, network: &str) -> Result<u32, String> {
     Ok(chain.coin_type())
 }
 
+fn boxed<T: BlockchainDerivation + 'static>(chain: T) -> Box<dyn BlockchainDerivation> {
+    Box::new(chain)
+}
+
+fn cosmos(prefix: &'static str, name: &'static str) -> Box<dyn BlockchainDerivation> {
+    Box::new(GenericCosmosDerivation { prefix, name })
+}
+
+fn substrate(
+    coin_type: u32,
+    name: &'static str,
+    network_id: u8,
+    salt: &'static [u8],
+) -> Box<dyn BlockchainDerivation> {
+    Box::new(GenericSubstrateDerivation {
+        coin_type,
+        name,
+        network_id,
+        salt,
+    })
+}
+
+fn select_mainnet_derivation(ticker_lower: &str) -> Box<dyn BlockchainDerivation> {
+    match mainnet_family(ticker_lower) {
+        MainnetFamily::Monero => boxed(MoneroDerivation),
+        MainnetFamily::Bitcoin => boxed(Bitcoin),
+        MainnetFamily::Litecoin => boxed(Litecoin),
+        MainnetFamily::Dogecoin => boxed(Dogecoin),
+        MainnetFamily::BitcoinCash => boxed(BitcoinCash),
+        MainnetFamily::BitcoinSv => boxed(BitcoinSvDerivation),
+        MainnetFamily::Dash => boxed(DashDerivation),
+        MainnetFamily::Zcash => boxed(ZcashDerivation),
+        MainnetFamily::Ravencoin => boxed(RavencoinDerivation),
+        MainnetFamily::Bitcoinz => boxed(BitcoinzDerivation),
+        MainnetFamily::Monacoin => boxed(MonacoinDerivation),
+        MainnetFamily::BitcoinLike => boxed(Bitcoin),
+        MainnetFamily::Solana => boxed(Solana),
+        MainnetFamily::Algorand => boxed(Algorand),
+        MainnetFamily::Near => boxed(Near),
+        MainnetFamily::Cardano => boxed(CardanoDerivation),
+        MainnetFamily::Polkadot => boxed(PolkadotDerivation),
+        MainnetFamily::Kusama => boxed(KusamaDerivation),
+        MainnetFamily::Acala => substrate(354, "Acala", 10, b"acala"),
+        MainnetFamily::Astar => substrate(354, "Astar", 11, b"astar"),
+        MainnetFamily::Shiden => substrate(354, "Shiden", 12, b"shiden"),
+        MainnetFamily::Ripple => boxed(XrpDerivation),
+        MainnetFamily::Tron => boxed(TronDerivation),
+        MainnetFamily::Stellar => boxed(StellarDerivation),
+        MainnetFamily::Sui => boxed(SuiDerivation),
+        MainnetFamily::Aptos => boxed(AptosDerivation),
+        MainnetFamily::Multiversx => boxed(MultiversxDerivation),
+        MainnetFamily::Eos => boxed(EosDerivation),
+        MainnetFamily::Hedera => boxed(HederaDerivation),
+        MainnetFamily::Icon => boxed(IconDerivation),
+        MainnetFamily::Mina => boxed(MinaDerivation),
+        MainnetFamily::Neo3 => boxed(NeoDerivation),
+        MainnetFamily::Nimiq => boxed(NimiqDerivation),
+        MainnetFamily::Ontology => boxed(OntologyDerivation),
+        MainnetFamily::Pocket => boxed(PocketDerivation),
+        MainnetFamily::Dock => boxed(DockDerivation),
+        MainnetFamily::Defichain => boxed(DefichainDerivation),
+        MainnetFamily::Flow => boxed(FlowDerivation),
+        MainnetFamily::Stacks => boxed(StacksDerivation),
+        MainnetFamily::Starknet => boxed(StarknetDerivation),
+        MainnetFamily::Tezos => boxed(TezosDerivation),
+        MainnetFamily::Theta => boxed(ThetaDerivation),
+        MainnetFamily::Ton => boxed(TonDerivation),
+        MainnetFamily::Terra => boxed(TerraDerivation),
+        MainnetFamily::Vechain => boxed(VechainDerivation),
+        MainnetFamily::Waves => boxed(WavesDerivation),
+        MainnetFamily::Zilliqa => boxed(ZilliqaDerivation),
+        MainnetFamily::Everscale => boxed(EverscaleDerivation),
+        MainnetFamily::Factom => boxed(FactomDerivation),
+        MainnetFamily::Flux => boxed(FluxDerivation),
+        MainnetFamily::CosmosHub => boxed(CosmosHubDerivation),
+        MainnetFamily::Osmosis => boxed(OsmosisDerivation),
+        MainnetFamily::Juno => cosmos("juno", "Juno"),
+        MainnetFamily::Akash => cosmos("akash", "Akash"),
+        MainnetFamily::Injective => cosmos("inj", "Injective"),
+        MainnetFamily::Regen => cosmos("regen", "Regen"),
+        MainnetFamily::Stargaze => cosmos("stars", "Stargaze"),
+        MainnetFamily::Secret => cosmos("secret", "Secret"),
+        MainnetFamily::Band => cosmos("band", "Band"),
+        MainnetFamily::Ion => cosmos("ion", "Ion"),
+        MainnetFamily::GravityBridge => cosmos("gravity", "Gravity Bridge"),
+        MainnetFamily::Cronos => cosmos("cro", "Cronos"),
+        MainnetFamily::Kava => cosmos("kava", "Kava"),
+        MainnetFamily::Agoric => cosmos("agoric", "Agoric"),
+        MainnetFamily::Axelar => cosmos("axelar", "Axelar"),
+        MainnetFamily::Cheqd => cosmos("cheqd", "cheqd"),
+        MainnetFamily::Coreum => cosmos("core", "Coreum"),
+        MainnetFamily::Shentu => cosmos("shentu", "Shentu"),
+        MainnetFamily::Dydx => cosmos("dydx", "dYdX"),
+        MainnetFamily::Dymension => cosmos("dym", "Dymension"),
+        MainnetFamily::Fetch => cosmos("fetch", "Fetch"),
+        MainnetFamily::Initia => cosmos("init", "Initia"),
+        MainnetFamily::Kyve => cosmos("kyve", "KYVE"),
+        MainnetFamily::Neutron => cosmos("neutron", "Neutron"),
+        MainnetFamily::Oraichain => cosmos("orai", "Oraichain"),
+        MainnetFamily::Persistence => cosmos("persistence", "Persistence"),
+        MainnetFamily::Sei => cosmos("sei", "Sei"),
+        MainnetFamily::Celestia => cosmos("celestia", "Celestia"),
+        MainnetFamily::Thorchain => cosmos("thor", "THORChain"),
+        MainnetFamily::AlephZero => substrate(643, "Aleph Zero", 42, b"alephzero"),
+        MainnetFamily::Avail => substrate(354, "Avail", 42, b"avail"),
+        MainnetFamily::Bittensor => substrate(354, "Bittensor", 42, b"bittensor"),
+        MainnetFamily::Centrifuge => substrate(354, "Centrifuge", 42, b"centrifuge"),
+        MainnetFamily::Karura => substrate(434, "Karura", 8, b"karura"),
+        MainnetFamily::Picasso => substrate(354, "Picasso", 42, b"picasso"),
+        MainnetFamily::Polkadex => substrate(354, "Polkadex", 42, b"polkadex"),
+        MainnetFamily::Polymesh => substrate(595, "Polymesh", 12, b"polymesh"),
+        MainnetFamily::Ternoa => substrate(354, "Ternoa", 42, b"ternoa"),
+        MainnetFamily::Vara => substrate(354, "Vara", 42, b"vara"),
+        MainnetFamily::Evm => boxed(EvmChain::ethereum()),
+    }
+}
+
 fn select_derivation(ticker: &str, network: &str) -> Result<Box<dyn BlockchainDerivation>, String> {
     let network_lower = network.to_lowercase();
     let ticker_lower = ticker.to_lowercase();
 
-    // First, check ticker for unambiguous matches
-    match ticker_lower.as_str() {
-        "xmr" => return Ok(Box::new(MoneroDerivation)),
-        "btc" if network_lower == "bitcoin" || network_lower == "mainnet" => {
-            return Ok(Box::new(Bitcoin));
-        }
-        "dash" if network_lower == "mainnet" => return Ok(Box::new(DashDerivation)),
-        "zec" if network_lower == "mainnet" => return Ok(Box::new(ZcashDerivation)),
-        "rvn" if network_lower == "mainnet" => return Ok(Box::new(RavencoinDerivation)),
-        "mona" if network_lower == "mainnet" => return Ok(Box::new(MonacoinDerivation)),
-        "vtc" | "dgb" | "grs" | "nmc" | "via" | "pivx" if network_lower == "mainnet" => {
-            return Ok(Box::new(Bitcoin));
-        }
-        "sys" if network_lower == "mainnet" => return Ok(Box::new(Bitcoin)),
-        "sol" => return Ok(Box::new(Solana)),
-        "algo" => return Ok(Box::new(Algorand)),
-        "near" => return Ok(Box::new(Near)),
-        "ada" => return Ok(Box::new(CardanoDerivation)),
-        "dot" => return Ok(Box::new(PolkadotDerivation)),
-        "ksm" => return Ok(Box::new(KusamaDerivation)),
-        "juno" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "juno",
-                name: "Juno",
-            }));
-        }
-        "akt" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "akash",
-                name: "Akash",
-            }));
-        }
-        "inj" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "inj",
-                name: "Injective",
-            }));
-        }
-        "regen" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "regen",
-                name: "Regen",
-            }));
-        }
-        "stars" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "stars",
-                name: "Stargaze",
-            }));
-        }
-        "scrt" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "secret",
-                name: "Secret",
-            }));
-        }
-        "band" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "band",
-                name: "Band",
-            }));
-        }
-        "ion" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "ion",
-                name: "Ion",
-            }));
-        }
-        "gravitybg" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "gravity",
-                name: "Gravity Bridge",
-            }));
-        }
-        "cro" if network_lower == "cronos" => {
-            return Ok(Box::new(GenericCosmosDerivation {
-                prefix: "cro",
-                name: "Cronos",
-            }));
-        }
-        "aca" => {
-            return Ok(Box::new(GenericSubstrateDerivation {
-                coin_type: 354,
-                name: "Acala",
-                network_id: 10,
-                salt: b"acala",
-            }));
-        }
-        "astr" => {
-            return Ok(Box::new(GenericSubstrateDerivation {
-                coin_type: 354,
-                name: "Astar",
-                network_id: 11,
-                salt: b"astar",
-            }));
-        }
-        "sdn" => {
-            return Ok(Box::new(GenericSubstrateDerivation {
-                coin_type: 354,
-                name: "Shiden",
-                network_id: 12,
-                salt: b"shiden",
-            }));
-        }
-        "para" => {
-            return Ok(Box::new(GenericSubstrateDerivation {
-                coin_type: 354,
-                name: "Parallel",
-                network_id: 13,
-                salt: b"parallel",
-            }));
-        }
-        "xrp" => return Ok(Box::new(XrpDerivation)),
-        "trx" => return Ok(Box::new(TronDerivation)),
-        "atom" => return Ok(Box::new(CosmosHubDerivation)),
-        "sui" => return Ok(Box::new(SuiDerivation)),
-        _ => {}
+    if network_lower == "mainnet" {
+        return Ok(select_mainnet_derivation(&ticker_lower));
     }
 
-    // Then check network for specific matches
-    match network_lower.as_str() {
+    if let Some(chain) = select_network_derivation(&network_lower) {
+        return Ok(chain);
+    }
+
+    if let Some(chain) = select_ticker_fallback(&ticker_lower) {
+        return Ok(chain);
+    }
+
+    Err(format!(
+        "Blockchain '{}' not yet migrated to modular structure",
+        network
+    ))
+}
+
+fn select_ticker_fallback(ticker_lower: &str) -> Option<Box<dyn BlockchainDerivation>> {
+    match ticker_lower {
+        "xmr" => Some(boxed(MoneroDerivation)),
+        "btc" => Some(boxed(Bitcoin)),
+        "dash" => Some(boxed(DashDerivation)),
+        "zec" => Some(boxed(ZcashDerivation)),
+        "rvn" => Some(boxed(RavencoinDerivation)),
+        "mona" => Some(boxed(MonacoinDerivation)),
+        "vtc" | "dgb" | "grs" | "nmc" | "via" | "pivx" | "sys" => Some(boxed(Bitcoin)),
+        "sol" => Some(boxed(Solana)),
+        "algo" => Some(boxed(Algorand)),
+        "near" => Some(boxed(Near)),
+        "ada" => Some(boxed(CardanoDerivation)),
+        "xrp" => Some(boxed(XrpDerivation)),
+        "trx" => Some(boxed(TronDerivation)),
+        "sui" => Some(boxed(SuiDerivation)),
+        _ => None,
+    }
+}
+
+fn select_network_derivation(network_lower: &str) -> Option<Box<dyn BlockchainDerivation>> {
+    match network_lower {
         // ===== BITCOIN FAMILY =====
-        "bitcoin" | "btc" => Ok(Box::new(Bitcoin)),
-        "litecoin" | "ltc" => Ok(Box::new(Litecoin)),
-        "dogecoin" | "doge" => Ok(Box::new(Dogecoin)),
-        "bitcoin_cash" | "bch" => Ok(Box::new(BitcoinCash)),
-        "dash" => Ok(Box::new(DashDerivation)),
-        "ravencoin" | "rvn" => Ok(Box::new(RavencoinDerivation)),
-        "zcash" | "zec" => Ok(Box::new(ZcashDerivation)),
-        "brc20" | "bitcoin_brc20" => Ok(Box::new(Brc20Derivation)),
-        "lightning" | "bitcoin_lightning" => Ok(Box::new(BitcoinLightningDerivation)),
-        "bitcoin_sv" | "bsv" | "bchsv" => Ok(Box::new(BitcoinSvDerivation)),
-        "bitcoinz" | "btcz" => Ok(Box::new(BitcoinzDerivation)),
+        "bitcoin" | "btc" => Some(boxed(Bitcoin)),
+        "litecoin" | "ltc" => Some(boxed(Litecoin)),
+        "dogecoin" | "doge" => Some(boxed(Dogecoin)),
+        "bitcoin_cash" | "bch" => Some(boxed(BitcoinCash)),
+        "dash" => Some(boxed(DashDerivation)),
+        "ravencoin" | "rvn" => Some(boxed(RavencoinDerivation)),
+        "zcash" | "zec" => Some(boxed(ZcashDerivation)),
+        "brc20" | "bitcoin_brc20" => Some(boxed(Brc20Derivation)),
+        "lightning" | "bitcoin_lightning" => Some(boxed(BitcoinLightningDerivation)),
+        "bitcoin_sv" | "bsv" | "bchsv" => Some(boxed(BitcoinSvDerivation)),
+        "bitcoinz" | "btcz" => Some(boxed(BitcoinzDerivation)),
 
         // ===== SOLANA =====
-        "solana" | "sol" => Ok(Box::new(Solana)),
+        "solana" | "sol" => Some(boxed(Solana)),
 
         // ===== COSMOS SDK =====
-        "cosmos" | "cosmos_hub" => Ok(Box::new(CosmosHubDerivation)),
-        "osmosis" => Ok(Box::new(OsmosisDerivation)),
-        "juno" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "juno",
-            name: "Juno",
-        })),
-        "akash" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "akash",
-            name: "Akash",
-        })),
-        "injective" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "inj",
-            name: "Injective",
-        })),
-        "regen" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "regen",
-            name: "Regen",
-        })),
-        "stargaze" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "stars",
-            name: "Stargaze",
-        })),
-        "secret" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "secret",
-            name: "Secret",
-        })),
-        "band" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "band",
-            name: "Band",
-        })),
-        "ion" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "ion",
-            name: "Ion",
-        })),
-        "gravity" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "gravity",
-            name: "Gravity Bridge",
-        })),
-        "cronos" => Ok(Box::new(GenericCosmosDerivation {
-            prefix: "cro",
-            name: "Cronos",
-        })),
+        "cosmos" | "cosmos_hub" => Some(boxed(CosmosHubDerivation)),
+        "osmosis" => Some(boxed(OsmosisDerivation)),
+        "juno" => Some(cosmos("juno", "Juno")),
+        "akash" => Some(cosmos("akash", "Akash")),
+        "injective" => Some(cosmos("inj", "Injective")),
+        "regen" => Some(cosmos("regen", "Regen")),
+        "stargaze" => Some(cosmos("stars", "Stargaze")),
+        "secret" => Some(cosmos("secret", "Secret")),
+        "band" => Some(cosmos("band", "Band")),
+        "ion" => Some(cosmos("ion", "Ion")),
+        "gravity" => Some(cosmos("gravity", "Gravity Bridge")),
 
         // ===== SUBSTRATE =====
-        "polkadot" | "dot" => Ok(Box::new(PolkadotDerivation)),
-        "kusama" | "ksm" => Ok(Box::new(KusamaDerivation)),
-        "acala" => Ok(Box::new(GenericSubstrateDerivation {
-            coin_type: 354,
-            name: "Acala",
-            network_id: 10,
-            salt: b"acala",
-        })),
-        "astar" => Ok(Box::new(GenericSubstrateDerivation {
-            coin_type: 354,
-            name: "Astar",
-            network_id: 11,
-            salt: b"astar",
-        })),
-        "shiden" => Ok(Box::new(GenericSubstrateDerivation {
-            coin_type: 354,
-            name: "Shiden",
-            network_id: 12,
-            salt: b"shiden",
-        })),
-        "parallel" => Ok(Box::new(GenericSubstrateDerivation {
-            coin_type: 354,
-            name: "Parallel",
-            network_id: 13,
-            salt: b"parallel",
-        })),
+        "polkadot" | "dot" => Some(boxed(PolkadotDerivation)),
+        "kusama" | "ksm" => Some(boxed(KusamaDerivation)),
+        "acala" => Some(substrate(354, "Acala", 10, b"acala")),
+        "astar" => Some(substrate(354, "Astar", 11, b"astar")),
+        "shiden" => Some(substrate(354, "Shiden", 12, b"shiden")),
+        "parallel" => Some(substrate(354, "Parallel", 13, b"parallel")),
 
         // ===== SPECIAL CHAINS =====
-        "cardano" | "ada" => Ok(Box::new(CardanoDerivation)),
-        "monero" | "xmr" => Ok(Box::new(MoneroDerivation)),
-        "neo" => Ok(Box::new(NeoDerivation)),
-        "neo_n2" | "n2" | "n3" | "neo3" => Ok(Box::new(NeoDerivation)), // Neo N2 is old Neo, N3 is new Neo
-        "icon" | "icx" => Ok(Box::new(IconDerivation)),
-        "algorand" | "algo" => Ok(Box::new(Algorand)),
-        "near" => Ok(Box::new(Near)),
-        "tezos" | "xtz" => Ok(Box::new(TezosDerivation)),
-        "ripple" | "xrp" => Ok(Box::new(XrpDerivation)),
-        "stacks" | "stx" => Ok(Box::new(StacksDerivation)),
-        "stellar" | "xlm" => Ok(Box::new(StellarDerivation)),
-        "tron" | "trx" | "trc20" => Ok(Box::new(TronDerivation)),
-        "waves" => Ok(Box::new(WavesDerivation)),
-        "ton" => Ok(Box::new(TonDerivation)),
-        "vechain" | "vet" => Ok(Box::new(VechainDerivation)),
-        "sui" => Ok(Box::new(SuiDerivation)),
-        "eos" => Ok(Box::new(EosDerivation)),
-        "hedera" | "hbar" => Ok(Box::new(HederaDerivation)),
-        "mina" => Ok(Box::new(MinaDerivation)),
-        "aptos" | "apt" => Ok(Box::new(AptosDerivation)),
-        "flow" => Ok(Box::new(FlowDerivation)),
-        "starknet" | "stark" => Ok(Box::new(StarknetDerivation)),
-        "theta" => Ok(Box::new(ThetaDerivation)),
-        "zilliqa" | "zil" => Ok(Box::new(ZilliqaDerivation)),
-        "multiversx" | "egld" => Ok(Box::new(MultiversxDerivation)),
-        "nimiq" | "nim" => Ok(Box::new(NimiqDerivation)),
-        "flux" | "zel" => Ok(Box::new(FluxDerivation)),
-        "ontology" | "ont" => Ok(Box::new(OntologyDerivation)),
-        "pocket" | "pokt" => Ok(Box::new(PocketDerivation)),
-        "omni" => Ok(Box::new(OmniDerivation)),
-        "zano" => Ok(Box::new(ZanoDerivation)),
-        "binance_chain" | "bep2" => Ok(Box::new(BinanceChainDerivation)),
-        "partisia" | "mpc" => Ok(Box::new(PartisiaDerivation)),
-        "dock" => Ok(Box::new(DockDerivation)),
-        "defichain" | "dfi" => Ok(Box::new(DefichainDerivation)),
-        "beam" => Ok(Box::new(BeamDerivation)),
-        "everscale" | "freeton" | "ever" => Ok(Box::new(EverscaleDerivation)),
-        "terra" | "terra_classic" | "luna" | "lunc" => Ok(Box::new(TerraDerivation)),
-        "factom" | "fct" => Ok(Box::new(FactomDerivation)),
-        "avalanche_x" | "avaxx" => Ok(Box::new(AvalancheXDerivation)),
-        "a2z" => Ok(Box::new(EvmChain::ethereum())), // A2Z is Ethereum fork
-        "shielded" => Ok(Box::new(ZcashDerivation)), // Zcash shielded variant
-        "strk" => Ok(Box::new(StarknetDerivation)),  // Starknet duplicate ticker
+        "cardano" | "ada" => Some(boxed(CardanoDerivation)),
+        "monero" | "xmr" => Some(boxed(MoneroDerivation)),
+        "neo" => Some(boxed(NeoDerivation)),
+        "neo_n2" | "n2" | "n3" | "neo3" => Some(boxed(NeoDerivation)),
+        "icon" | "icx" => Some(boxed(IconDerivation)),
+        "algorand" | "algo" => Some(boxed(Algorand)),
+        "near" => Some(boxed(Near)),
+        "tezos" | "xtz" => Some(boxed(TezosDerivation)),
+        "ripple" | "xrp" => Some(boxed(XrpDerivation)),
+        "stacks" | "stx" => Some(boxed(StacksDerivation)),
+        "stellar" | "xlm" => Some(boxed(StellarDerivation)),
+        "tron" | "trx" | "trc20" => Some(boxed(TronDerivation)),
+        "waves" => Some(boxed(WavesDerivation)),
+        "ton" => Some(boxed(TonDerivation)),
+        "vechain" | "vet" => Some(boxed(VechainDerivation)),
+        "sui" => Some(boxed(SuiDerivation)),
+        "eos" => Some(boxed(EosDerivation)),
+        "hedera" | "hbar" => Some(boxed(HederaDerivation)),
+        "mina" => Some(boxed(MinaDerivation)),
+        "aptos" | "apt" => Some(boxed(AptosDerivation)),
+        "flow" => Some(boxed(FlowDerivation)),
+        "starknet" | "stark" => Some(boxed(StarknetDerivation)),
+        "theta" => Some(boxed(ThetaDerivation)),
+        "zilliqa" | "zil" => Some(boxed(ZilliqaDerivation)),
+        "multiversx" | "egld" => Some(boxed(MultiversxDerivation)),
+        "nimiq" | "nim" => Some(boxed(NimiqDerivation)),
+        "flux" | "zel" => Some(boxed(FluxDerivation)),
+        "ontology" | "ont" => Some(boxed(OntologyDerivation)),
+        "pocket" | "pokt" => Some(boxed(PocketDerivation)),
+        "omni" => Some(boxed(OmniDerivation)),
+        "zano" => Some(boxed(ZanoDerivation)),
+        "binance_chain" | "bep2" => Some(boxed(BinanceChainDerivation)),
+        "partisia" | "mpc" => Some(boxed(PartisiaDerivation)),
+        "dock" => Some(boxed(DockDerivation)),
+        "defichain" | "dfi" => Some(boxed(DefichainDerivation)),
+        "beam" => Some(boxed(BeamDerivation)),
+        "everscale" | "freeton" | "ever" => Some(boxed(EverscaleDerivation)),
+        "terra" | "terra_classic" | "luna" | "lunc" => Some(boxed(TerraDerivation)),
+        "factom" | "fct" => Some(boxed(FactomDerivation)),
+        "avalanche_x" | "avaxx" => Some(boxed(AvalancheXDerivation)),
+        "a2z" => Some(boxed(EvmChain::ethereum())),
+        "shielded" => Some(boxed(ZcashDerivation)),
+        "strk" => Some(boxed(StarknetDerivation)),
 
         // ===== EVM FAMILY (80+ chains) =====
         // Trocador aliases: ETH, MAINNET, MATIC, AVAXC, FTM, KAI, KAIA, KIP7, KLAY,
         // MANTA, METALL2, SEIEVM, SMARTCHAIN, SYSNEVM, TLOSEVM, HAQQ, HYPEREVM,
         // ISLMEVM, FILEVM, FITFI, FLR, CHZ, CFXCORE, BTT, BERA, OAS, PULSE, RSK,
         // STARK, STRAX, KATANA, LAVA, KLC
-        "ethereum" | "eth" | "mainnet" | "polygon" | "matic" | "bsc" | "smartchain"
-        | "arbitrum" | "optimism" | "erc20" | "bep20" | "base" | "avalanche" | "avaxc"
-        | "fantom" | "ftm" | "celo" | "harmony" | "klaytn" | "klay" | "kai" | "kaia" | "kip7"
-        | "metis" | "metall2" | "boba" | "gnosis" | "fuse" | "iotex" | "scroll" | "zksync"
-        | "linea" | "mantle" | "manta_pacific" | "manta" | "mode" | "blast" | "taiko" | "zora"
-        | "sonic" | "moonbeam" | "moonriver" | "aurora" | "evmos" | "kava" | "oasis"
-        | "oasis sapphire" | "rootstock" | "rsk" | "syscoin" | "sysnevm" | "telos" | "tlosevm"
-        | "thundercore" | "tomochain" | "velas" | "wanchain" | "whitechain" | "x_layer"
-        | "zkfair" | "shibarium" | "opbnb" | "fraxtal" | "merlin" | "morph" | "redbelly"
-        | "rei" | "step_network" | "fitfi" | "stratis" | "strax" | "cyber" | "endurance"
-        | "hyper_evm" | "hyperevm" | "iota_evm" | "islm_evm" | "islmevm" | "haqq" | "okx_chain"
-        | "oasys" | "oas" | "peaq" | "pulsechain" | "pulse" | "ronin" | "zeta" | "bitgert"
-        | "botanix" | "bttc" | "btt" | "cfx" | "cfxcore" | "chiliz" | "chz" | "conflux_espace"
-        | "core" | "filecoin" | "filevm" | "flare" | "flr" | "kcc" | "klc" | "bahamut" | "b2"
-        | "berachain" | "bera" | "apechain" | "katana" | "lava" | "sei" | "seievm" => {
-            Ok(Box::new(EvmChain::ethereum()))
+        "ethereum" | "eth" | "polygon" | "matic" | "bsc" | "smartchain" | "arbitrum"
+        | "optimism" | "erc20" | "bep20" | "base" | "avalanche" | "avaxc" | "fantom" | "ftm"
+        | "celo" | "harmony" | "klaytn" | "klay" | "kai" | "kaia" | "kip7" | "metis"
+        | "metall2" | "boba" | "gnosis" | "fuse" | "iotex" | "scroll" | "zksync" | "linea"
+        | "mantle" | "manta_pacific" | "manta" | "mode" | "blast" | "taiko" | "zora" | "sonic"
+        | "moonbeam" | "moonriver" | "aurora" | "evmos" | "kava" | "oasis" | "oasis sapphire"
+        | "rootstock" | "rsk" | "syscoin" | "sysnevm" | "telos" | "tlosevm" | "thundercore"
+        | "tomochain" | "velas" | "wanchain" | "whitechain" | "x_layer" | "zkfair"
+        | "shibarium" | "opbnb" | "fraxtal" | "merlin" | "morph" | "redbelly" | "rei"
+        | "step_network" | "fitfi" | "stratis" | "strax" | "cyber" | "endurance" | "hyper_evm"
+        | "hyperevm" | "iota_evm" | "islm_evm" | "islmevm" | "haqq" | "okx_chain" | "oasys"
+        | "oas" | "peaq" | "pulsechain" | "pulse" | "ronin" | "zeta" | "bitgert" | "botanix"
+        | "bttc" | "btt" | "cfx" | "cfxcore" | "chiliz" | "chz" | "conflux_espace" | "core"
+        | "filecoin" | "filevm" | "flare" | "flr" | "kcc" | "klc" | "bahamut" | "b2"
+        | "berachain" | "bera" | "apechain" | "katana" | "lava" | "sei" | "seievm" | "cronos" => {
+            Some(boxed(EvmChain::ethereum()))
         }
-
-        // ===== LEGACY IMPLEMENTATIONS (in old module files) =====
-        _ => Err(format!(
-            "Blockchain '{}' not yet migrated to modular structure",
-            network
-        )),
+        _ => None,
     }
 }
 

@@ -30,14 +30,12 @@ async fn test_zcash_address_generation() {
     assert!(addr.is_ok());
     let address = addr.unwrap();
 
-    // Zcash transparent addresses can start with 't' or 'C' (depends on version byte)
-    // We're using 0x1C which produces 'C' addresses (valid transparent)
     assert!(
-        address.starts_with('C') || address.starts_with('t'),
-        "Zcash transparent address must start with 'C' or 't', got: {}",
+        address.starts_with("t1"),
+        "Zcash transparent address must start with 't1', got: {}",
         address
     );
-    assert!(address.len() >= 26 && address.len() <= 34);
+    assert!(address.len() >= 30 && address.len() <= 40);
 }
 
 #[tokio::test]

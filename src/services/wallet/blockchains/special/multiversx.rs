@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::bech32_encode;
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct MultiversxDerivation;
@@ -32,7 +33,6 @@ impl BlockchainDerivation for MultiversxDerivation {
         let verifying_key: VerifyingKey = signing_key.verifying_key();
         let public_key_bytes = verifying_key.to_bytes();
 
-        // MultiversX uses bech32 with "erd1" prefix (simplified)
-        Ok(format!("erd1{}", hex::encode(&public_key_bytes)))
+        bech32_encode("erd", &public_key_bytes)
     }
 }

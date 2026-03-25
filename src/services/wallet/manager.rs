@@ -196,11 +196,17 @@ impl WalletManager {
                     .await
             }
 
-            // Default to EVM (60) or generic handler
-            _ => {
+            // EVM family
+            60 => {
                 self.process_evm_payout(&info, &req.swap_id, service_fee)
                     .await
             }
+
+            // Any other coin type needs an explicit payout implementation.
+            _ => Err(format!(
+                "No payout handler is implemented for coin_type {}",
+                info.coin_type
+            )),
         }
     }
 

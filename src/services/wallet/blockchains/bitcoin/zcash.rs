@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::{base58check_encode, hash160};
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct ZcashDerivation;
@@ -19,7 +20,6 @@ impl BlockchainDerivation for ZcashDerivation {
         use bip39::{Language, Mnemonic};
         use bitcoin::bip32::{DerivationPath, Xpriv};
         use bitcoin::secp256k1::Secp256k1;
-        use bitcoin::Network;
 
         let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
             .map_err(|e| format!("Invalid mnemonic: {}", e))?;
@@ -27,7 +27,7 @@ impl BlockchainDerivation for ZcashDerivation {
         let seed = mnemonic.to_seed("");
         let secp = Secp256k1::new();
 
-        let root = Xpriv::new_master(Network::Bitcoin, &seed)
+        let root = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
             .map_err(|e| format!("Failed to create master key: {}", e))?;
 
         let path: DerivationPath = format!("m/44'/{}'/0'/0/{}", 133, index)
@@ -39,21 +39,15 @@ impl BlockchainDerivation for ZcashDerivation {
             .map_err(|e| format!("Failed to derive child key: {}", e))?;
 
         let public_key = child.to_priv().public_key(&secp);
-        let address = bitcoin::Address::p2pkh(&public_key, Network::Bitcoin);
+        let account_id = hash160(&public_key.to_bytes());
 
-        // Return a transparent address with a Zcash-style leading 't'
-        // while keeping the legacy Base58 length in the expected range.
-        let btc_addr = address.to_string();
-        let zec_addr = format!("t{}", &btc_addr[1..]);
-
-        Ok(zec_addr)
+        Ok(base58check_encode(&[0x1c, 0xb8], &account_id))
     }
 
     fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
         use bip39::{Language, Mnemonic};
         use bitcoin::bip32::{DerivationPath, Xpriv};
         use bitcoin::secp256k1::Secp256k1;
-        use bitcoin::Network;
 
         let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
             .map_err(|e| format!("Invalid mnemonic: {}", e))?;
@@ -61,7 +55,7 @@ impl BlockchainDerivation for ZcashDerivation {
         let seed = mnemonic.to_seed("");
         let secp = Secp256k1::new();
 
-        let root = Xpriv::new_master(Network::Bitcoin, &seed)
+        let root = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
             .map_err(|e| format!("Failed to create master key: {}", e))?;
 
         let path: DerivationPath = format!("m/44'/{}'/0'/0/{}", 133, index)

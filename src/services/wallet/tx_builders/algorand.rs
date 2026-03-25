@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::{base32_decode_nopad, sha512_256};
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 
@@ -86,7 +87,6 @@ struct SignedAlgorandTransaction {
 
 /// Decode Algorand address (base32 with checksum)
 fn decode_algorand_address(address: &str) -> Result<Vec<u8>, String> {
-    // Algorand addresses are 58 characters, base32 encoded
     if address.len() != 58 {
         return Err(format!(
             "Invalid Algorand address length: {}",
@@ -94,16 +94,22 @@ fn decode_algorand_address(address: &str) -> Result<Vec<u8>, String> {
         ));
     }
 
-    // Decode base32 (simplified - in production use proper base32 library)
-    let decoded = bs58::decode(address)
-        .into_vec()
-        .map_err(|e| format!("Failed to decode address: {}", e))?;
-
-    if decoded.len() < 32 {
-        return Err("Decoded address too short".to_string());
+    let decoded = base32_decode_nopad(address)?;
+    if decoded.len() != 36 {
+        return Err(format!(
+            "Invalid Algorand decoded address length: {}",
+            decoded.len()
+        ));
     }
 
-    Ok(decoded[..32].to_vec())
+    let public_key = &decoded[..32];
+    let checksum = &decoded[32..];
+    let expected = sha512_256(public_key);
+    if checksum != &expected[28..32] {
+        return Err("Invalid Algorand address checksum".to_string());
+    }
+
+    Ok(public_key.to_vec())
 }
 
 /// Get current Algorand block height (for first_valid)

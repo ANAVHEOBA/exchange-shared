@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::bech32_encode;
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct CardanoDerivation;
@@ -40,7 +41,10 @@ impl BlockchainDerivation for CardanoDerivation {
         hasher.update(&public_key_bytes);
         let payment_hash = hasher.finalize();
 
-        // Simplified address (actual uses bech32 with "addr1" prefix)
-        Ok(format!("addr1{}", hex::encode(&payment_hash[0..28])))
+        let mut address_bytes = Vec::with_capacity(29);
+        address_bytes.push(0x61);
+        address_bytes.extend_from_slice(&payment_hash[0..28]);
+
+        bech32_encode("addr", &address_bytes)
     }
 }

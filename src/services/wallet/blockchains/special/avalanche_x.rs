@@ -1,3 +1,4 @@
+use crate::services::wallet::blockchains::encoding::{bech32_encode, hash160};
 use crate::services::wallet::blockchains::traits::BlockchainDerivation;
 
 pub struct AvalancheXDerivation;
@@ -36,12 +37,8 @@ impl BlockchainDerivation for AvalancheXDerivation {
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         let pub_bytes = public_key.serialize();
 
-        // Hash public key
-        let mut hasher = Sha256::new();
-        hasher.update(&pub_bytes);
-        let hash = hasher.finalize();
-
-        // X-Chain addresses use bech32 with "avax" prefix
-        Ok(format!("X-avax1{}", hex::encode(&hash[0..20])))
+        let address_hash = hash160(&pub_bytes);
+        let address = bech32_encode("avax", &address_hash)?;
+        Ok(format!("X-{address}"))
     }
 }
