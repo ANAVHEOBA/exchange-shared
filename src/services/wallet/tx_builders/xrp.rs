@@ -86,16 +86,12 @@ impl XrpTransaction {
     pub fn to_blob(&self, signature: &str) -> Result<String, String> {
         // XRP uses binary serialization for transaction blobs
         // This is a simplified version - production should use proper binary encoding
-        let tx_json = json!({
-            "TransactionType": self.transaction_type,
-            "Account": self.account,
-            "Destination": self.destination,
-            "Amount": self.amount,
-            "Fee": self.fee,
-            "Sequence": self.sequence,
-            "SigningPubKey": self.signing_pub_key,
-            "TxnSignature": signature,
-        });
+        let mut tx_json = serde_json::to_value(self)
+            .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
+        let object = tx_json
+            .as_object_mut()
+            .ok_or_else(|| "Serialized XRP transaction was not an object".to_string())?;
+        object.insert("TxnSignature".to_string(), json!(signature));
 
         Ok(tx_json.to_string())
     }

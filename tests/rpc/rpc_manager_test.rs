@@ -29,6 +29,7 @@ fn create_test_config(
 ) -> RpcConfig {
     RpcConfig {
         chain: chain.to_string(),
+        family: "evm".to_string(),
         endpoints,
         strategy,
         health_check_interval: 30,
@@ -513,6 +514,7 @@ async fn test_circuit_breaker_opens_on_failures() {
 
     let config = RpcConfig {
         chain: "test".to_string(),
+        family: "evm".to_string(),
         endpoints: vec![
             create_test_endpoint("https://failing.example.com", 1, 100),
             create_test_endpoint("https://backup.example.com", 2, 100),
@@ -567,6 +569,7 @@ async fn test_no_healthy_endpoints_error() {
 
     let config = RpcConfig {
         chain: "test".to_string(),
+        family: "evm".to_string(),
         endpoints: vec![create_test_endpoint("https://only.example.com", 1, 100)],
         strategy: LoadBalancingStrategy::HealthScoreBased,
         health_check_interval: 30,

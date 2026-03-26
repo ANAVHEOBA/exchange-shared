@@ -1,8 +1,8 @@
-use crate::services::wallet::catalog::{mainnet_family, MainnetFamily};
 use crate::services::wallet::blockchains::encoding::{
     base32_decode_nopad, base32_encode_nopad, c32check_decode, cashaddr_decode, cashaddr_encode,
     crc16_xmodem, sha512_256, waves_secure_hash,
 };
+use crate::services::wallet::catalog::{mainnet_family, MainnetFamily};
 use alloy::primitives::Address as EvmAddress;
 use base64::{engine::general_purpose, Engine};
 use bech32::decode as bech32_decode;
@@ -37,6 +37,75 @@ impl AddressValidation {
             | AddressValidation::Invalid { family, .. }
             | AddressValidation::Unsupported { family, .. } => family,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipientExtraIdFormat {
+    DestinationTag,
+    Memo,
+}
+
+impl RecipientExtraIdFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            RecipientExtraIdFormat::DestinationTag => "destination tag",
+            RecipientExtraIdFormat::Memo => "memo",
+        }
+    }
+}
+
+pub fn supported_recipient_extra_id_format(
+    ticker: &str,
+    network: &str,
+) -> Option<RecipientExtraIdFormat> {
+    let ticker_lower = ticker.to_ascii_lowercase();
+    let network_lower = network.to_ascii_lowercase();
+
+    if network_lower == "mainnet" {
+        return match mainnet_family(&ticker_lower) {
+            MainnetFamily::Ripple => Some(RecipientExtraIdFormat::DestinationTag),
+            MainnetFamily::Stellar => Some(RecipientExtraIdFormat::Memo),
+            _ => None,
+        };
+    }
+
+    match network_lower.as_str() {
+        "ripple" | "xrp" => Some(RecipientExtraIdFormat::DestinationTag),
+        "stellar" | "xlm" => Some(RecipientExtraIdFormat::Memo),
+        _ => None,
+    }
+}
+
+pub fn normalize_supported_recipient_extra_id(
+    ticker: &str,
+    network: &str,
+    extra_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let normalized = extra_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    match (
+        supported_recipient_extra_id_format(ticker, network),
+        normalized,
+    ) {
+        (_, None) => Ok(None),
+        (Some(RecipientExtraIdFormat::DestinationTag), Some(value)) => {
+            value.parse::<u32>().map_err(|_| {
+                format!(
+                    "Invalid destination tag for {} on {}: expected a 32-bit unsigned integer",
+                    ticker, network
+                )
+            })?;
+            Ok(Some(value))
+        }
+        (Some(RecipientExtraIdFormat::Memo), Some(value)) => Ok(Some(value)),
+        (None, Some(_)) => Err(format!(
+            "recipient_extra_id is not supported for payouts to {} on {} yet",
+            ticker, network
+        )),
     }
 }
 
@@ -378,7 +447,10 @@ fn validate_cashaddr_p2pkh(address: &str) -> AddressValidation {
 
             match cashaddr_encode(&prefix, version, &payload) {
                 Ok(canonical) if canonical == address.to_ascii_lowercase() => valid("bitcoin-cash"),
-                Ok(_) => invalid("bitcoin-cash", "non-canonical CashAddr encoding".to_string()),
+                Ok(_) => invalid(
+                    "bitcoin-cash",
+                    "non-canonical CashAddr encoding".to_string(),
+                ),
                 Err(err) => invalid("bitcoin-cash", err),
             }
         }
@@ -615,7 +687,10 @@ fn validate_algorand(address: &str) -> AddressValidation {
     if decoded.len() != 36 {
         return invalid(
             "algorand",
-            format!("Algorand payload must decode to 36 bytes, found {}", decoded.len()),
+            format!(
+                "Algorand payload must decode to 36 bytes, found {}",
+                decoded.len()
+            ),
         );
     }
 
@@ -641,7 +716,10 @@ fn validate_stellar(address: &str) -> AddressValidation {
     if decoded.len() != 35 {
         return invalid(
             "stellar",
-            format!("Stellar StrKey must decode to 35 bytes, found {}", decoded.len()),
+            format!(
+                "Stellar StrKey must decode to 35 bytes, found {}",
+                decoded.len()
+            ),
         );
     }
 
@@ -695,7 +773,10 @@ fn validate_waves(address: &str) -> AddressValidation {
     if data.len() != 26 {
         return invalid(
             "waves",
-            format!("Waves address must decode to 26 bytes, found {}", data.len()),
+            format!(
+                "Waves address must decode to 26 bytes, found {}",
+                data.len()
+            ),
         );
     }
     if data[0] != 0x01 {
@@ -722,7 +803,10 @@ fn validate_waves(address: &str) -> AddressValidation {
 
 fn validate_eos_legacy(address: &str) -> AddressValidation {
     let Some(rest) = address.strip_prefix("EOS") else {
-        return invalid("eos", "EOS legacy public key must start with EOS".to_string());
+        return invalid(
+            "eos",
+            "EOS legacy public key must start with EOS".to_string(),
+        );
     };
 
     let data = match bs58::decode(rest).into_vec() {
@@ -733,7 +817,10 @@ fn validate_eos_legacy(address: &str) -> AddressValidation {
     if data.len() != 37 {
         return invalid(
             "eos",
-            format!("EOS legacy public key payload must be 37 bytes, found {}", data.len()),
+            format!(
+                "EOS legacy public key payload must be 37 bytes, found {}",
+                data.len()
+            ),
         );
     }
 
@@ -776,7 +863,10 @@ fn validate_beam_current(address: &str) -> AddressValidation {
     } else {
         invalid(
             "beam",
-            format!("Beam placeholder address must decode to 32 bytes, found {}", data.len()),
+            format!(
+                "Beam placeholder address must decode to 32 bytes, found {}",
+                data.len()
+            ),
         )
     }
 }
@@ -794,7 +884,10 @@ fn validate_zano_current(address: &str) -> AddressValidation {
     if data.len() != 37 {
         return invalid(
             "zano",
-            format!("Zano placeholder address must decode to 37 bytes, found {}", data.len()),
+            format!(
+                "Zano placeholder address must decode to 37 bytes, found {}",
+                data.len()
+            ),
         );
     }
     if data[0] != 0x06 {
@@ -1065,5 +1158,52 @@ fn unsupported(family: &'static str, reason: impl Into<String>) -> AddressValida
     AddressValidation::Unsupported {
         family,
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        normalize_supported_recipient_extra_id, supported_recipient_extra_id_format,
+        RecipientExtraIdFormat,
+    };
+
+    #[test]
+    fn xrp_mainnet_supports_destination_tags() {
+        assert_eq!(
+            supported_recipient_extra_id_format("XRP", "Mainnet"),
+            Some(RecipientExtraIdFormat::DestinationTag)
+        );
+    }
+
+    #[test]
+    fn stellar_network_supports_memos() {
+        assert_eq!(
+            supported_recipient_extra_id_format("XLM", "stellar"),
+            Some(RecipientExtraIdFormat::Memo)
+        );
+    }
+
+    #[test]
+    fn destination_tag_must_be_numeric() {
+        let error = normalize_supported_recipient_extra_id("XRP", "Mainnet", Some("abc"))
+            .expect_err("non-numeric destination tag should fail");
+        assert!(error.contains("destination tag"));
+    }
+
+    #[test]
+    fn unsupported_routes_reject_recipient_extra_ids() {
+        let error = normalize_supported_recipient_extra_id("ALGO", "Mainnet", Some("memo-1"))
+            .expect_err("unsupported route should reject memo/tag input");
+        assert!(error.contains("recipient_extra_id"));
+    }
+
+    #[test]
+    fn supported_routes_trim_extra_ids() {
+        let normalized =
+            normalize_supported_recipient_extra_id("XLM", "stellar", Some(" memo-42 "))
+                .expect("memo should normalize")
+                .expect("memo should be present");
+        assert_eq!(normalized, "memo-42");
     }
 }

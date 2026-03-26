@@ -158,15 +158,44 @@ async fn test_refund_amount_calculation() {
 
     let calculation = calculator.calculate_refund(swap_id).await.unwrap();
 
-    // Refund = deposit - platform_fee - total_fee - gas_estimate
-    // 0.1 - 0.001 - 0.002 - 0.0001 = 0.0969
+    // Refund = deposit - total_fee - gas_estimate
+    // total_fee already includes platform_fee.
+    // 0.1 - 0.002 - 0.0001 = 0.0979
     let expected_refund = Decimal::from_str("0.1").unwrap()
-        - Decimal::from_str("0.001").unwrap()
         - Decimal::from_str("0.002").unwrap()
         - Decimal::from_str("0.0001").unwrap();
 
     assert!(
         (calculation.refund_amount - expected_refund).abs() < Decimal::from_str("0.0001").unwrap()
+    );
+    assert_eq!(calculation.fees_paid, Decimal::from_str("0.002").unwrap());
+
+    cleanup_test_data(&pool).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_refund_does_not_double_subtract_platform_fee() {
+    let pool = setup_test_db().await;
+    cleanup_test_data(&pool).await;
+
+    let swap_id = create_test_swap(&pool).await;
+
+    let config = RefundConfig::default();
+    let calculator = RefundCalculator::new(pool.clone(), config);
+
+    let calculation = calculator.calculate_refund(swap_id).await.unwrap();
+    let deposit_amount = Decimal::from_str("0.1").unwrap();
+    let total_fee = Decimal::from_str("0.002").unwrap();
+    let gas_estimate = Decimal::from_str("0.0001").unwrap();
+
+    assert_eq!(
+        calculation.refund_amount,
+        deposit_amount - total_fee - gas_estimate
+    );
+    assert_ne!(
+        calculation.refund_amount,
+        deposit_amount - Decimal::from_str("0.001").unwrap() - total_fee - gas_estimate
     );
 
     cleanup_test_data(&pool).await;

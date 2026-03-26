@@ -35,6 +35,7 @@ pub enum SwapError {
     PairNotAvailable,
     AmountOutOfRange { min: f64, max: f64 },
     InvalidAddress,
+    ValidationError(String),
     SwapNotFound,
     ProviderUnavailable(String),
     DatabaseError(String),
@@ -53,6 +54,7 @@ impl std::fmt::Display for SwapError {
                 write!(f, "Amount out of range: min={}, max={}", min, max)
             }
             SwapError::InvalidAddress => write!(f, "Invalid address"),
+            SwapError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
             SwapError::SwapNotFound => write!(f, "Swap not found"),
             SwapError::ProviderUnavailable(msg) => write!(f, "Provider unavailable: {}", msg),
             SwapError::DatabaseError(e) => write!(f, "Database error: {}", e),

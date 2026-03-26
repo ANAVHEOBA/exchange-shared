@@ -3,11 +3,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcConfig {
     pub chain: String,
+    #[serde(default = "default_chain_family")]
+    pub family: String,
     pub endpoints: Vec<RpcEndpoint>,
     pub strategy: LoadBalancingStrategy,
     #[serde(default = "default_health_check_interval")]
     pub health_check_interval: u64, // seconds
     pub circuit_breaker_config: CircuitBreakerConfig,
+}
+
+fn default_chain_family() -> String {
+    "unknown".to_string()
 }
 
 fn default_health_check_interval() -> u64 {

@@ -40,4 +40,20 @@ impl BlockchainDerivation for StellarDerivation {
 
         Ok(base32_encode_nopad(&payload))
     }
+
+    fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
+        use bip39::{Language, Mnemonic};
+        use sha2::{Digest, Sha256};
+
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        let seed = mnemonic.to_seed("");
+
+        let mut hasher = Sha256::new();
+        hasher.update(&seed);
+        hasher.update(&index.to_le_bytes());
+        let derived = hasher.finalize();
+
+        Ok(hex::encode(&derived[..32]))
+    }
 }

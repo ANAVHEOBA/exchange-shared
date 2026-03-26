@@ -34,6 +34,7 @@ impl StellarTransaction {
         amount_stroops: u64, // 1 XLM = 10,000,000 stroops
         sequence: u64,
         fee: u32,
+        memo: Option<String>,
     ) -> Self {
         Self {
             source_account: source.to_string(),
@@ -47,7 +48,7 @@ impl StellarTransaction {
                 },
                 amount: format!("{:.7}", amount_stroops as f64 / 10_000_000.0),
             }],
-            memo: None,
+            memo,
         }
     }
 

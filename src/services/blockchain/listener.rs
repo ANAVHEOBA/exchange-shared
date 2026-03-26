@@ -1,5 +1,5 @@
 use crate::modules::swap::status::SwapStatus;
-use crate::services::rpc::{RpcManager, RpcManagerAdapter};
+use crate::services::rpc::{build_provider_for_network, RpcManager};
 use crate::services::settlement::{SettlementOutcome, SettlementService};
 use crate::services::wallet::rpc::BlockchainProvider;
 use sqlx::{MySql, Pool};
@@ -84,10 +84,10 @@ impl BlockchainListener {
             let expected_amount = estimated_receive + platform_fee + network_fee;
 
             // Get the appropriate RPC provider for this network
-            let provider = match self.get_provider_for_network(&network) {
-                Some(p) => p,
-                None => {
-                    tracing::warn!("No RPC provider configured for network: {}", network);
+            let provider = match self.get_provider_for_network(&network).await {
+                Ok(provider) => provider,
+                Err(e) => {
+                    tracing::warn!("{}", e);
                     continue;
                 }
             };
@@ -141,15 +141,11 @@ impl BlockchainListener {
     }
 
     /// Get RPC provider for a specific network
-    fn get_provider_for_network(&self, network: &str) -> Option<Arc<dyn BlockchainProvider>> {
-        // Normalize network name to match config keys
-        let chain_key = network.to_lowercase().replace(' ', "_").replace("-", "_");
-
-        // Create adapter for this chain using RpcManager
-        Some(Arc::new(RpcManagerAdapter::new(
-            self.rpc_manager.clone(),
-            chain_key,
-        )))
+    async fn get_provider_for_network(
+        &self,
+        network: &str,
+    ) -> Result<Arc<dyn BlockchainProvider>, String> {
+        build_provider_for_network(self.rpc_manager.clone(), network).await
     }
 
     /// Trigger payout by updating swap status and executing the payout
@@ -189,6 +185,13 @@ impl BlockchainListener {
                 );
                 Ok(())
             }
+            SettlementOutcome::PayoutInProgress => {
+                tracing::info!(
+                    "Payout already in progress for swap {}. Skipping duplicate trigger.",
+                    swap_id
+                );
+                Ok(())
+            }
             SettlementOutcome::PendingRetry { reason } => {
                 tracing::error!("❌ Payout failed for swap {}: {}", swap_id, reason);
                 Err(reason)
@@ -208,8 +211,7 @@ impl BlockchainListener {
             .await
             .map_err(|e| format!("Failed to get swap network: {}", e))?;
 
-        self.get_provider_for_network(&network)
-            .ok_or_else(|| format!("No RPC provider configured for network: {}", network))
+        self.get_provider_for_network(&network).await
     }
 
     /// Update last balance check timestamp

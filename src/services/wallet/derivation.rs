@@ -496,12 +496,20 @@ pub async fn derive_ripple_address(seed_phrase: &str, index: u32) -> Result<Stri
     XrpDerivation.derive_address(seed_phrase, index)
 }
 
+pub async fn derive_ripple_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    XrpDerivation.derive_private_key(seed_phrase, index)
+}
+
 pub async fn derive_tron_address(seed_phrase: &str, index: u32) -> Result<String, String> {
     TronDerivation.derive_address(seed_phrase, index)
 }
 
 pub async fn derive_cosmos_address(seed_phrase: &str, index: u32) -> Result<String, String> {
     CosmosHubDerivation.derive_address(seed_phrase, index)
+}
+
+pub async fn derive_stellar_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    StellarDerivation.derive_private_key(seed_phrase, index)
 }
 
 pub async fn derive_sui_address(seed_phrase: &str, index: u32) -> Result<String, String> {
@@ -547,6 +555,10 @@ pub async fn derive_solana_key(seed_phrase: &str, index: u32) -> Result<String, 
 
 pub async fn derive_cosmos_key(seed_phrase: &str, index: u32) -> Result<String, String> {
     CosmosHubDerivation.derive_private_key(seed_phrase, index)
+}
+
+pub async fn derive_tron_key(seed_phrase: &str, index: u32) -> Result<String, String> {
+    TronDerivation.derive_private_key(seed_phrase, index)
 }
 
 pub async fn derive_substrate_seed(seed_phrase: &str, index: u32) -> Result<Vec<u8>, String> {

@@ -197,8 +197,51 @@ async fn test_settlement_service_keeps_failed_payout_retryable() {
         .await
         .unwrap()
         .expect("Expected address info");
-    assert_eq!(address_info.status, "pending");
+    assert_eq!(address_info.status, "failed");
     assert!(address_info.payout_tx_hash.is_none());
+
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_settlement_service_treats_processing_payout_as_in_progress() {
+    let ctx = TestContext::new().await;
+    let swap_id = Uuid::new_v4().to_string();
+    let mnemonic = crate::common::test_wallet_mnemonic();
+    let provider = Arc::new(SuccessfulBlockchainProvider);
+
+    create_swap_for_settlement(
+        &ctx.db,
+        &swap_id,
+        "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+        "sending",
+    )
+    .await;
+    attach_internal_address(&ctx.db, &swap_id, &mnemonic, provider.clone()).await;
+
+    sqlx::query("UPDATE swap_address_info SET status = 'processing' WHERE swap_id = ?")
+        .bind(&swap_id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+    let settlement_service = SettlementService::new(ctx.db.clone(), Some(mnemonic));
+    let outcome = settlement_service
+        .settle_swap(&swap_id, provider, Some(1.0))
+        .await
+        .expect("Settlement should recognize in-progress payout");
+
+    match outcome {
+        SettlementOutcome::PayoutInProgress => {}
+        other => panic!("Expected in-progress settlement outcome, got {:?}", other),
+    }
+
+    let (swap_status,): (String,) = sqlx::query_as("SELECT status FROM swaps WHERE id = ?")
+        .bind(&swap_id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+    assert_eq!(swap_status, "funds_received");
 
     ctx.cleanup().await;
 }

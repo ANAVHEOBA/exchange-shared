@@ -69,6 +69,26 @@ pub(crate) fn base58check_decode(
     Ok(body.to_vec())
 }
 
+pub(crate) fn tron_address_to_hex(address: &str) -> Result<String, String> {
+    let body = base58check_decode(address, &bs58::Alphabet::DEFAULT)?;
+
+    if body.len() != 21 {
+        return Err(format!(
+            "Invalid Tron address payload length: expected 21 bytes, got {}",
+            body.len()
+        ));
+    }
+
+    if body[0] != 0x41 {
+        return Err(format!(
+            "Invalid Tron address version byte: expected 0x41, got 0x{:02x}",
+            body[0]
+        ));
+    }
+
+    Ok(hex::encode(body))
+}
+
 pub(crate) fn bech32_encode(hrp: &str, data: &[u8]) -> Result<String, String> {
     let hrp = Hrp::parse(hrp).map_err(|e| format!("Invalid bech32 hrp {hrp}: {e}"))?;
     bech32::encode::<Bech32>(hrp, data).map_err(|e| format!("Failed to encode bech32: {e}"))
@@ -146,10 +166,7 @@ pub(crate) fn cashaddr_decode(address: &str) -> Result<(String, u8, Vec<u8>), St
 
     let mut values = Vec::with_capacity(payload.len());
     for ch in payload.chars() {
-        values.push(
-            cashaddr_value(ch)
-                .ok_or_else(|| format!("Invalid CashAddr character {ch}"))?,
-        );
+        values.push(cashaddr_value(ch).ok_or_else(|| format!("Invalid CashAddr character {ch}"))?);
     }
 
     if !cashaddr_verify_checksum(prefix, &values) {

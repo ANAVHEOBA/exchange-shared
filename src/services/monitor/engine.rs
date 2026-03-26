@@ -2,7 +2,7 @@ use crate::modules::monitor::crud::MonitorCrud;
 use crate::modules::monitor::model::PollingState;
 use crate::modules::swap::status::SwapStatus;
 use crate::services::redis_cache::RedisService;
-use crate::services::rpc::{RpcManager, RpcManagerAdapter};
+use crate::services::rpc::{build_provider_for_network, RpcManager};
 use crate::services::settlement::{SettlementOutcome, SettlementService};
 use crate::services::trocador::TrocadorGateway;
 use crate::services::wallet::rpc::BlockchainProvider;
@@ -85,7 +85,7 @@ impl MonitorEngine {
                 .settlement_service()
                 .settle_swap(
                     &state.swap_id,
-                    self.provider_for_network(&swap.to_network),
+                    self.provider_for_network(&swap.to_network).await?,
                     None,
                 )
                 .await
@@ -115,6 +115,13 @@ impl MonitorEngine {
                     let monitor_crud = MonitorCrud::new(self.db.clone());
                     let _ = monitor_crud
                         .update_poll_result(&state.swap_id, SwapStatus::FundsReceived.as_str(), 300)
+                        .await;
+                    return Ok(());
+                }
+                Ok(SettlementOutcome::PayoutInProgress) => {
+                    let monitor_crud = MonitorCrud::new(self.db.clone());
+                    let _ = monitor_crud
+                        .update_poll_result(&state.swap_id, SwapStatus::FundsReceived.as_str(), 60)
                         .await;
                     return Ok(());
                 }
@@ -207,7 +214,7 @@ impl MonitorEngine {
             };
 
             // Check blockchain balance (fallback verification)
-            let provider = self.provider_for_network(&swap.to_network);
+            let provider = self.provider_for_network(&swap.to_network).await?;
 
             match provider.get_balance(&address_info.our_address).await {
                 Ok(balance) if balance >= 0.0001 => {
@@ -239,6 +246,10 @@ impl MonitorEngine {
                         Ok(SettlementOutcome::AwaitingPayout) => {
                             final_status = SwapStatus::FundsReceived.as_str().to_string();
                             next_poll_secs = 300;
+                        }
+                        Ok(SettlementOutcome::PayoutInProgress) => {
+                            final_status = SwapStatus::FundsReceived.as_str().to_string();
+                            next_poll_secs = 60;
                         }
                         Ok(SettlementOutcome::PendingRetry { reason }) => {
                             tracing::error!(
@@ -306,9 +317,11 @@ impl MonitorEngine {
         Ok(())
     }
 
-    fn provider_for_network(&self, network: &str) -> Arc<dyn BlockchainProvider> {
-        let chain_key = network.to_lowercase().replace(' ', "_").replace("-", "_");
-        Arc::new(RpcManagerAdapter::new(self.rpc_manager.clone(), chain_key))
+    async fn provider_for_network(
+        &self,
+        network: &str,
+    ) -> Result<Arc<dyn BlockchainProvider>, String> {
+        build_provider_for_network(self.rpc_manager.clone(), network).await
     }
 
     fn settlement_service(&self) -> SettlementService {

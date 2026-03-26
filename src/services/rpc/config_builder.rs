@@ -116,6 +116,7 @@ pub fn build_default_rpc_configs() -> HashMap<String, RpcConfig> {
             chain_key,
             RpcConfig {
                 chain: chain.name.clone(),
+                family: chain.family.clone(),
                 endpoints,
                 strategy,
                 health_check_interval,

@@ -19,6 +19,7 @@ pub enum SettlementOutcome {
     Completed(PayoutResponse),
     AlreadyCompleted,
     AwaitingPayout,
+    PayoutInProgress,
     PendingRetry { reason: String },
 }
 
@@ -92,6 +93,9 @@ impl SettlementService {
                 self.mark_completed(swap_id).await?;
                 Ok(SettlementOutcome::Completed(response))
             }
+            Err(reason) if is_payout_in_progress_error(&reason) => {
+                Ok(SettlementOutcome::PayoutInProgress)
+            }
             Err(reason) => {
                 // Keep the swap retryable. The monitor can re-enter the same settlement
                 // path later instead of recovering from a terminal failed status.
@@ -147,4 +151,8 @@ impl SettlementService {
 
         Ok(())
     }
+}
+
+fn is_payout_in_progress_error(reason: &str) -> bool {
+    reason.contains("Payout already in progress")
 }

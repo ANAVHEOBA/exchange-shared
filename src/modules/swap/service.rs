@@ -10,6 +10,10 @@ use crate::services::gas::GasEstimator;
 use crate::services::pricing::CommissionService;
 use crate::services::redis_cache::RedisService;
 use crate::services::trocador::{TrocadorError, TrocadorGateway};
+use crate::services::wallet::validation::{
+    normalize_supported_recipient_extra_id, supported_recipient_extra_id_format,
+    validate_address_by_network_family, AddressValidation,
+};
 
 pub struct SwapService {
     pool: Pool<MySql>,
@@ -44,6 +48,13 @@ impl SwapService {
             .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
         let commission_service = CommissionService::new();
         let swap_id = uuid::Uuid::new_v4().to_string();
+        let recipient_address = request.recipient_address.trim().to_string();
+        let recipient_extra_id = normalize_supported_recipient_extra_id(
+            &request.to,
+            &request.network_to,
+            request.recipient_extra_id.as_deref(),
+        )
+        .map_err(SwapError::ValidationError)?;
 
         tracing::info!(
             "🟢 Starting swap creation: {} {} -> {} {}, amount: {}, provider: {}",
@@ -54,6 +65,14 @@ impl SwapService {
             request.amount,
             request.provider
         );
+
+        self.validate_recipient_destination(
+            &trocador_gateway,
+            request,
+            &recipient_address,
+            recipient_extra_id.as_deref(),
+        )
+        .await?;
 
         let (internal_payout_address, address_index) = if let Some(mnemonic) = &self.wallet_mnemonic
         {
@@ -192,8 +211,8 @@ impl SwapService {
                 network_fee,
                 deposit_address: &trocador_res.address_provider,
                 deposit_extra_id: trocador_res.address_provider_memo.as_deref(),
-                recipient_address: &request.recipient_address,
-                recipient_extra_id: request.recipient_extra_id.as_deref(),
+                recipient_address: &recipient_address,
+                recipient_extra_id: recipient_extra_id.as_deref(),
                 refund_address: request.refund_address.as_deref(),
                 refund_extra_id: request.refund_extra_id.as_deref(),
                 platform_fee,
@@ -218,8 +237,8 @@ impl SwapService {
                 &internal_payout_address,
                 address_index,
                 coin_type,
-                &request.recipient_address,
-                request.recipient_extra_id.as_deref(),
+                &recipient_address,
+                recipient_extra_id.as_deref(),
             )
             .await
             .map_err(|e| SwapError::DatabaseError(format!("Failed to save address info: {}", e)))?;
@@ -238,7 +257,7 @@ impl SwapService {
             deposit_address: trocador_res.address_provider,
             deposit_extra_id: trocador_res.address_provider_memo,
             deposit_amount: request.amount,
-            recipient_address: request.recipient_address.clone(),
+            recipient_address,
             estimated_receive: estimated_user_receive,
             rate: estimated_user_receive / request.amount,
             status,
@@ -248,6 +267,112 @@ impl SwapService {
             expires_at: Utc::now() + chrono::Duration::minutes(60),
             created_at: Utc::now(),
         })
+    }
+
+    async fn validate_recipient_destination(
+        &self,
+        trocador_gateway: &TrocadorGateway,
+        request: &CreateSwapRequest,
+        recipient_address: &str,
+        recipient_extra_id: Option<&str>,
+    ) -> Result<(), SwapError> {
+        if recipient_address.is_empty() {
+            return Err(SwapError::ValidationError(
+                "Recipient address is required".to_string(),
+            ));
+        }
+
+        if let AddressValidation::Invalid { reason, .. } =
+            validate_address_by_network_family(&request.to, &request.network_to, recipient_address)
+        {
+            return Err(SwapError::ValidationError(format!(
+                "Recipient address is invalid for {} on {}: {}",
+                request.to, request.network_to, reason
+            )));
+        }
+
+        let is_valid = self
+            .call_trocador_with_retry(|| async {
+                trocador_gateway
+                    .validate_address(&request.to, &request.network_to, recipient_address)
+                    .await
+            })
+            .await
+            .map_err(|e| {
+                SwapError::ExternalApiError(format!("Recipient address validation failed: {}", e))
+            })?;
+
+        if !is_valid {
+            return Err(SwapError::ValidationError(format!(
+                "Recipient address is invalid for {} on {}",
+                request.to, request.network_to
+            )));
+        }
+
+        let destination_requires_extra_id = self
+            .destination_requires_extra_id(trocador_gateway, &request.to, &request.network_to)
+            .await?;
+
+        if !destination_requires_extra_id {
+            return Ok(());
+        }
+
+        let Some(format) = supported_recipient_extra_id_format(&request.to, &request.network_to)
+        else {
+            return Err(SwapError::ValidationError(format!(
+                "{} on {} requires a memo/tag, but this payout route does not support recipient_extra_id yet",
+                request.to, request.network_to
+            )));
+        };
+
+        if recipient_extra_id.is_none() {
+            return Err(SwapError::ValidationError(format!(
+                "{} on {} requires a {}",
+                request.to,
+                request.network_to,
+                format.label()
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn destination_requires_extra_id(
+        &self,
+        trocador_gateway: &TrocadorGateway,
+        ticker: &str,
+        network: &str,
+    ) -> Result<bool, SwapError> {
+        if let Some(requires_extra_id) = sqlx::query_scalar::<_, i8>(
+            r#"
+            SELECT requires_extra_id
+            FROM currencies
+            WHERE LOWER(symbol) = LOWER(?)
+              AND LOWER(network) = LOWER(?)
+            LIMIT 1
+            "#,
+        )
+        .bind(ticker)
+        .bind(network)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| SwapError::DatabaseError(format!("Currency lookup failed: {}", e)))?
+        {
+            return Ok(requires_extra_id != 0);
+        }
+
+        let currencies = self
+            .call_trocador_with_retry(|| async { trocador_gateway.fetch_currencies().await })
+            .await?;
+
+        Ok(currencies
+            .iter()
+            .find(|currency| {
+                currency.ticker.eq_ignore_ascii_case(ticker)
+                    && currency.network.eq_ignore_ascii_case(network)
+            })
+            .map(|currency| currency.memo)
+            .unwrap_or(false))
     }
 
     pub async fn get_swap_status(&self, swap_id: &str) -> Result<SwapStatusResponse, SwapError> {

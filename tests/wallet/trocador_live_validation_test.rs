@@ -8,7 +8,7 @@ use exchange_shared::services::wallet::{
 };
 use serde::Deserialize;
 use serial_test::serial;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fs};
 use tokio::time::{sleep, Duration};
 
 const DEFAULT_DELAY_MS: u64 = 500;
@@ -31,6 +31,12 @@ struct SuspiciousPair {
     local_status: &'static str,
 }
 
+struct LoggedUnsupportedPair {
+    ticker: String,
+    network: String,
+    logged_address: String,
+}
+
 #[derive(Default)]
 struct ValidationSummary {
     suspicious_pairs_found: usize,
@@ -39,6 +45,8 @@ struct ValidationSummary {
     local_unsupported_pairs: usize,
     checked_pairs: usize,
     valid_pairs: usize,
+    same_address_pairs: usize,
+    address_mismatches: Vec<String>,
     derivation_errors: Vec<String>,
     rejected_pairs: Vec<String>,
     http_errors: Vec<String>,
@@ -50,7 +58,8 @@ struct ValidationSummary {
 
 impl ValidationSummary {
     fn is_clean(&self) -> bool {
-        self.derivation_errors.is_empty()
+        self.address_mismatches.is_empty()
+            && self.derivation_errors.is_empty()
             && self.rejected_pairs.is_empty()
             && self.http_errors.is_empty()
             && self.parse_errors.is_empty()
@@ -67,6 +76,8 @@ impl ValidationSummary {
             format!("local_unsupported_pairs: {}", self.local_unsupported_pairs),
             format!("checked_pairs: {}", self.checked_pairs),
             format!("valid_pairs: {}", self.valid_pairs),
+            format!("same_address_pairs: {}", self.same_address_pairs),
+            format!("address_mismatches: {}", self.address_mismatches.len()),
             format!("derivation_errors: {}", self.derivation_errors.len()),
             format!("rejected_pairs: {}", self.rejected_pairs.len()),
             format!("http_errors: {}", self.http_errors.len()),
@@ -76,6 +87,11 @@ impl ValidationSummary {
             format!("api_errors: {}", self.api_errors.len()),
         ];
 
+        append_sample(
+            &mut sections,
+            "address_mismatch_samples",
+            &self.address_mismatches,
+        );
         append_sample(
             &mut sections,
             "derivation_error_samples",
@@ -128,6 +144,7 @@ async fn test_live_trocador_validation_for_locally_suspicious_snapshot_pairs() {
     let delay_ms = read_u64_env("TROCADOR_VALIDATE_DELAY_MS").unwrap_or(DEFAULT_DELAY_MS);
     let max_pairs = read_usize_env("TROCADOR_VALIDATE_MAX_PAIRS").unwrap_or(DEFAULT_MAX_LIVE_PAIRS);
     let include_unsupported = read_bool_env("TROCADOR_VALIDATE_INCLUDE_UNSUPPORTED");
+    let force_full_snapshot = read_bool_env("TROCADOR_VALIDATE_FORCE_FULL_SNAPSHOT");
 
     let snapshot: Vec<SnapshotCurrency> =
         serde_json::from_str(include_str!("../../trocador_currencies_full.json"))
@@ -135,6 +152,7 @@ async fn test_live_trocador_validation_for_locally_suspicious_snapshot_pairs() {
 
     let seed = common::test_wallet_mnemonic();
     let mut seen = BTreeSet::new();
+    let mut full_snapshot_pairs = Vec::new();
     let mut invalid_pairs = Vec::new();
     let mut unsupported_pairs = Vec::new();
     let mut summary = ValidationSummary::default();
@@ -161,11 +179,34 @@ async fn test_live_trocador_validation_for_locally_suspicious_snapshot_pairs() {
                 }
             };
 
-        match validation::validate_address_by_network_family(
+        let local_validation = validation::validate_address_by_network_family(
             &currency.ticker,
             &currency.network,
             &address,
-        ) {
+        );
+
+        if force_full_snapshot {
+            let (local_family, local_reason, local_status) = match &local_validation {
+                AddressValidation::Valid { family } => (*family, String::new(), "valid"),
+                AddressValidation::Invalid { family, reason } => {
+                    (*family, reason.clone(), "invalid")
+                }
+                AddressValidation::Unsupported { family, reason } => {
+                    (*family, reason.clone(), "unsupported")
+                }
+            };
+
+            full_snapshot_pairs.push(SuspiciousPair {
+                ticker: currency.ticker.clone(),
+                network: currency.network.clone(),
+                address: address.clone(),
+                local_family,
+                local_reason,
+                local_status,
+            });
+        }
+
+        match local_validation {
             AddressValidation::Valid { .. } => {}
             AddressValidation::Invalid { family, reason } => {
                 summary.local_invalid_pairs += 1;
@@ -192,12 +233,18 @@ async fn test_live_trocador_validation_for_locally_suspicious_snapshot_pairs() {
         }
     }
 
-    let mut suspicious_pairs = invalid_pairs;
-    if include_unsupported {
-        suspicious_pairs.extend(unsupported_pairs);
-    }
+    let suspicious_pairs = if force_full_snapshot {
+        full_snapshot_pairs
+    } else {
+        let mut suspicious_pairs = invalid_pairs;
+        if include_unsupported {
+            suspicious_pairs.extend(unsupported_pairs);
+        }
+        suspicious_pairs
+    };
 
-    if suspicious_pairs.is_empty() {
+    let mut suspicious_pairs = suspicious_pairs;
+    if suspicious_pairs.is_empty() && !force_full_snapshot {
         for (ticker, network) in live_smoke_pairs() {
             let address = derivation::derive_address(&seed, ticker, network, 0)
                 .await
@@ -264,6 +311,92 @@ async fn test_live_trocador_validation_for_locally_suspicious_snapshot_pairs() {
     assert!(
         summary.is_clean(),
         "Live Trocador snapshot validation found rejects or inconclusive pairs:\n{}",
+        summary.render()
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore = "Requires TROCADOR_API_KEY and network access; rederives only the logged coin-not-found pairs and rechecks validateaddress"]
+async fn test_live_trocador_rederives_and_rechecks_logged_coin_not_found_pairs() {
+    dotenvy::dotenv().ok();
+
+    let api_key = std::env::var("TROCADOR_API_KEY").expect("TROCADOR_API_KEY is required");
+    let delay_ms = read_u64_env("TROCADOR_VALIDATE_DELAY_MS").unwrap_or(DEFAULT_DELAY_MS);
+    let max_pairs = read_usize_env("TROCADOR_VALIDATE_MAX_PAIRS").unwrap_or(89);
+    let input_file =
+        std::env::var("TROCADOR_VALIDATE_INPUT_FILE").unwrap_or_else(|_| "address.md".to_string());
+
+    let text = fs::read_to_string(&input_file)
+        .unwrap_or_else(|err| panic!("Failed to read {}: {}", input_file, err));
+    let logged_pairs = extract_logged_coin_not_found_pairs(&text);
+
+    assert!(
+        !logged_pairs.is_empty(),
+        "No logged coin-not-found pairs found in {}. If this came from cargo test output, rerun with `2>&1 | tee ...` so stderr is captured.",
+        input_file
+    );
+
+    let client = TrocadorClient::new(api_key);
+    let seed = common::test_wallet_mnemonic();
+    let target_pairs = logged_pairs.len().min(max_pairs);
+    let mut summary = ValidationSummary::default();
+    summary.suspicious_pairs_found = logged_pairs.len();
+
+    for pair in logged_pairs.into_iter().take(target_pairs) {
+        summary.checked_pairs += 1;
+        let pair_label = format!("{}/{}", pair.ticker, pair.network);
+
+        let derived_address =
+            match derivation::derive_address(&seed, &pair.ticker, &pair.network, 0).await {
+                Ok(address) => address,
+                Err(err) => {
+                    summary
+                        .derivation_errors
+                        .push(format!("{pair_label}: {err}"));
+                    continue;
+                }
+            };
+
+        if derived_address == pair.logged_address {
+            summary.same_address_pairs += 1;
+        } else {
+            summary.address_mismatches.push(format!(
+                "{pair_label}: logged={} rederived={}",
+                pair.logged_address, derived_address
+            ));
+        }
+
+        match validate_with_rate_limit_retry(
+            &client,
+            &pair.ticker,
+            &pair.network,
+            &derived_address,
+            delay_ms,
+        )
+        .await
+        {
+            Ok(true) => summary.valid_pairs += 1,
+            Ok(false) => summary.rejected_pairs.push(format!(
+                "{pair_label} -> {derived_address}: Trocador returned false"
+            )),
+            Err(err) => summary.push_validation_error(&pair_label, &derived_address, err),
+        }
+
+        if summary.checked_pairs % 25 == 0 {
+            eprintln!(
+                "Rechecked {}/{} logged coin-not-found pairs so far",
+                summary.checked_pairs, target_pairs
+            );
+        }
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
+
+    eprintln!("{}", summary.render());
+
+    assert!(
+        summary.address_mismatches.is_empty() && summary.derivation_errors.is_empty(),
+        "Re-derivation changed addresses or failed:\n{}",
         summary.render()
     );
 }
@@ -339,14 +472,55 @@ fn live_smoke_pairs() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
+fn extract_logged_coin_not_found_pairs(text: &str) -> Vec<LoggedUnsupportedPair> {
+    let mut seen = BTreeSet::new();
+    let mut pairs = Vec::new();
+
+    for line in text.lines() {
+        if !line.contains(r#"API returned error: {"error": "coin not found"}"#)
+            || !line.contains(" -> ")
+        {
+            continue;
+        }
+
+        let Some((left, right)) = line.split_once(" -> ") else {
+            continue;
+        };
+        let Some(pair_part) = left.split(" [").next() else {
+            continue;
+        };
+        let Some((ticker, network)) = pair_part.split_once('/') else {
+            continue;
+        };
+        let Some(address) = right.split(": API error:").next() else {
+            continue;
+        };
+
+        let key = (ticker.to_ascii_lowercase(), network.to_ascii_lowercase());
+        if !seen.insert(key) {
+            continue;
+        }
+
+        pairs.push(LoggedUnsupportedPair {
+            ticker: ticker.to_string(),
+            network: network.to_string(),
+            logged_address: address.to_string(),
+        });
+    }
+
+    pairs
+}
+
 fn append_sample(sections: &mut Vec<String>, label: &str, items: &[String]) {
     if items.is_empty() {
         return;
     }
 
+    let sample_limit =
+        read_usize_env("TROCADOR_VALIDATE_SAMPLE_LIMIT").unwrap_or(DEFAULT_SAMPLE_LIMIT);
     let sample = items
         .iter()
-        .take(DEFAULT_SAMPLE_LIMIT)
+        .take(sample_limit)
         .cloned()
         .collect::<Vec<_>>()
         .join("\n");

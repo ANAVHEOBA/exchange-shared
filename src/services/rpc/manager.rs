@@ -140,6 +140,10 @@ impl RpcManager {
         }
     }
 
+    pub fn chain_family(&self, chain: &str) -> Option<&str> {
+        self.configs.get(chain).map(|config| config.family.as_str())
+    }
+
     /// Weighted Round Robin selection (Smooth WRR)
     async fn weighted_round_robin_select(
         &self,
@@ -245,6 +249,54 @@ impl RpcManager {
         Err(RpcError::AllEndpointsFailed)
     }
 
+    pub async fn post_json<T: DeserializeOwned>(
+        &self,
+        chain: &str,
+        path: &str,
+        body: Value,
+    ) -> Result<T, RpcError> {
+        let config = self
+            .configs
+            .get(chain)
+            .ok_or_else(|| RpcError::ChainNotConfigured(chain.to_string()))?;
+
+        let max_attempts = config.endpoints.len().min(3);
+
+        for attempt in 0..max_attempts {
+            let url = self.select_endpoint(chain).await?;
+            let endpoint = config
+                .endpoints
+                .iter()
+                .find(|ep| ep.url == url)
+                .ok_or_else(|| RpcError::Network("Endpoint not found".to_string()))?;
+
+            let start = Instant::now();
+            let result = self
+                .execute_http_post(&url, path, body.clone(), endpoint)
+                .await;
+            let latency = start.elapsed();
+
+            match result {
+                Ok(response) => {
+                    self.record_result(&url, latency, true, None).await;
+                    return Ok(response);
+                }
+                Err(e) => {
+                    self.record_result(&url, latency, false, None).await;
+
+                    if attempt < max_attempts - 1 {
+                        tokio::time::sleep(calculate_backoff(attempt as u32)).await;
+                        continue;
+                    }
+
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(RpcError::AllEndpointsFailed)
+    }
+
     /// Execute single RPC call
     async fn execute_rpc_call<T: DeserializeOwned>(
         &self,
@@ -294,6 +346,48 @@ impl RpcManager {
         rpc_response
             .result
             .ok_or_else(|| RpcError::Parse("Missing result".to_string()))
+    }
+
+    async fn execute_http_post<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        path: &str,
+        body: Value,
+        endpoint: &RpcEndpoint,
+    ) -> Result<T, RpcError> {
+        let url = if path.is_empty() {
+            url.to_string()
+        } else {
+            format!(
+                "{}/{}",
+                url.trim_end_matches('/'),
+                path.trim_start_matches('/')
+            )
+        };
+
+        let mut request = self
+            .client
+            .post(url)
+            .json(&body)
+            .timeout(Duration::from_millis(endpoint.timeout_ms));
+
+        if let Some(auth) = &endpoint.auth {
+            request = match auth {
+                RpcAuth::ApiKey { key } => request.header("X-API-Key", key),
+                RpcAuth::Bearer { token } => request.bearer_auth(token),
+                RpcAuth::Basic { username, password } => {
+                    request.basic_auth(username, Some(password))
+                }
+            };
+        }
+
+        request
+            .send()
+            .await
+            .map_err(|e| RpcError::Network(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| RpcError::Parse(e.to_string()))
     }
 
     /// Record request result and update health metrics
@@ -348,14 +442,7 @@ impl RpcManager {
     /// Check endpoint health
     async fn check_endpoint_health(&self, url: &str, chain: &str) -> HealthCheckResult {
         let start = Instant::now();
-
-        // Determine health check method based on chain
-        let method = match chain {
-            "ethereum" | "polygon" | "bsc" | "arbitrum" | "optimism" => "eth_blockNumber",
-            "bitcoin" => "getblockcount",
-            "solana" => "getBlockHeight",
-            _ => "eth_blockNumber", // Default to EVM
-        };
+        let family = self.chain_family(chain).unwrap_or("unknown");
 
         let endpoint = self
             .configs
@@ -370,15 +457,49 @@ impl RpcManager {
             };
         }
 
-        let result = self
-            .execute_rpc_call::<Value>(url, method, json!([]), endpoint.unwrap())
-            .await;
+        let endpoint = endpoint.unwrap();
+        let result = match family {
+            "evm" => {
+                self.execute_rpc_call::<Value>(url, "eth_blockNumber", json!([]), endpoint)
+                    .await
+            }
+            "solana" => {
+                self.execute_rpc_call::<Value>(url, "getBlockHeight", json!([]), endpoint)
+                    .await
+            }
+            "btc" | "utxo" if is_rest_explorer_url(url) => self
+                .client
+                .get(url)
+                .timeout(Duration::from_millis(endpoint.timeout_ms))
+                .send()
+                .await
+                .map_err(|e| RpcError::Network(e.to_string()))
+                .and_then(|response| {
+                    if response.status().is_success() {
+                        Ok(Value::Null)
+                    } else {
+                        Err(RpcError::Network(format!(
+                            "Explorer health check returned status {}",
+                            response.status()
+                        )))
+                    }
+                }),
+            "btc" | "utxo" => {
+                self.execute_rpc_call::<Value>(url, "getblockcount", json!([]), endpoint)
+                    .await
+            }
+            _ if chain == "tron" => {
+                self.execute_http_post::<Value>(url, "/wallet/getnowblock", json!({}), endpoint)
+                    .await
+            }
+            _ => Ok(Value::Null),
+        };
         let latency = start.elapsed();
 
         match result {
             Ok(response) => {
                 // Extract block height if available
-                let block_height = extract_block_height(&response, chain);
+                let block_height = extract_block_height(&response, family);
 
                 HealthCheckResult {
                     success: true,
@@ -427,6 +548,13 @@ impl RpcManager {
     }
 }
 
+fn is_rest_explorer_url(url: &str) -> bool {
+    url.contains("mempool.space")
+        || url.contains("blockstream.info")
+        || url.contains("blockchair.com")
+        || url.contains("blockcypher.com")
+}
+
 #[derive(serde::Deserialize)]
 struct RpcResponse<T> {
     result: Option<T>,
@@ -458,18 +586,15 @@ fn calculate_backoff(attempt: u32) -> Duration {
 }
 
 /// Extract block height from RPC response
-fn extract_block_height(response: &Value, chain: &str) -> Option<u64> {
-    match chain {
-        "ethereum" | "polygon" | "bsc" | "arbitrum" | "optimism" => {
+fn extract_block_height(response: &Value, family: &str) -> Option<u64> {
+    match family {
+        "evm" => {
             // EVM chains return hex string
             response
                 .as_str()
                 .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         }
-        "bitcoin" | "solana" => {
-            // Bitcoin and Solana return number
-            response.as_u64()
-        }
+        "btc" | "utxo" | "solana" => response.as_u64(),
         _ => None,
     }
 }

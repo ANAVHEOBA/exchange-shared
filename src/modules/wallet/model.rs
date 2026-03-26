@@ -12,6 +12,8 @@ pub struct SwapAddressInfo {
     pub address_index: u32,
     pub blockchain_id: i32,
     pub coin_type: i32,
+    pub payout_ticker: String,
+    pub payout_network: String,
     pub recipient_address: String,
     pub recipient_extra_id: Option<String>,
     pub commission_rate: f64,
@@ -31,6 +33,15 @@ pub struct SwapAddressInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PayoutFeeQuote {
     pub platform_fee: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PayoutAssetMetadata {
+    pub symbol: String,
+    pub network: String,
+    pub contract_address: Option<String>,
+    pub decimals: u8,
+    pub gas_multiplier: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +79,7 @@ pub struct AddressUsageTracking {
 #[sqlx(rename_all = "lowercase")]
 pub enum PayoutStatus {
     Pending,
+    Processing,
     Success,
     Failed,
 }

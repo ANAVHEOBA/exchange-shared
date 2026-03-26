@@ -52,6 +52,7 @@ pub async fn create_swap(
             let status = match e {
                 super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
                 super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
+                super::crud::SwapError::ValidationError(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, Json(SwapErrorResponse::new(e.to_string())))
@@ -191,6 +192,7 @@ pub async fn validate_address(
     let response = crud.validate_address(&payload).await.map_err(|e| {
         let status = match e {
             super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
+            super::crud::SwapError::ValidationError(_) => StatusCode::BAD_REQUEST,
             super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

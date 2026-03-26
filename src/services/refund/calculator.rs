@@ -44,11 +44,20 @@ impl RefundCalculator {
             .and_then(|s| Decimal::from_str(&s).ok())
             .unwrap_or(Decimal::ZERO);
 
+        // `total_fee` is the canonical persisted fee figure and already includes
+        // the platform fee on newly created swaps. Fall back to the legacy
+        // platform fee field only when total_fee is absent/zero.
+        let fees_paid = if total_fee > Decimal::ZERO {
+            total_fee
+        } else {
+            platform_fee
+        };
+
         // Estimate gas cost for refund transaction
         let gas_cost_estimate = self.estimate_gas_cost(&from_currency).await?;
 
         // Calculate refund amount
-        let refund_amount = deposit_amount - platform_fee - total_fee - gas_cost_estimate;
+        let refund_amount = deposit_amount - fees_paid - gas_cost_estimate;
 
         // Check if economical
         let min_threshold = self.get_min_threshold(&from_currency);
@@ -66,7 +75,7 @@ impl RefundCalculator {
         Ok(RefundCalculation {
             refund_amount,
             deposit_amount,
-            fees_paid: platform_fee + total_fee,
+            fees_paid,
             gas_cost_estimate,
             is_economical,
             reason,

@@ -43,4 +43,24 @@ impl BlockchainDerivation for XrpDerivation {
             bs58::Alphabet::RIPPLE,
         ))
     }
+
+    fn derive_private_key(&self, seed: &str, index: u32) -> Result<String, String> {
+        use bip39::{Language, Mnemonic};
+        use secp256k1::SecretKey;
+        use sha2::{Digest, Sha256};
+
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, seed)
+            .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+        let seed = mnemonic.to_seed("");
+
+        let mut hasher = Sha256::new();
+        hasher.update(&seed);
+        hasher.update(&index.to_le_bytes());
+        let derived = hasher.finalize();
+
+        let secret_key =
+            SecretKey::from_slice(&derived).map_err(|e| format!("Invalid secret key: {}", e))?;
+
+        Ok(hex::encode(secret_key.secret_bytes()))
+    }
 }
