@@ -1,3 +1,4 @@
+use super::canonical_chain_key;
 use super::manager::RpcManager;
 use crate::services::wallet::bitcoin_rpc::BitcoinUtxo;
 use crate::services::wallet::blockchains::encoding::tron_address_to_hex;
@@ -58,16 +59,18 @@ impl RpcManagerAdapter {
 }
 
 pub(crate) fn normalize_chain_key(chain: &str) -> String {
-    match chain
-        .to_ascii_lowercase()
-        .replace(' ', "_")
-        .replace('-', "_")
-        .as_str()
-    {
+    match canonical_chain_key(chain).as_str() {
         "eth" | "erc20" => "ethereum".to_string(),
-        "smartchain" | "bep20" => "bsc".to_string(),
+        "btc" | "lightning" | "omni" | "brc20" => "bitcoin".to_string(),
+        "smartchain" | "bep20" | "bsc" => "bnb_smart_chain".to_string(),
         "trx" | "trc20" => "tron".to_string(),
         "sol" | "spl" => "solana".to_string(),
+        "matic" => "polygon".to_string(),
+        "arbitrum" => "arbitrum_one".to_string(),
+        "avaxc" => "avalanche_c_chain".to_string(),
+        "xlm" => "stellar".to_string(),
+        "xtz" => "tezos".to_string(),
+        "xrp" => "xrp".to_string(),
         other => other.to_string(),
     }
 }

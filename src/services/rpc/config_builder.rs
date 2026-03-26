@@ -1,4 +1,7 @@
-use super::config::{CircuitBreakerConfig, LoadBalancingStrategy, RpcConfig, RpcEndpoint};
+use super::{
+    canonical_chain_key,
+    config::{CircuitBreakerConfig, LoadBalancingStrategy, RpcConfig, RpcEndpoint},
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -30,11 +33,7 @@ pub fn build_default_rpc_configs() -> HashMap<String, RpcConfig> {
 
     // Build configs for all chains
     for chain in chains {
-        let chain_key = chain
-            .name
-            .to_lowercase()
-            .replace(' ', "_")
-            .replace("-", "_");
+        let chain_key = canonical_chain_key(&chain.name);
 
         let mut endpoints = vec![];
         let mut priority = 1;

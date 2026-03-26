@@ -1,9 +1,37 @@
-use super::{normalize_chain_key, RpcManager, RpcManagerAdapter};
+use super::{normalize_chain_key, resolve_configured_chain_key, RpcManager, RpcManagerAdapter};
 use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
 use crate::services::wallet::rest_rpc::RestRpcClient;
 use crate::services::wallet::rpc::BlockchainProvider;
 use crate::services::wallet::solana_rpc::SolanaRpcClient;
 use std::sync::Arc;
+
+pub fn resolve_configured_send_chain_key(
+    manager: &RpcManager,
+    ticker: &str,
+    network: &str,
+) -> Result<String, String> {
+    resolve_configured_chain_key(ticker, network, |key| manager.chain_family(key).is_some())
+}
+
+pub async fn build_provider_for_asset(
+    manager: Arc<RpcManager>,
+    ticker: &str,
+    network: &str,
+) -> Result<Arc<dyn BlockchainProvider>, String> {
+    let chain_key = resolve_configured_send_chain_key(manager.as_ref(), ticker, network)?;
+    let family = manager
+        .chain_family(&chain_key)
+        .ok_or_else(|| format!("No RPC provider configured for {}/{}.", ticker, network))?
+        .to_string();
+
+    build_provider_for_chain_key(
+        manager,
+        chain_key,
+        &format!("{}/{}", ticker, network),
+        &family,
+    )
+    .await
+}
 
 pub async fn build_provider_for_network(
     manager: Arc<RpcManager>,
@@ -15,24 +43,36 @@ pub async fn build_provider_for_network(
         .ok_or_else(|| format!("No RPC provider configured for network: {}", network))?
         .to_string();
 
+    build_provider_for_chain_key(manager, chain_key, network, &family).await
+}
+
+async fn build_provider_for_chain_key(
+    manager: Arc<RpcManager>,
+    chain_key: String,
+    requested_label: &str,
+    family: &str,
+) -> Result<Arc<dyn BlockchainProvider>, String> {
     if chain_key == "tron" {
         return Ok(Arc::new(RpcManagerAdapter::new(manager, chain_key)));
     }
 
-    match family.as_str() {
+    match family {
         "evm" => Ok(Arc::new(RpcManagerAdapter::new(manager, chain_key))),
         "solana" => {
             let endpoint = manager.select_endpoint(&chain_key).await.map_err(|e| {
                 format!(
                     "Failed to select Solana RPC endpoint for {}: {}",
-                    network, e
+                    requested_label, e
                 )
             })?;
             Ok(Arc::new(SolanaRpcClient::new(endpoint)))
         }
         "btc" | "utxo" => {
             let endpoint = manager.select_endpoint(&chain_key).await.map_err(|e| {
-                format!("Failed to select UTXO RPC endpoint for {}: {}", network, e)
+                format!(
+                    "Failed to select UTXO RPC endpoint for {}: {}",
+                    requested_label, e
+                )
             })?;
 
             if is_rest_explorer_url(&endpoint) {
@@ -43,7 +83,7 @@ pub async fn build_provider_for_network(
         }
         other => Err(format!(
             "No chain-specific wallet provider is implemented for network '{}' (family '{}').",
-            network, other
+            requested_label, other
         )),
     }
 }
@@ -57,7 +97,9 @@ fn is_rest_explorer_url(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::build_provider_for_network;
+    use super::{
+        build_provider_for_asset, build_provider_for_network, resolve_configured_send_chain_key,
+    };
     use crate::services::rpc::{
         CircuitBreakerConfig, LoadBalancingStrategy, RpcConfig, RpcEndpoint, RpcManager,
     };
@@ -111,5 +153,20 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("chain-specific wallet provider"));
+    }
+
+    #[test]
+    fn resolves_mainnet_using_ticker_and_network() {
+        let manager = rpc_manager_for("cardano", "cardano");
+        let resolved = resolve_configured_send_chain_key(manager.as_ref(), "ADA", "Mainnet")
+            .expect("ADA should resolve");
+        assert_eq!(resolved, "cardano");
+    }
+
+    #[tokio::test]
+    async fn builds_provider_from_asset_aliases() {
+        let provider =
+            build_provider_for_asset(rpc_manager_for("ethereum", "evm"), "ETH", "ERC20").await;
+        assert!(provider.is_ok());
     }
 }

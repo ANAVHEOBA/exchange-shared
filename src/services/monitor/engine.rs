@@ -2,7 +2,7 @@ use crate::modules::monitor::crud::MonitorCrud;
 use crate::modules::monitor::model::PollingState;
 use crate::modules::swap::status::SwapStatus;
 use crate::services::redis_cache::RedisService;
-use crate::services::rpc::{build_provider_for_network, RpcManager};
+use crate::services::rpc::{build_provider_for_asset, RpcManager};
 use crate::services::settlement::{SettlementOutcome, SettlementService};
 use crate::services::trocador::TrocadorGateway;
 use crate::services::wallet::rpc::BlockchainProvider;
@@ -11,6 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::services::monitor::strategy::PollingStrategy;
+
+#[derive(sqlx::FromRow)]
+struct SwapRuntimeInfo {
+    provider_swap_id: Option<String>,
+    status: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    to_currency: String,
+    to_network: String,
+}
 
 pub struct MonitorEngine {
     db: Pool<MySql>,
@@ -65,10 +74,10 @@ impl MonitorEngine {
         }
 
         // 2. Fetch Swap Details
-        let swap = sqlx::query!(
-            "SELECT provider_swap_id, status, created_at, to_network FROM swaps WHERE id = ?",
-            state.swap_id
+        let swap: SwapRuntimeInfo = sqlx::query_as(
+            "SELECT provider_swap_id, status, created_at, to_currency, to_network FROM swaps WHERE id = ?",
         )
+        .bind(&state.swap_id)
         .fetch_optional(&self.db)
         .await
         .map_err(|e| e.to_string())?
@@ -85,7 +94,8 @@ impl MonitorEngine {
                 .settlement_service()
                 .settle_swap(
                     &state.swap_id,
-                    self.provider_for_network(&swap.to_network).await?,
+                    self.provider_for_asset(&swap.to_currency, &swap.to_network)
+                        .await?,
                     None,
                 )
                 .await
@@ -214,7 +224,9 @@ impl MonitorEngine {
             };
 
             // Check blockchain balance (fallback verification)
-            let provider = self.provider_for_network(&swap.to_network).await?;
+            let provider = self
+                .provider_for_asset(&swap.to_currency, &swap.to_network)
+                .await?;
 
             match provider.get_balance(&address_info.our_address).await {
                 Ok(balance) if balance >= 0.0001 => {
@@ -317,11 +329,12 @@ impl MonitorEngine {
         Ok(())
     }
 
-    async fn provider_for_network(
+    async fn provider_for_asset(
         &self,
+        ticker: &str,
         network: &str,
     ) -> Result<Arc<dyn BlockchainProvider>, String> {
-        build_provider_for_network(self.rpc_manager.clone(), network).await
+        build_provider_for_asset(self.rpc_manager.clone(), ticker, network).await
     }
 
     fn settlement_service(&self) -> SettlementService {

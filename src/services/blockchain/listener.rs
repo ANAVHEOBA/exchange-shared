@@ -1,5 +1,5 @@
 use crate::modules::swap::status::SwapStatus;
-use crate::services::rpc::{build_provider_for_network, RpcManager};
+use crate::services::rpc::{build_provider_for_asset, RpcManager};
 use crate::services::settlement::{SettlementOutcome, SettlementService};
 use crate::services::wallet::rpc::BlockchainProvider;
 use sqlx::{MySql, Pool};
@@ -49,11 +49,12 @@ impl BlockchainListener {
     /// Check all pending swaps for incoming funds on blockchain
     pub async fn check_pending_swaps(&self) -> Result<(), String> {
         // Get swaps that are in progress and waiting for funds
-        let pending: Vec<(String, String, String, f64, f64, f64)> = sqlx::query_as(
+        let pending: Vec<(String, String, String, String, f64, f64, f64)> = sqlx::query_as(
             r#"
             SELECT 
                 s.id,
                 sa.our_address,
+                s.to_currency,
                 s.to_network,
                 CAST(s.estimated_receive AS DOUBLE) as estimated_receive,
                 CAST(s.network_fee AS DOUBLE) as network_fee,
@@ -78,13 +79,14 @@ impl BlockchainListener {
             );
         }
 
-        for (swap_id, our_address, network, estimated_receive, network_fee, platform_fee) in pending
+        for (swap_id, our_address, ticker, network, estimated_receive, network_fee, platform_fee) in
+            pending
         {
             // Expected amount is user payout + platform fee + payout-side network fee.
             let expected_amount = estimated_receive + platform_fee + network_fee;
 
             // Get the appropriate RPC provider for this network
-            let provider = match self.get_provider_for_network(&network).await {
+            let provider = match self.get_provider_for_asset(&ticker, &network).await {
                 Ok(provider) => provider,
                 Err(e) => {
                     tracing::warn!("{}", e);
@@ -140,12 +142,13 @@ impl BlockchainListener {
         Ok(())
     }
 
-    /// Get RPC provider for a specific network
-    async fn get_provider_for_network(
+    /// Get RPC provider for a specific payout asset/network pair
+    async fn get_provider_for_asset(
         &self,
+        ticker: &str,
         network: &str,
     ) -> Result<Arc<dyn BlockchainProvider>, String> {
-        build_provider_for_network(self.rpc_manager.clone(), network).await
+        build_provider_for_asset(self.rpc_manager.clone(), ticker, network).await
     }
 
     /// Trigger payout by updating swap status and executing the payout
@@ -205,13 +208,14 @@ impl BlockchainListener {
         swap_id: &str,
     ) -> Result<Arc<dyn BlockchainProvider>, String> {
         // Get swap network from database
-        let (network,): (String,) = sqlx::query_as("SELECT to_network FROM swaps WHERE id = ?")
-            .bind(swap_id)
-            .fetch_one(&self.db)
-            .await
-            .map_err(|e| format!("Failed to get swap network: {}", e))?;
+        let (ticker, network): (String, String) =
+            sqlx::query_as("SELECT to_currency, to_network FROM swaps WHERE id = ?")
+                .bind(swap_id)
+                .fetch_one(&self.db)
+                .await
+                .map_err(|e| format!("Failed to get swap network: {}", e))?;
 
-        self.get_provider_for_network(&network).await
+        self.get_provider_for_asset(&ticker, &network).await
     }
 
     /// Update last balance check timestamp

@@ -86,7 +86,13 @@ check_endpoint() {
             ;;
         *)
             # Generic probe: Must return HTTP 200/405/204
-            HTTP_CODE=$(curl -s -A "Mozilla/5.0" -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
+            PROBE_URL="$URL"
+            if [[ "$PROBE_URL" == ws://* ]]; then
+                PROBE_URL="http://${PROBE_URL#ws://}"
+            elif [[ "$PROBE_URL" == wss://* ]]; then
+                PROBE_URL="https://${PROBE_URL#wss://}"
+            fi
+            HTTP_CODE=$(curl -s -A "Mozilla/5.0" -o /dev/null -w "%{http_code}" --max-time 10 "$PROBE_URL")
             if [[ "$HTTP_CODE" =~ ^(200|405|204|403|401)$ ]]; then
                 echo -e "${GREEN}✅ LIVE (HTTP $HTTP_CODE)${NC}"
                 return 0

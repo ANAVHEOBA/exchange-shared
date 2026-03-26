@@ -1,3 +1,4 @@
+use crate::services::rpc::canonical_chain_key;
 use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
 use crate::services::wallet::rest_rpc::RestRpcClient;
 use crate::services::wallet::rpc::{BlockchainProvider, HttpRpcClient};
@@ -41,7 +42,7 @@ impl RpcProviderConfig {
         let infura_id = std::env::var("INFURA_ID").ok();
 
         for meta in chains {
-            let chain_key = meta.name.to_lowercase().replace(' ', "_");
+            let chain_key = canonical_chain_key(&meta.name);
 
             // Priority 1: Individual Env Var (e.g. ETH_RPC_URL)
             let env_var_name = format!("{}_RPC_URL", chain_key.to_uppercase());
@@ -120,7 +121,7 @@ impl RpcProviderConfig {
 
     /// Get provider for a specific network
     pub fn get_provider(&self, network: &str) -> Option<Arc<dyn BlockchainProvider>> {
-        let normalized = network.to_lowercase().replace(' ', "_");
+        let normalized = canonical_chain_key(network);
 
         // Direct match
         if let Some(provider) = self.providers.get(&normalized) {
@@ -135,7 +136,7 @@ impl RpcProviderConfig {
             "matic" | "polygon" => "polygon",
             "arb" | "arbitrum" => "arbitrum_one",
             "op" | "optimism" => "optimism",
-            "avax" | "avalanche" => "avalanche_c-chain",
+            "avax" | "avalanche" => "avalanche_c_chain",
             "bnb" | "bsc" | "binance" => "bnb_smart_chain",
             "ftm" | "fantom" => "fantom",
             "cro" | "cronos" => "cronos",
