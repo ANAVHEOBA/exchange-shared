@@ -7,7 +7,7 @@ pub struct EmailService {
     smtp_password: String,
     from_email: String,
     from_name: String,
-    base_url: String,
+    app_url: String,
 }
 
 #[derive(Debug)]
@@ -42,7 +42,9 @@ impl EmailService {
             from_email: env::var("SMTP_FROM_EMAIL")
                 .unwrap_or_else(|_| env::var("SMTP_USERNAME").unwrap_or_default()),
             from_name: env::var("SMTP_FROM_NAME").unwrap_or_else(|_| "Trocador".to_string()),
-            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            app_url: env::var("APP_URL")
+                .or_else(|_| env::var("BASE_URL"))
+                .unwrap_or_else(|_| "http://localhost:5173".to_string()),
         })
     }
 
@@ -52,7 +54,11 @@ impl EmailService {
         username: &str,
         token: &str,
     ) -> Result<(), EmailError> {
-        let verification_link = format!("{}/auth/verify-email?token={}", self.base_url, token);
+        let verification_link = format!(
+            "{}/activate/{}",
+            self.app_url.trim_end_matches('/'),
+            token
+        );
 
         let subject = "Confirm your e-mail";
         let html_body = format!(
@@ -63,37 +69,14 @@ impl EmailService {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f5f5;">
-    <div style="background: white; padding: 40px; border-radius: 8px;">
-        <p style="font-size: 16px; margin-bottom: 20px;">Hi, <strong>{}</strong>!</p>
-        
-        <p style="font-size: 16px; margin-bottom: 30px;">
-            To activate your account on <strong>trocador.app</strong>, follow the link below:
-        </p>
-        
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="{}" style="background: #4CAF50; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-size: 16px; display: inline-block;">
-                Activate Account
-            </a>
-        </div>
-        
-        <p style="font-size: 14px; color: #666; margin-top: 30px;">
-            If clicking the link above doesn't work, please copy and paste the URL below into your web browser instead:
-        </p>
-        <p style="font-size: 13px; color: #0066cc; word-break: break-all; background: #f5f5f5; padding: 10px; border-radius: 4px;">
-            {}
-        </p>
-        
-        <p style="font-size: 14px; color: #666; margin-top: 30px;">
-            This link is valid for 24 hours. If not activated within this time limit you will need to register again.
-        </p>
-        
-        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 30px 0;">
-        
-        <p style="font-size: 12px; color: #999;">
-            MANAGE NOTIFICATIONS
-        </p>
-    </div>
+<body>
+    <p>Hi, <strong>{}</strong>!</p>
+    <p>To activate your account, follow the link below:</p>
+    <p><a href="{}">Activate Account</a></p>
+    <p>If clicking the link above doesn't work, please copy and paste the URL below in a new browser window instead:</p>
+    <p>{}</p>
+    <p>This link is valid for 24 hours. If not activated within this time limit you will need to register again.</p>
+    <p>MANAGE NOTIFICATIONS</p>
 </body>
 </html>
             "#,
@@ -101,8 +84,8 @@ impl EmailService {
         );
 
         let text_body = format!(
-            "Hi, {}!\n\nTo activate your account on trocador.app, follow the link below:\n\n{}\n\nIf clicking the link above doesn't work, please copy and paste the URL into your web browser instead.\n\nThis link is valid for 24 hours. If not activated within this time limit you will need to register again.",
-            username, verification_link
+            "Hi, {}!\n\nTo activate your account, follow the link below:\n\n{}\n\nIf clicking the link above doesn't work, please copy and paste the URL below in a new browser window instead:\n\n{}\n\nThis link is valid for 24 hours. If not activated within this time limit you will need to register again.\n\nMANAGE NOTIFICATIONS",
+            username, verification_link, verification_link
         );
 
         self.send_email(to_email, subject, &html_body, &text_body)

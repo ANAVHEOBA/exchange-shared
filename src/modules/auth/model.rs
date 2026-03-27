@@ -31,6 +31,7 @@ pub struct EmailVerification {
     pub token: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, FromRow)]
