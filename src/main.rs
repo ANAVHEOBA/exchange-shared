@@ -79,11 +79,24 @@ async fn main() {
 
     let bind_addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-    tracing::info!("Server running on http://localhost:{}", config.port);
-    tracing::info!("Swagger UI available at http://localhost:{}/docs", config.port);
+    let local_base_url = format!("http://localhost:{}", config.port);
+    tracing::info!("Server running on {}", local_base_url);
+    tracing::info!("Swagger UI available at {}/docs", local_base_url);
     tracing::info!(
-        "OpenAPI JSON available at http://localhost:{}/api-docs/openapi.json",
-        config.port
+        "OpenAPI JSON available at {}/api-docs/openapi.json",
+        local_base_url
     );
+
+    if let Ok(external_base_url) = std::env::var("RENDER_EXTERNAL_URL")
+        .or_else(|_| std::env::var("API_BASE_URL"))
+    {
+        let external_base_url = external_base_url.trim_end_matches('/');
+        tracing::info!("Public server URL: {}", external_base_url);
+        tracing::info!("Public Swagger UI available at {}/docs", external_base_url);
+        tracing::info!(
+            "Public OpenAPI JSON available at {}/api-docs/openapi.json",
+            external_base_url
+        );
+    }
     axum::serve(listener, app).await.unwrap();
 }
