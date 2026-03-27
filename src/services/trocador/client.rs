@@ -167,6 +167,8 @@ impl TrocadorClient {
         fixed: bool,
         payment: bool,
         min_kycrating: Option<&str>,
+        webhook: Option<&str>,
+        webhook_key: Option<&str>,
     ) -> Result<TrocadorTradeResponse, TrocadorError> {
         let url = format!("{}/new_trade", self.base_url);
 
@@ -202,12 +204,20 @@ impl TrocadorClient {
             params.push(("min_kycrating", rating.to_string()));
         }
 
+        if let Some(webhook) = webhook {
+            params.push(("webhook", webhook.to_string()));
+        }
+
+        if let Some(webhook_key) = webhook_key {
+            params.push(("webhook_key", webhook_key.to_string()));
+        }
+
         // Log the full request details
         tracing::info!("🔵 Trocador create_trade request:");
         tracing::info!("  URL: {}", url);
         tracing::info!("  Parameters:");
         for (key, value) in &params {
-            if key == &"address" || key == &"refund" {
+            if key == &"address" || key == &"refund" || key == &"webhook_key" {
                 tracing::info!(
                     "    {} = {}...{}",
                     key,

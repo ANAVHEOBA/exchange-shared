@@ -257,6 +257,7 @@ impl SwapService {
             .await;
 
         let fixed = matches!(request.rate_type, super::schema::RateType::Fixed);
+        let trocador_webhook = Self::resolve_trocador_webhook_config();
         let trocador_res = self
             .call_trocador_with_retry(|| async {
                 let res = trocador_gateway
@@ -275,6 +276,8 @@ impl SwapService {
                         fixed,
                         request.payment,
                         request.min_kycrating.as_deref(),
+                        trocador_webhook.as_ref().map(|(url, _)| url.as_str()),
+                        trocador_webhook.as_ref().map(|(_, key)| key.as_str()),
                     )
                     .await;
 
@@ -883,6 +886,30 @@ impl SwapService {
         }
     }
 
+    fn resolve_trocador_webhook_config() -> Option<(String, String)> {
+        let base_url = std::env::var("RENDER_EXTERNAL_URL")
+            .ok()
+            .or_else(|| std::env::var("API_BASE_URL").ok());
+        let webhook_key = std::env::var("TROCADOR_WEBHOOK_KEY").ok();
+
+        match (base_url, webhook_key) {
+            (Some(base_url), Some(webhook_key))
+                if !base_url.trim().is_empty() && !webhook_key.trim().is_empty() =>
+            {
+                let webhook_url =
+                    format!("{}/swap/webhooks/trocador", base_url.trim_end_matches('/'));
+                Some((webhook_url, webhook_key))
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                tracing::warn!(
+                    "Trocador webhook config is incomplete; API_BASE_URL/RENDER_EXTERNAL_URL and TROCADOR_WEBHOOK_KEY are both required. Falling back to polling only."
+                );
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn map_created_trade_status(trocador_status: &str) -> SwapStatus {
         SwapStatus::from_trocador_status(trocador_status)
     }
@@ -990,6 +1017,76 @@ impl SwapService {
         created_at: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
         expires_at.or(Some(created_at + chrono::Duration::minutes(60)))
+    }
+
+    pub async fn handle_trocador_trade_webhook(
+        &self,
+        trade: &super::schema::TrocadorTradeResponse,
+    ) -> Result<(), SwapError> {
+        let Some(swap) = self
+            .repository
+            .get_swap_status_record_by_provider_trade_id(&trade.trade_id)
+            .await?
+        else {
+            tracing::warn!(
+                "Received Trocador webhook for unknown trade_id {}; ignoring",
+                trade.trade_id
+            );
+            return Ok(());
+        };
+
+        let wallet_crud = WalletCrud::new(self.pool.clone());
+        let provider_managed_payout = match wallet_crud.get_address_info(&swap.id).await {
+            Ok(Some(_)) => false,
+            Ok(None) => {
+                trade.address_user == swap.recipient_address
+                    || trade
+                        .address_user
+                        .eq_ignore_ascii_case(&swap.recipient_address)
+            }
+            Err(error) => {
+                return Err(SwapError::DatabaseError(format!(
+                    "Failed to load payout address info for swap {}: {}",
+                    swap.id, error
+                )));
+            }
+        };
+
+        let provider_status = Self::map_trocador_status(&trade.status);
+        let new_status = if trade.status == "finished" && provider_managed_payout {
+            SwapStatus::Completed
+        } else {
+            swap.status.reconcile_with_provider(provider_status)
+        };
+
+        let tx_hash_out = trade
+            .details
+            .as_ref()
+            .and_then(|details| details.hashout.clone());
+        let should_update = new_status != swap.status
+            || (new_status == SwapStatus::Completed && swap.completed_at.is_none())
+            || tx_hash_out.is_some();
+
+        if should_update {
+            self.update_swap_status(
+                &swap.id,
+                &new_status,
+                trade.amount_to,
+                None,
+                tx_hash_out.clone(),
+            )
+            .await?;
+
+            let message = if new_status == SwapStatus::Completed && provider_managed_payout {
+                Some("Swap completed via Trocador webhook (provider-managed payout)".to_string())
+            } else {
+                Some(format!("Trocador webhook status update: {}", trade.status))
+            };
+            self.log_status_change(&swap.id, &new_status, message)
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn call_trocador_with_retry<F, Fut, T>(&self, f: F) -> Result<T, SwapError>

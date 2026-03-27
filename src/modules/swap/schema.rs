@@ -481,6 +481,11 @@ pub struct CreateSwapResponse {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TrocadorTradeDetails {
+    pub hashout: Option<String>,
+}
+
 // Trocador's internal trade response
 #[derive(Debug, Deserialize)]
 pub struct TrocadorTradeResponse {
@@ -504,6 +509,7 @@ pub struct TrocadorTradeResponse {
     pub id_provider: Option<String>,
     pub date: Option<String>,
     pub payment: Option<bool>,
+    pub details: Option<TrocadorTradeDetails>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

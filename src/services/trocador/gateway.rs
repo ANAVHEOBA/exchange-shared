@@ -66,6 +66,8 @@ impl TrocadorGateway {
         fixed: bool,
         payment: bool,
         min_kycrating: Option<&str>,
+        webhook: Option<&str>,
+        webhook_key: Option<&str>,
     ) -> Result<TrocadorTradeResponse, TrocadorError> {
         self.client
             .create_trade(
@@ -83,6 +85,8 @@ impl TrocadorGateway {
                 fixed,
                 payment,
                 min_kycrating,
+                webhook,
+                webhook_key,
             )
             .await
     }
