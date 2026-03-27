@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -20,10 +20,10 @@ async fn test_get_rates_successful() {
 
     // BTC -> XMR (Standard Swap)
     let url = "/swap/rates?from=btc&to=xmr&amount=0.01&network_from=Mainnet&network_to=Mainnet";
-    
+
     let response = timed_get(&server, url).await;
-    
-    // If this fails with 500, it might be because the endpoint isn't implemented yet, 
+
+    // If this fails with 500, it might be because the endpoint isn't implemented yet,
     // but this is the integration test defining the behavior.
     response.assert_status_ok();
 
@@ -38,7 +38,7 @@ async fn test_get_rates_successful() {
     // 2. CRUCIAL: Verify trade_id (needed for next step)
     // Trocador returns a "trade_id" (or we might wrap it)
     assert!(
-        json.get("trade_id").is_some(), 
+        json.get("trade_id").is_some(),
         "Response must contain 'trade_id' for creating the swap"
     );
     let trade_id = json["trade_id"].as_str().unwrap();
@@ -56,7 +56,7 @@ async fn test_get_rates_successful() {
     assert!(best_rate.get("estimated_amount").is_some());
     assert!(best_rate.get("min_amount").is_some());
     assert!(best_rate.get("max_amount").is_some());
-    
+
     // Check values are reasonable
     assert!(best_rate["rate"].as_f64().unwrap() > 0.0);
     assert!(best_rate["estimated_amount"].as_f64().unwrap() > 0.0);
@@ -67,7 +67,7 @@ async fn test_get_rates_successful() {
 async fn test_get_rates_sorted_by_best_price() {
     sleep(Duration::from_secs(1)).await; // Prevent Rate Limit
     let server = setup_test_server().await;
-    
+
     // BTC -> ETH (Likely multiple providers)
     let url = "/swap/rates?from=btc&to=eth&amount=0.01&network_from=Mainnet&network_to=ERC20";
     let response = timed_get(&server, url).await;
@@ -97,10 +97,11 @@ async fn test_get_rates_minimum_amount_validation() {
     let server = setup_test_server().await;
 
     // Extremely small amount that should be below limits
-    let url = "/swap/rates?from=btc&to=xmr&amount=0.00000001&network_from=Mainnet&network_to=Mainnet";
-    
+    let url =
+        "/swap/rates?from=btc&to=xmr&amount=0.00000001&network_from=Mainnet&network_to=Mainnet";
+
     let response = timed_get(&server, url).await;
-    
+
     // Expecting either 400 Bad Request or a structured error response
     // Trocador API might return valid response but empty quotes, or an error.
     // Our API should probably return 400 or a specific error code.
@@ -108,9 +109,12 @@ async fn test_get_rates_minimum_amount_validation() {
         let json: Value = response.json();
         // If 200, rates should be empty or explicitly indicate issue
         if let Some(rates) = json.get("rates") {
-             // It's possible some provider supports it, but unlikely. 
-             // Just ensure we don't crash.
-             println!("Received {} rates for tiny amount", rates.as_array().unwrap().len());
+            // It's possible some provider supports it, but unlikely.
+            // Just ensure we don't crash.
+            println!(
+                "Received {} rates for tiny amount",
+                rates.as_array().unwrap().len()
+            );
         }
     } else {
         // 400 or 422 is acceptable
@@ -125,10 +129,11 @@ async fn test_get_rates_invalid_pair() {
     let server = setup_test_server().await;
 
     // Invalid ticker
-    let url = "/swap/rates?from=INVALIDCOIN&to=xmr&amount=0.1&network_from=Mainnet&network_to=Mainnet";
-    
+    let url =
+        "/swap/rates?from=INVALIDCOIN&to=xmr&amount=0.1&network_from=Mainnet&network_to=Mainnet";
+
     let response = timed_get(&server, url).await;
-    
+
     // Should fail
     assert!(
         response.status_code().as_u16() >= 400,
@@ -144,9 +149,9 @@ async fn test_get_rates_missing_params() {
 
     // Missing 'to' and 'amount'
     let url = "/swap/rates?from=btc";
-    
+
     let response = timed_get(&server, url).await;
-    
+
     // Axum should reject this automatically
     assert_eq!(response.status_code(), 400);
 }

@@ -1,4 +1,5 @@
-use crate::services::wallet::blockchains::traits::{BlockchainDerivation, is_valid_seed_phrase};
+use crate::services::wallet::blockchains::encoding::{base32_encode_nopad, sha512_256};
+use crate::services::wallet::blockchains::traits::{is_valid_seed_phrase, BlockchainDerivation};
 use bip39::{Language, Mnemonic};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -9,11 +10,11 @@ impl BlockchainDerivation for Algorand {
     fn coin_type(&self) -> u32 {
         283
     }
-    
+
     fn name(&self) -> &'static str {
         "Algorand"
     }
-    
+
     fn derive_address(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
         if !is_valid_seed_phrase(seed_phrase) {
             return Err("Invalid seed phrase".to_string());
@@ -35,9 +36,12 @@ impl BlockchainDerivation for Algorand {
         let verifying_key: VerifyingKey = signing_key.verifying_key();
         let public_key_bytes = verifying_key.to_bytes();
 
-        // Algorand uses Base32 encoding (simplified - just return hex for now)
-        // TODO: Implement proper Algorand Base32 encoding
-        Ok(hex::encode(public_key_bytes).to_uppercase())
+        let checksum = sha512_256(&public_key_bytes);
+        let mut address_bytes = Vec::with_capacity(36);
+        address_bytes.extend_from_slice(&public_key_bytes);
+        address_bytes.extend_from_slice(&checksum[28..32]);
+
+        Ok(base32_encode_nopad(&address_bytes))
     }
 }
 

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Swap states for refund eligibility
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,7 +23,7 @@ impl SwapStatus {
     pub fn is_refundable(&self) -> bool {
         matches!(self, Self::Failed | Self::Refunding | Self::RefundFailed)
     }
-    
+
     /// Check if swap is in a terminal state
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Refunded | Self::Expired)
@@ -49,19 +49,19 @@ impl std::fmt::Display for SwapStatus {
 /// Timeout stage for progressive detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutStage {
-    Deposit,      // Waiting for user deposit
-    Processing,   // Provider processing swap
-    Payout,       // Executing payout transaction
-    Refund,       // Refund transaction pending
+    Deposit,    // Waiting for user deposit
+    Processing, // Provider processing swap
+    Payout,     // Executing payout transaction
+    Refund,     // Refund transaction pending
 }
 
 impl TimeoutStage {
     pub fn timeout_seconds(&self) -> u64 {
         match self {
-            Self::Deposit => 1800,      // 30 minutes
-            Self::Processing => 7200,   // 2 hours
-            Self::Payout => 3600,       // 1 hour
-            Self::Refund => 1800,       // 30 minutes
+            Self::Deposit => 1800,    // 30 minutes
+            Self::Processing => 7200, // 2 hours
+            Self::Payout => 3600,     // 1 hour
+            Self::Refund => 1800,     // 30 minutes
         }
     }
 }
@@ -97,43 +97,43 @@ pub struct Refund {
     pub id: Uuid,
     pub swap_id: Uuid,
     pub idempotency_key: String,
-    
+
     // Refund details
     pub refund_address: String,
     pub refund_amount: Decimal,
     pub refund_currency: String,
     pub refund_network: String,
-    
+
     // Transaction details
     pub tx_hash: Option<String>,
     pub tx_status: RefundStatus,
     pub confirmations: u32,
     pub required_confirmations: u32,
-    
+
     // Retry tracking
     pub attempt_number: u32,
     pub max_attempts: u32,
     pub next_retry_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
-    
+
     // Gas/fee tracking
     pub gas_price: Option<Decimal>,
     pub gas_used: Option<u64>,
     pub total_fee: Option<Decimal>,
-    
+
     // Priority and status
     pub priority_score: f64,
     pub status: RefundStatus,
-    
+
     // Audit trail
     pub initiated_by: String,
     pub initiated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
-    
+
     // Metadata
     pub failure_reason: Option<String>,
     pub metadata: Option<serde_json::Value>,
-    
+
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -174,28 +174,28 @@ pub enum TimeoutAction {
 pub enum RefundError {
     #[error("Swap not found: {0}")]
     SwapNotFound(Uuid),
-    
+
     #[error("Swap not refundable: {0}")]
     NotRefundable(String),
-    
+
     #[error("Refund amount too small: {0}")]
     AmountTooSmall(String),
-    
+
     #[error("Duplicate refund: {0}")]
     DuplicateRefund(String),
-    
+
     #[error("Transaction failed: {0}")]
     TransactionFailed(String),
-    
+
     #[error("Insufficient balance: {0}")]
     InsufficientBalance(String),
-    
+
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
-    
+
     #[error("Wallet error: {0}")]
     Wallet(String),
-    
+
     #[error("Configuration error: {0}")]
     Config(String),
 }
@@ -203,27 +203,27 @@ pub enum RefundError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_swap_status_is_refundable() {
         assert!(SwapStatus::Failed.is_refundable());
         assert!(SwapStatus::Refunding.is_refundable());
         assert!(SwapStatus::RefundFailed.is_refundable());
-        
+
         assert!(!SwapStatus::Created.is_refundable());
         assert!(!SwapStatus::Completed.is_refundable());
     }
-    
+
     #[test]
     fn test_swap_status_is_terminal() {
         assert!(SwapStatus::Completed.is_terminal());
         assert!(SwapStatus::Refunded.is_terminal());
         assert!(SwapStatus::Expired.is_terminal());
-        
+
         assert!(!SwapStatus::Pending.is_terminal());
         assert!(!SwapStatus::Processing.is_terminal());
     }
-    
+
     #[test]
     fn test_timeout_stage_seconds() {
         assert_eq!(TimeoutStage::Deposit.timeout_seconds(), 1800);

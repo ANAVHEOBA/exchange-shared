@@ -1,14 +1,13 @@
-use sqlx::MySqlPool;
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
 use chrono::Utc;
+use sqlx::MySqlPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::services::webhook::{
-    Webhook, WebhookPayload, WebhookError,
-    WebhookDeliveryClient, RetryConfig, WebhookCircuitBreaker,
-    TokenBucketRateLimiter, IdempotencyStatus,
+    IdempotencyStatus, RetryConfig, TokenBucketRateLimiter, Webhook, WebhookCircuitBreaker,
+    WebhookDeliveryClient, WebhookError, WebhookPayload,
 };
 
 /// Webhook dispatcher manages webhook delivery with retry logic
@@ -30,7 +29,7 @@ impl WebhookDispatcher {
             rate_limiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-    
+
     /// Dispatch webhook for given event
     pub async fn dispatch(
         &self,
@@ -41,14 +40,14 @@ impl WebhookDispatcher {
         if !webhook.enabled {
             return Ok(());
         }
-        
+
         // Generate idempotency key
         let idempotency_key = self.generate_idempotency_key(
             &webhook.swap_id,
             &payload.event_type,
             payload.created_at,
         );
-        
+
         // Check idempotency
         match self.check_idempotency(&idempotency_key).await? {
             IdempotencyStatus::AlreadyDelivered(_) => {
@@ -63,49 +62,44 @@ impl WebhookDispatcher {
                 // Continue with delivery
             }
         }
-        
+
         // Check circuit breaker
         {
             let mut breakers = self.circuit_breakers.write().await;
             let breaker = breakers
                 .entry(webhook.id)
                 .or_insert_with(WebhookCircuitBreaker::default);
-            
+
             if !breaker.check_and_allow() {
                 tracing::warn!("Circuit breaker open for webhook: {}", webhook.id);
                 return Err(WebhookError::CircuitBreakerOpen);
             }
         }
-        
+
         // Check rate limiter
         {
             let mut limiters = self.rate_limiters.write().await;
-            let limiter = limiters
-                .entry(webhook.id)
-                .or_insert_with(|| {
-                    TokenBucketRateLimiter::new(
-                        100.0,
-                        webhook.rate_limit_per_second as f64,
-                    )
-                });
-            
+            let limiter = limiters.entry(webhook.id).or_insert_with(|| {
+                TokenBucketRateLimiter::new(100.0, webhook.rate_limit_per_second as f64)
+            });
+
             if !limiter.allow_request() {
                 tracing::warn!("Rate limited for webhook: {}", webhook.id);
                 return Err(WebhookError::RateLimited);
             }
         }
-        
+
         // Create delivery record
-        let delivery_id = self.create_delivery_record(
-            webhook.id,
-            webhook.swap_id,
-            &payload,
-            &idempotency_key,
-        ).await?;
-        
+        let delivery_id = self
+            .create_delivery_record(webhook.id, webhook.swap_id, &payload, &idempotency_key)
+            .await?;
+
         // Attempt delivery
-        let result = self.client.deliver(&webhook.url, &webhook.secret_key, &payload).await?;
-        
+        let result = self
+            .client
+            .deliver(&webhook.url, &webhook.secret_key, &payload)
+            .await?;
+
         // Update circuit breaker
         {
             let mut breakers = self.circuit_breakers.write().await;
@@ -117,7 +111,7 @@ impl WebhookDispatcher {
                 }
             }
         }
-        
+
         // Update delivery record
         if result.is_success() {
             self.mark_delivered(
@@ -125,50 +119,49 @@ impl WebhookDispatcher {
                 result.response_status,
                 result.response_body.as_deref(),
                 result.duration.as_millis() as i32,
-            ).await?;
+            )
+            .await?;
         } else if result.is_retryable() {
             // Schedule retry
             let next_retry = self.calculate_next_retry(0);
-            self.schedule_retry(
-                delivery_id,
-                result.error_message.as_deref(),
-                next_retry,
-            ).await?;
+            self.schedule_retry(delivery_id, result.error_message.as_deref(), next_retry)
+                .await?;
         } else {
             // Move to DLQ
-            self.move_to_dlq(
-                delivery_id,
-                result.error_message.as_deref(),
-            ).await?;
+            self.move_to_dlq(delivery_id, result.error_message.as_deref())
+                .await?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Process retry queue
     pub async fn process_retries(&self) -> Result<usize, WebhookError> {
         let pending = self.get_pending_retries().await?;
         let mut processed = 0;
-        
+
         for (delivery_id, webhook_id, attempt_number) in pending {
             // Get webhook
             let webhook = match self.get_webhook(webhook_id).await? {
                 Some(w) => w,
                 None => continue,
             };
-            
+
             // Get delivery
             let delivery = match self.get_delivery(delivery_id).await? {
                 Some(d) => d,
                 None => continue,
             };
-            
+
             // Reconstruct payload
             let payload: WebhookPayload = serde_json::from_value(delivery.payload)?;
-            
+
             // Attempt delivery
-            let result = self.client.deliver(&webhook.url, &webhook.secret_key, &payload).await?;
-            
+            let result = self
+                .client
+                .deliver(&webhook.url, &webhook.secret_key, &payload)
+                .await?;
+
             // Update based on result
             if result.is_success() {
                 self.mark_delivered(
@@ -176,36 +169,32 @@ impl WebhookDispatcher {
                     result.response_status,
                     result.response_body.as_deref(),
                     result.duration.as_millis() as i32,
-                ).await?;
+                )
+                .await?;
             } else if attempt_number < self.retry_config.max_attempts as i32 {
                 // Schedule next retry
                 let next_retry = self.calculate_next_retry(attempt_number as u32 + 1);
-                self.schedule_retry(
-                    delivery_id,
-                    result.error_message.as_deref(),
-                    next_retry,
-                ).await?;
+                self.schedule_retry(delivery_id, result.error_message.as_deref(), next_retry)
+                    .await?;
             } else {
                 // Exhausted retries, move to DLQ
-                self.move_to_dlq(
-                    delivery_id,
-                    result.error_message.as_deref(),
-                ).await?;
+                self.move_to_dlq(delivery_id, result.error_message.as_deref())
+                    .await?;
             }
-            
+
             processed += 1;
         }
-        
+
         Ok(processed)
     }
-    
+
     fn generate_idempotency_key(&self, swap_id: &Uuid, event_type: &str, timestamp: i64) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let message = format!("{}.{}.{}", swap_id, event_type, timestamp);
         let hash = Sha256::digest(message.as_bytes());
         hex::encode(hash)
     }
-    
+
     async fn check_idempotency(&self, key: &str) -> Result<IdempotencyStatus, WebhookError> {
         let result: Option<(Option<chrono::NaiveDateTime>, Option<i32>)> = sqlx::query_as(
             "SELECT delivered_at, response_status FROM webhook_deliveries WHERE idempotency_key = ?"
@@ -213,19 +202,21 @@ impl WebhookDispatcher {
         .bind(key)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         match result {
             None => Ok(IdempotencyStatus::New),
             Some((delivered_at, response_status)) => {
                 if delivered_at.is_some() {
-                    Ok(IdempotencyStatus::AlreadyDelivered(response_status.unwrap_or(0)))
+                    Ok(IdempotencyStatus::AlreadyDelivered(
+                        response_status.unwrap_or(0),
+                    ))
                 } else {
                     Ok(IdempotencyStatus::InProgress)
                 }
             }
         }
     }
-    
+
     async fn create_delivery_record(
         &self,
         webhook_id: Uuid,
@@ -236,7 +227,7 @@ impl WebhookDispatcher {
         let payload_json = serde_json::to_value(payload)?;
         let signature = ""; // Will be generated during delivery
         let id = Uuid::new_v4();
-        
+
         sqlx::query!(
             r#"
             INSERT INTO webhook_deliveries (
@@ -256,10 +247,10 @@ impl WebhookDispatcher {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(id)
     }
-    
+
     async fn mark_delivered(
         &self,
         delivery_id: Uuid,
@@ -284,10 +275,10 @@ impl WebhookDispatcher {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
-    
+
     async fn schedule_retry(
         &self,
         delivery_id: Uuid,
@@ -309,10 +300,10 @@ impl WebhookDispatcher {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
-    
+
     async fn move_to_dlq(
         &self,
         delivery_id: Uuid,
@@ -331,15 +322,15 @@ impl WebhookDispatcher {
         )
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
-    
+
     fn calculate_next_retry(&self, attempt: u32) -> chrono::DateTime<Utc> {
         let delay = self.retry_config.calculate_delay(attempt);
         Utc::now() + chrono::Duration::from_std(delay).unwrap()
     }
-    
+
     async fn get_pending_retries(&self) -> Result<Vec<(Uuid, Uuid, i32)>, WebhookError> {
         let results = sqlx::query!(
             r#"
@@ -355,17 +346,19 @@ impl WebhookDispatcher {
         )
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(results
             .into_iter()
-            .map(|r| (
-                Uuid::parse_str(&r.id).unwrap(),
-                Uuid::parse_str(&r.webhook_id).unwrap(),
-                r.attempt_number
-            ))
+            .map(|r| {
+                (
+                    Uuid::parse_str(&r.id).unwrap(),
+                    Uuid::parse_str(&r.webhook_id).unwrap(),
+                    r.attempt_number,
+                )
+            })
             .collect())
     }
-    
+
     async fn get_webhook(&self, webhook_id: Uuid) -> Result<Option<Webhook>, WebhookError> {
         let result = sqlx::query!(
             r#"
@@ -378,7 +371,7 @@ impl WebhookDispatcher {
         )
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(result.map(|r| {
             let events: Vec<String> = serde_json::from_value(r.events).unwrap_or_default();
             Webhook {
@@ -394,8 +387,11 @@ impl WebhookDispatcher {
             }
         }))
     }
-    
-    async fn get_delivery(&self, delivery_id: Uuid) -> Result<Option<DeliveryRecord>, WebhookError> {
+
+    async fn get_delivery(
+        &self,
+        delivery_id: Uuid,
+    ) -> Result<Option<DeliveryRecord>, WebhookError> {
         let result = sqlx::query!(
             r#"
             SELECT id, webhook_id, swap_id, event_type, payload, attempt_number
@@ -406,7 +402,7 @@ impl WebhookDispatcher {
         )
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(result.map(|r| DeliveryRecord {
             id: Uuid::parse_str(&r.id).unwrap(),
             webhook_id: Uuid::parse_str(&r.webhook_id).unwrap(),

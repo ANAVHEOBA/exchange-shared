@@ -1,6 +1,6 @@
-use sqlx::{MySql, Pool};
 use crate::modules::auth::model::User;
 use crate::services::{hashing, jwt::JwtService};
+use sqlx::{MySql, Pool};
 
 pub struct UserCrud<'a> {
     pool: Pool<MySql>,
@@ -39,10 +39,7 @@ pub struct LoginResult {
 
 impl<'a> UserCrud<'a> {
     pub fn new(pool: Pool<MySql>, jwt_service: &'a JwtService) -> Self {
-        Self {
-            pool,
-            jwt_service,
-        }
+        Self { pool, jwt_service }
     }
 
     pub async fn create(&self, user: &User) -> Result<(), sqlx::Error> {
@@ -100,23 +97,17 @@ impl<'a> UserCrud<'a> {
     }
 
     pub async fn email_exists(&self, email: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM users WHERE email = ?",
-            email
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let result = sqlx::query_scalar!("SELECT COUNT(*) FROM users WHERE email = ?", email)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(result > 0)
     }
 
     pub async fn username_exists(&self, username: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM users WHERE username = ?",
-            username
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let result = sqlx::query_scalar!("SELECT COUNT(*) FROM users WHERE username = ?", username)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(result > 0)
     }
@@ -139,12 +130,9 @@ impl<'a> UserCrud<'a> {
 
     pub async fn delete_unverified_user(&self, user_id: &str) -> Result<(), sqlx::Error> {
         // Delete email verifications first (foreign key constraint)
-        sqlx::query!(
-            "DELETE FROM email_verifications WHERE user_id = ?",
-            user_id
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query!("DELETE FROM email_verifications WHERE user_id = ?", user_id)
+            .execute(&self.pool)
+            .await?;
 
         // Delete the user
         sqlx::query!(
@@ -192,11 +180,15 @@ impl<'a> UserCrud<'a> {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?
-        .ok_or(AuthError::TokenError("Invalid verification token".to_string()))?;
+        .ok_or(AuthError::TokenError(
+            "Invalid verification token".to_string(),
+        ))?;
 
         // Check if expired
         if verification.expires_at < chrono::Utc::now() {
-            return Err(AuthError::TokenError("Verification token expired".to_string()));
+            return Err(AuthError::TokenError(
+                "Verification token expired".to_string(),
+            ));
         }
 
         // Mark email as verified
@@ -209,19 +201,17 @@ impl<'a> UserCrud<'a> {
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
         // Delete the verification token
-        sqlx::query!(
-            "DELETE FROM email_verifications WHERE token = ?",
-            token
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+        sqlx::query!("DELETE FROM email_verifications WHERE token = ?", token)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
         Ok(verification.user_id)
     }
 
     pub async fn login(&self, email: &str, password: &str) -> Result<LoginResult, AuthError> {
-        let user = self.find_by_email(email)
+        let user = self
+            .find_by_email(email)
             .await
             .map_err(|e| AuthError::DatabaseError(e.to_string()))?
             .ok_or(AuthError::InvalidCredentials)?;
@@ -238,11 +228,13 @@ impl<'a> UserCrud<'a> {
             return Err(AuthError::EmailNotVerified);
         }
 
-        let access_token = self.jwt_service
+        let access_token = self
+            .jwt_service
             .create_access_token(&user.id, &user.email)
             .map_err(|e| AuthError::TokenError(e.to_string()))?;
 
-        let refresh_token = self.jwt_service
+        let refresh_token = self
+            .jwt_service
             .create_refresh_token(&user.id)
             .map_err(|e| AuthError::TokenError(e.to_string()))?;
 

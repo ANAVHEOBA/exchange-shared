@@ -1,8 +1,9 @@
-pub mod payout_trigger_test;
 pub mod adaptive_polling_test;
-pub mod failure_recovery_test;
-pub mod optimal_polling_test;
-pub mod robustness_test;
 pub mod blockchain_listener_test;
 pub mod end_to_end_payout_test;
+pub mod failure_recovery_test;
+pub mod optimal_polling_test;
 pub mod payout_failure_recovery_test;
+pub mod payout_trigger_test;
+pub mod robustness_test;
+pub mod settlement_service_test;

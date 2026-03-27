@@ -1,6 +1,7 @@
 // =============================================================================
-// COMPREHENSIVE TEST: ALL 126+ BLOCKCHAINS PAYOUT CAPABILITY
-// Based on chains.json and blockchain_master_tester.sh results
+// COMPREHENSIVE TEST: LARGE-SCALE BLOCKCHAIN DERIVATION INVENTORY
+// These tests verify derivation coverage and shared routing families.
+// They do not prove production payout execution across every chain.
 // =============================================================================
 
 #[path = "../../common/mod.rs"]
@@ -12,7 +13,7 @@ use exchange_shared::services::wallet::derivation;
 #[tokio::test]
 async fn test_all_evm_chains_can_derive_addresses() {
     let seed = common::test_wallet_mnemonic();
-    
+
     // All EVM chains use the same derivation (coin_type 60)
     let evm_chains = vec![
         ("Ethereum", "ETH", "ethereum"),
@@ -96,17 +97,25 @@ async fn test_all_evm_chains_can_derive_addresses() {
         ("BeraChain", "BERA", "berachain"),
         ("ApeChain", "APE", "apechain"),
     ];
-    
+
     let mut passed = 0;
     let mut failed = 0;
-    
-    println!("\n=== TESTING {} EVM-COMPATIBLE CHAINS ===\n", evm_chains.len());
-    
+
+    println!(
+        "\n=== TESTING {} EVM-COMPATIBLE CHAINS ===\n",
+        evm_chains.len()
+    );
+
     for (name, ticker, network) in &evm_chains {
         match derivation::derive_address(&seed, ticker, network, 0).await {
             Ok(addr) => {
                 passed += 1;
-                println!("✅ {:<25} | {:<10} | {}", name, ticker, &addr[..20.min(addr.len())]);
+                println!(
+                    "✅ {:<25} | {:<10} | {}",
+                    name,
+                    ticker,
+                    &addr[..20.min(addr.len())]
+                );
             }
             Err(e) => {
                 failed += 1;
@@ -114,16 +123,23 @@ async fn test_all_evm_chains_can_derive_addresses() {
             }
         }
     }
-    
-    println!("\n📊 EVM Chains: {} passed, {} failed out of {}", passed, failed, evm_chains.len());
-    println!("✅ ALL EVM CHAINS CAN SEND MONEY (same payout logic via process_evm_payout)\n");
+
+    println!(
+        "\n📊 EVM Chains: {} passed, {} failed out of {}",
+        passed,
+        failed,
+        evm_chains.len()
+    );
+    println!(
+        "ℹ️  EVM chains share the same derivation and payout family, but live payout still depends on provider support\n"
+    );
 }
 
 // Test Bitcoin-like UTXO chains
 #[tokio::test]
 async fn test_all_bitcoin_like_chains() {
     let seed = common::test_wallet_mnemonic();
-    
+
     let bitcoin_chains = vec![
         ("Bitcoin", "BTC", "bitcoin"),
         ("Litecoin", "LTC", "litecoin"),
@@ -141,17 +157,25 @@ async fn test_all_bitcoin_like_chains() {
         ("Viacoin", "VIA", "viacoin"),
         ("Pivx", "PIVX", "pivx"),
     ];
-    
+
     let mut passed = 0;
     let mut failed = 0;
-    
-    println!("\n=== TESTING {} BITCOIN-LIKE CHAINS ===\n", bitcoin_chains.len());
-    
+
+    println!(
+        "\n=== TESTING {} BITCOIN-LIKE CHAINS ===\n",
+        bitcoin_chains.len()
+    );
+
     for (name, ticker, network) in &bitcoin_chains {
         match derivation::derive_address(&seed, ticker, network, 0).await {
             Ok(addr) => {
                 passed += 1;
-                println!("✅ {:<25} | {:<10} | {}", name, ticker, &addr[..20.min(addr.len())]);
+                println!(
+                    "✅ {:<25} | {:<10} | {}",
+                    name,
+                    ticker,
+                    &addr[..20.min(addr.len())]
+                );
             }
             Err(e) => {
                 failed += 1;
@@ -159,16 +183,23 @@ async fn test_all_bitcoin_like_chains() {
             }
         }
     }
-    
-    println!("\n📊 Bitcoin-like: {} passed, {} failed out of {}", passed, failed, bitcoin_chains.len());
-    println!("✅ ALL BITCOIN-LIKE CHAINS CAN SEND MONEY (via process_bitcoin_payout)\n");
+
+    println!(
+        "\n📊 Bitcoin-like: {} passed, {} failed out of {}",
+        passed,
+        failed,
+        bitcoin_chains.len()
+    );
+    println!(
+        "ℹ️  Bitcoin-like chains share the same payout family, but this test only proves derivation coverage\n"
+    );
 }
 
 // Test Cosmos SDK chains
 #[tokio::test]
 async fn test_all_cosmos_chains() {
     let seed = common::test_wallet_mnemonic();
-    
+
     let cosmos_chains = vec![
         ("Cosmos Hub", "ATOM", "cosmos"),
         ("Osmosis", "OSMO", "osmosis"),
@@ -195,17 +226,25 @@ async fn test_all_cosmos_chains() {
         ("Agoric", "BLD", "agoric"),
         ("Thorchain", "RUNE", "thorchain"),
     ];
-    
+
     let mut passed = 0;
     let mut failed = 0;
-    
-    println!("\n=== TESTING {} COSMOS SDK CHAINS ===\n", cosmos_chains.len());
-    
+
+    println!(
+        "\n=== TESTING {} COSMOS SDK CHAINS ===\n",
+        cosmos_chains.len()
+    );
+
     for (name, ticker, network) in &cosmos_chains {
         match derivation::derive_address(&seed, ticker, network, 0).await {
             Ok(addr) => {
                 passed += 1;
-                println!("✅ {:<25} | {:<10} | {}", name, ticker, &addr[..20.min(addr.len())]);
+                println!(
+                    "✅ {:<25} | {:<10} | {}",
+                    name,
+                    ticker,
+                    &addr[..20.min(addr.len())]
+                );
             }
             Err(e) => {
                 failed += 1;
@@ -213,16 +252,23 @@ async fn test_all_cosmos_chains() {
             }
         }
     }
-    
-    println!("\n📊 Cosmos chains: {} passed, {} failed out of {}", passed, failed, cosmos_chains.len());
-    println!("✅ ALL COSMOS CHAINS CAN SEND MONEY (via process_cosmos_payout)\n");
+
+    println!(
+        "\n📊 Cosmos chains: {} passed, {} failed out of {}",
+        passed,
+        failed,
+        cosmos_chains.len()
+    );
+    println!(
+        "ℹ️  Cosmos chains currently share payout routing, but this test does not verify live broadcast capability\n"
+    );
 }
 
 // Test Substrate chains
 #[tokio::test]
 async fn test_all_substrate_chains() {
     let seed = common::test_wallet_mnemonic();
-    
+
     let substrate_chains = vec![
         ("Polkadot", "DOT", "polkadot"),
         ("Kusama", "KSM", "kusama"),
@@ -239,17 +285,25 @@ async fn test_all_substrate_chains() {
         ("Phala", "PHA", "phala"),
         ("Ternoa", "CAPS", "ternoa"),
     ];
-    
+
     let mut passed = 0;
     let mut failed = 0;
-    
-    println!("\n=== TESTING {} SUBSTRATE CHAINS ===\n", substrate_chains.len());
-    
+
+    println!(
+        "\n=== TESTING {} SUBSTRATE CHAINS ===\n",
+        substrate_chains.len()
+    );
+
     for (name, ticker, network) in &substrate_chains {
         match derivation::derive_address(&seed, ticker, network, 0).await {
             Ok(addr) => {
                 passed += 1;
-                println!("✅ {:<25} | {:<10} | {}", name, ticker, &addr[..20.min(addr.len())]);
+                println!(
+                    "✅ {:<25} | {:<10} | {}",
+                    name,
+                    ticker,
+                    &addr[..20.min(addr.len())]
+                );
             }
             Err(e) => {
                 failed += 1;
@@ -257,16 +311,23 @@ async fn test_all_substrate_chains() {
             }
         }
     }
-    
-    println!("\n📊 Substrate chains: {} passed, {} failed out of {}", passed, failed, substrate_chains.len());
-    println!("✅ ALL SUBSTRATE CHAINS CAN SEND MONEY (via process_substrate_payout)\n");
+
+    println!(
+        "\n📊 Substrate chains: {} passed, {} failed out of {}",
+        passed,
+        failed,
+        substrate_chains.len()
+    );
+    println!(
+        "ℹ️  Substrate chains currently share payout routing, but this test only checks address derivation\n"
+    );
 }
 
 // Test special chains with unique implementations
 #[tokio::test]
 async fn test_special_chains() {
     let seed = common::test_wallet_mnemonic();
-    
+
     let special_chains = vec![
         ("Solana", "SOL", "solana", true, true),
         ("Cardano", "ADA", "cardano", true, true),
@@ -280,22 +341,35 @@ async fn test_special_chains() {
         ("Stacks", "STX", "stacks", true, true),
         ("TON", "TON", "ton", true, true),
     ];
-    
+
     let mut full_support = 0;
     let mut address_only = 0;
     let mut failed = 0;
-    
-    println!("\n=== TESTING {} SPECIAL CHAINS ===\n", special_chains.len());
-    
+
+    println!(
+        "\n=== TESTING {} SPECIAL CHAINS ===\n",
+        special_chains.len()
+    );
+
     for (name, ticker, network, _has_derivation, has_payout) in &special_chains {
         match derivation::derive_address(&seed, ticker, network, 0).await {
             Ok(addr) => {
                 if *has_payout {
                     full_support += 1;
-                    println!("✅ {:<25} | {:<10} | {} | FULL SUPPORT", name, ticker, &addr[..20.min(addr.len())]);
+                    println!(
+                        "✅ {:<25} | {:<10} | {} | FULL SUPPORT",
+                        name,
+                        ticker,
+                        &addr[..20.min(addr.len())]
+                    );
                 } else {
                     address_only += 1;
-                    println!("⚠️  {:<25} | {:<10} | {} | ADDRESS ONLY", name, ticker, &addr[..20.min(addr.len())]);
+                    println!(
+                        "⚠️  {:<25} | {:<10} | {} | ADDRESS ONLY",
+                        name,
+                        ticker,
+                        &addr[..20.min(addr.len())]
+                    );
                 }
             }
             Err(e) => {
@@ -304,8 +378,11 @@ async fn test_special_chains() {
             }
         }
     }
-    
-    println!("\n📊 Special chains: {} full support, {} address only, {} failed", full_support, address_only, failed);
+
+    println!(
+        "\n📊 Special chains: {} full support, {} address only, {} failed",
+        full_support, address_only, failed
+    );
 }
 
 // Final comprehensive summary
@@ -313,12 +390,12 @@ async fn test_special_chains() {
 async fn test_final_comprehensive_summary() {
     println!("\n");
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║     COMPREHENSIVE BLOCKCHAIN PAYOUT CAPABILITY REPORT           ║");
-    println!("║                  144 Blockchains Analyzed                        ║");
+    println!("║      COMPREHENSIVE BLOCKCHAIN DERIVATION / ROUTING REPORT       ║");
+    println!("║         Inventory only, not a live payout guarantee             ║");
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
-    
-    println!("✅ FULL PAYOUT SUPPORT (Can send money):");
+
+    println!("ℹ️  SHARED ROUTING FAMILIES IN CODE:");
     println!("   ├─ EVM Family: ~80 chains");
     println!("   │  └─ All use process_evm_payout (coin_type 60)");
     println!("   │  └─ Examples: Ethereum, Polygon, Arbitrum, Base, Avalanche, BSC, etc.");
@@ -342,28 +419,27 @@ async fn test_final_comprehensive_summary() {
     println!("      └─ Each has dedicated payout function");
     println!("      └─ Algorand, NEAR, Cardano, XRP, Tron, Tezos, Stellar, Waves, Stacks, TON");
     println!();
-    println!("   TOTAL: ~144 blockchains with FULL payout capability");
+    println!("   TOTAL: large multi-chain inventory with mixed runtime maturity");
     println!();
-    
+
     println!("╔══════════════════════════════════════════════════════════════════╗");
     println!("║                        FINAL STATISTICS                          ║");
     println!("╠══════════════════════════════════════════════════════════════════╣");
-    println!("║  Total Blockchains:        144                                   ║");
-    println!("║  Full Payout Support:      144  (100%)                           ║");
-    println!("║  Partial Support:          0    (0%)                             ║");
-    println!("║  Address Only:             0    (0%)                             ║");
+    println!("║  This report is directional and code-path based                  ║");
+    println!("║  It is not a 100% payout support certification                   ║");
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
-    
+
     println!("🎯 CONCLUSION:");
-    println!("   ✅ ALL 144 blockchains can send money!");
-    println!("   ✅ Address derivation: Working");
-    println!("   ✅ Payout routing: Working");
-    println!("   ✅ Transaction signing: Working");
+    println!("   ✅ Address derivation coverage is broad");
+    println!("   ✅ Family-based payout routing exists");
+    println!(
+        "   ⚠️  Live send-money support still depends on per-chain provider and signing maturity"
+    );
     println!();
     println!("📝 IMPLEMENTATION NOTES:");
-    println!("   • EVM, Bitcoin, Solana: Production-ready with full SDK integration");
-    println!("   • Cosmos, Substrate, Special chains: Functional with simplified signing");
-    println!("   • All implementations tested and working for payout operations");
+    println!("   • EVM and core chains have the strongest path coverage");
+    println!("   • Several non-EVM families still rely on simplified or partial implementations");
+    println!("   • Separate live-network tests are required before claiming payout support");
     println!();
 }

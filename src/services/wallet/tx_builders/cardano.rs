@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use ed25519_dalek::{SigningKey, Signer};
 use blake2::{Blake2b512, Digest};
+use ed25519_dalek::{Signer, SigningKey};
+use serde::{Deserialize, Serialize};
 
 /// Cardano transaction builder (simplified)
 /// Production should use cardano-serialization-lib
@@ -47,26 +47,27 @@ impl CardanoTransaction {
             ttl,
         }
     }
-    
+
     /// Sign with Ed25519 (simplified)
     pub fn sign(&self, private_key: &[u8]) -> Result<String, String> {
         // Serialize transaction (CBOR in production)
-        let tx_json = serde_json::to_string(self)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
-        
+        let tx_json =
+            serde_json::to_string(self).map_err(|e| format!("Failed to serialize: {}", e))?;
+
         // Hash with Blake2b-256
         let mut hasher = Blake2b512::new();
         hasher.update(tx_json.as_bytes());
         let hash = hasher.finalize();
         let hash_256 = &hash[..32];
-        
+
         // Sign
         let signing_key = SigningKey::from_bytes(
-            private_key[..32].try_into()
-                .map_err(|_| "Invalid key length")?
+            private_key[..32]
+                .try_into()
+                .map_err(|_| "Invalid key length")?,
         );
         let signature = signing_key.sign(hash_256);
-        
+
         Ok(hex::encode(signature.to_bytes()))
     }
 }

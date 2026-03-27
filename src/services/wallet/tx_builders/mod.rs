@@ -4,6 +4,7 @@
 
 pub mod algorand;
 pub mod cardano;
+pub mod cosmos;
 pub mod near;
 pub mod stellar;
 pub mod tezos;
@@ -14,6 +15,7 @@ pub mod xrp;
 
 pub use algorand::*;
 pub use cardano::*;
+pub use cosmos::*;
 pub use near::*;
 pub use stellar::*;
 pub use tezos::*;

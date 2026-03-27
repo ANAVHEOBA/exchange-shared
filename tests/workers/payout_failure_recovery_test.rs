@@ -1,19 +1,19 @@
 // =============================================================================
 // INTEGRATION TESTS - PAYOUT FAILURE RECOVERY
-// Tests retry logic, error handling, and failure status updates
+// Tests retry logic and error propagation from the payout layer
 // =============================================================================
 
 #[path = "../common/mod.rs"]
 mod common;
 
+use async_trait::async_trait;
 use common::TestContext;
-use uuid::Uuid;
 use exchange_shared::modules::wallet::crud::WalletCrud;
 use exchange_shared::modules::wallet::schema::{GenerateAddressRequest, PayoutRequest};
 use exchange_shared::services::wallet::manager::WalletManager;
 use exchange_shared::services::wallet::rpc::{BlockchainProvider, RpcError};
-use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 // =============================================================================
 // MOCK PROVIDER THAT FAILS
@@ -32,7 +32,7 @@ impl FailingBlockchainProvider {
             max_failures,
         }
     }
-    
+
     fn get_attempt_count(&self) -> usize {
         *self.fail_count.lock().unwrap()
     }
@@ -55,7 +55,7 @@ impl BlockchainProvider for FailingBlockchainProvider {
     async fn send_raw_transaction(&self, _signed_hex: &str) -> Result<String, RpcError> {
         let mut count = self.fail_count.lock().unwrap();
         *count += 1;
-        
+
         if *count <= self.max_failures {
             // Fail for the first N attempts
             Err(RpcError::Network(format!(
@@ -73,11 +73,7 @@ impl BlockchainProvider for FailingBlockchainProvider {
 // HELPER FUNCTIONS
 // =============================================================================
 
-async fn create_swap_for_payout(
-    db: &sqlx::Pool<sqlx::MySql>,
-    swap_id: &str,
-    recipient: &str,
-) {
+async fn create_swap_for_payout(db: &sqlx::Pool<sqlx::MySql>, swap_id: &str, recipient: &str) {
     sqlx::query(
         r#"
         INSERT INTO swaps (
@@ -86,7 +82,7 @@ async fn create_swap_for_payout(
         )
         VALUES (?, 'changenow', 'BTC', 'bitcoin', 'ETH', 'ethereum',
                 0.1, 1.0, 15.0, 'dep_addr', ?, 'funds_received')
-        "#
+        "#,
     )
     .bind(swap_id)
     .bind(recipient)
@@ -103,10 +99,10 @@ async fn create_swap_for_payout(
 async fn test_payout_fails_without_retry() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
-    
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
-    
+
     let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(999)); // Always fail
     let crud = WalletCrud::new(ctx.db.clone());
@@ -115,32 +111,37 @@ async fn test_payout_fails_without_retry() {
         seed_phrase.to_string(),
         failing_provider.clone(),
     );
-    
+
     // Generate address
-    wallet_manager.get_or_generate_address(GenerateAddressRequest {
-        swap_id: swap_id.clone(),
-        ticker: "ETH".to_string(),
-        network: "ethereum".to_string(),
-        user_recipient_address: recipient.to_string(),
-        user_recipient_extra_id: None,
-    }).await.unwrap();
-    
+    wallet_manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: "ETH".to_string(),
+            network: "ethereum".to_string(),
+            user_recipient_address: recipient.to_string(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
     // Attempt payout - should fail
-    let result = wallet_manager.process_payout(PayoutRequest {
-        swap_id: swap_id.clone(),
-    }).await;
-    
+    let result = wallet_manager
+        .process_payout(PayoutRequest {
+            swap_id: swap_id.clone(),
+        })
+        .await;
+
     assert!(result.is_err(), "Payout should fail with failing provider");
     println!("✅ Payout correctly fails when broadcast fails");
     println!("   Error: {}", result.unwrap_err());
-    
+
     // Verify only 1 attempt was made (no retry)
     assert_eq!(
         failing_provider.get_attempt_count(),
         1,
         "Should only attempt once without retry logic"
     );
-    
+
     ctx.cleanup().await;
 }
 
@@ -152,10 +153,10 @@ async fn test_payout_fails_without_retry() {
 async fn test_payout_succeeds_after_retry() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
-    
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
-    
+
     let seed_phrase = crate::common::test_wallet_mnemonic();
     // Fail 2 times, then succeed on 3rd attempt
     let failing_provider = Arc::new(FailingBlockchainProvider::new(2));
@@ -165,34 +166,45 @@ async fn test_payout_succeeds_after_retry() {
         seed_phrase.to_string(),
         failing_provider.clone(),
     );
-    
+
     // Generate address
-    wallet_manager.get_or_generate_address(GenerateAddressRequest {
-        swap_id: swap_id.clone(),
-        ticker: "ETH".to_string(),
-        network: "ethereum".to_string(),
-        user_recipient_address: recipient.to_string(),
-        user_recipient_extra_id: None,
-    }).await.unwrap();
-    
+    wallet_manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: "ETH".to_string(),
+            network: "ethereum".to_string(),
+            user_recipient_address: recipient.to_string(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
     // Attempt payout with retry - should succeed on 3rd attempt
-    let result = wallet_manager.process_payout_with_retry(PayoutRequest {
-        swap_id: swap_id.clone(),
-    }, 3).await;
-    
+    let result = wallet_manager
+        .process_payout_with_retry(
+            PayoutRequest {
+                swap_id: swap_id.clone(),
+            },
+            3,
+        )
+        .await;
+
     assert!(result.is_ok(), "Payout should succeed after retries");
-    println!("✅ Payout succeeded after {} attempts", failing_provider.get_attempt_count());
-    
+    println!(
+        "✅ Payout succeeded after {} attempts",
+        failing_provider.get_attempt_count()
+    );
+
     let response = result.unwrap();
     assert_eq!(response.tx_hash, "0xsuccess_after_retry");
-    
+
     // Verify 3 attempts were made
     assert_eq!(
         failing_provider.get_attempt_count(),
         3,
         "Should attempt 3 times before succeeding"
     );
-    
+
     ctx.cleanup().await;
 }
 
@@ -204,10 +216,10 @@ async fn test_payout_succeeds_after_retry() {
 async fn test_payout_fails_after_max_retries() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
-    
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
-    
+
     let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(999)); // Always fail
     let crud = WalletCrud::new(ctx.db.clone());
@@ -216,37 +228,45 @@ async fn test_payout_fails_after_max_retries() {
         seed_phrase.to_string(),
         failing_provider.clone(),
     );
-    
+
     // Generate address
-    wallet_manager.get_or_generate_address(GenerateAddressRequest {
-        swap_id: swap_id.clone(),
-        ticker: "ETH".to_string(),
-        network: "ethereum".to_string(),
-        user_recipient_address: recipient.to_string(),
-        user_recipient_extra_id: None,
-    }).await.unwrap();
-    
+    wallet_manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: "ETH".to_string(),
+            network: "ethereum".to_string(),
+            user_recipient_address: recipient.to_string(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
     // Attempt payout with retry - should fail after 3 attempts
-    let result = wallet_manager.process_payout_with_retry(PayoutRequest {
-        swap_id: swap_id.clone(),
-    }, 3).await;
-    
+    let result = wallet_manager
+        .process_payout_with_retry(
+            PayoutRequest {
+                swap_id: swap_id.clone(),
+            },
+            3,
+        )
+        .await;
+
     assert!(result.is_err(), "Payout should fail after max retries");
     println!("✅ Payout correctly fails after max retries");
     println!("   Attempts made: {}", failing_provider.get_attempt_count());
-    
+
     // Verify 3 attempts were made
     assert_eq!(
         failing_provider.get_attempt_count(),
         3,
         "Should attempt exactly 3 times"
     );
-    
-    // Note: Swap status update to 'failed' happens in BlockchainListener, not in WalletManager
-    // WalletManager just returns an error, and the caller (BlockchainListener) updates the status
+
+    // WalletManager returns the retry failure and leaves lifecycle handling to the shared
+    // settlement/worker path.
     println!("✅ Payout correctly returns error after max retries");
-    println!("   (Status update to 'failed' is handled by BlockchainListener)");
-    
+    println!("   (Swap lifecycle state is handled outside WalletManager)");
+
     ctx.cleanup().await;
 }
 
@@ -258,39 +278,44 @@ async fn test_payout_fails_after_max_retries() {
 async fn test_exponential_backoff() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
-    
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
-    
+
     let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(2));
     let crud = WalletCrud::new(ctx.db.clone());
-    let wallet_manager = WalletManager::new(
-        crud,
-        seed_phrase.to_string(),
-        failing_provider.clone(),
-    );
-    
+    let wallet_manager =
+        WalletManager::new(crud, seed_phrase.to_string(), failing_provider.clone());
+
     // Generate address
-    wallet_manager.get_or_generate_address(GenerateAddressRequest {
-        swap_id: swap_id.clone(),
-        ticker: "ETH".to_string(),
-        network: "ethereum".to_string(),
-        user_recipient_address: recipient.to_string(),
-        user_recipient_extra_id: None,
-    }).await.unwrap();
-    
+    wallet_manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: "ETH".to_string(),
+            network: "ethereum".to_string(),
+            user_recipient_address: recipient.to_string(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
     let start = std::time::Instant::now();
-    
+
     // Attempt payout with retry
-    let result = wallet_manager.process_payout_with_retry(PayoutRequest {
-        swap_id: swap_id.clone(),
-    }, 3).await;
-    
+    let result = wallet_manager
+        .process_payout_with_retry(
+            PayoutRequest {
+                swap_id: swap_id.clone(),
+            },
+            3,
+        )
+        .await;
+
     let duration = start.elapsed();
-    
+
     assert!(result.is_ok(), "Payout should succeed");
-    
+
     // With exponential backoff: 1s + 2s = 3s minimum
     // (First attempt immediate, 2nd after 1s, 3rd after 2s)
     assert!(
@@ -298,9 +323,12 @@ async fn test_exponential_backoff() {
         "Should take at least 3 seconds with exponential backoff, took {}s",
         duration.as_secs()
     );
-    
-    println!("✅ Exponential backoff working: took {}s for 3 attempts", duration.as_secs());
-    
+
+    println!(
+        "✅ Exponential backoff working: took {}s for 3 attempts",
+        duration.as_secs()
+    );
+
     ctx.cleanup().await;
 }
 
@@ -313,52 +341,56 @@ async fn test_exponential_backoff() {
 async fn test_error_logging() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
-    
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
-    
+
     let seed_phrase = crate::common::test_wallet_mnemonic();
     let failing_provider = Arc::new(FailingBlockchainProvider::new(999));
     let crud = WalletCrud::new(ctx.db.clone());
-    let wallet_manager = WalletManager::new(
-        crud,
-        seed_phrase.to_string(),
-        failing_provider,
-    );
-    
+    let wallet_manager = WalletManager::new(crud, seed_phrase.to_string(), failing_provider);
+
     // Generate address
-    wallet_manager.get_or_generate_address(GenerateAddressRequest {
-        swap_id: swap_id.clone(),
-        ticker: "ETH".to_string(),
-        network: "ethereum".to_string(),
-        user_recipient_address: recipient.to_string(),
-        user_recipient_extra_id: None,
-    }).await.unwrap();
-    
+    wallet_manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: "ETH".to_string(),
+            network: "ethereum".to_string(),
+            user_recipient_address: recipient.to_string(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
     // Attempt payout - will fail
-    let _result = wallet_manager.process_payout_with_retry(PayoutRequest {
-        swap_id: swap_id.clone(),
-    }, 2).await;
-    
+    let _result = wallet_manager
+        .process_payout_with_retry(
+            PayoutRequest {
+                swap_id: swap_id.clone(),
+            },
+            2,
+        )
+        .await;
+
     // Check if error was logged to payout_audit table
     let error_logs: Vec<(String, String)> = sqlx::query_as(
-        "SELECT status, message FROM payout_audit WHERE swap_id = ? ORDER BY created_at"
+        "SELECT status, message FROM payout_audit WHERE swap_id = ? ORDER BY created_at",
     )
     .bind(&swap_id)
     .fetch_all(&ctx.db)
     .await
     .unwrap();
-    
+
     assert!(!error_logs.is_empty(), "Should have error logs");
     assert!(
         error_logs.iter().any(|(status, _)| status == "failed"),
         "Should have 'failed' status in logs"
     );
-    
+
     println!("✅ Error logging working: {} log entries", error_logs.len());
     for (status, msg) in error_logs {
         println!("   - {}: {}", status, msg);
     }
-    
+
     ctx.cleanup().await;
 }

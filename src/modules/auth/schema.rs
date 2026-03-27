@@ -1,13 +1,18 @@
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 // =============================================================================
 // REGISTER
 // =============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
-    #[validate(length(min = 3, max = 50, message = "Username must be between 3 and 50 characters"))]
+    #[validate(length(
+        min = 3,
+        max = 50,
+        message = "Username must be between 3 and 50 characters"
+    ))]
     pub username: String,
     #[validate(email(message = "Invalid email format"))]
     pub email: String,
@@ -15,7 +20,7 @@ pub struct RegisterRequest {
     pub password_confirm: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RegisterResponse {
     pub user: UserResponse,
 }
@@ -24,7 +29,7 @@ pub struct RegisterResponse {
 // LOGIN
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
@@ -34,7 +39,7 @@ pub struct LoginRequest {
     pub backup_code: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LoginResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -42,7 +47,7 @@ pub struct LoginResponse {
     pub expires_in: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LoginRequires2faResponse {
     pub requires_2fa: bool,
     pub two_factor_token: String,
@@ -83,7 +88,7 @@ pub struct RefreshTokenResponse {
 // ME (Current User)
 // =============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UserResponse {
     pub id: String,
     pub email: String,
@@ -129,12 +134,13 @@ pub struct RequestVerificationResponse {
     pub message: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct VerifyEmailRequest {
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct VerifyEmailQuery {
     pub token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct VerifyEmailResponse {
     pub message: &'static str,
 }
@@ -183,7 +189,7 @@ pub struct BackupCodesResponse {
 // ERROR RESPONSE
 // =============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]

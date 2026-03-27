@@ -17,7 +17,7 @@ pub struct CircuitBreaker {
     pub consecutive_successes: u32,
     pub opened_at: Option<Instant>,
     pub half_open_requests: u32,
-    
+
     // Configuration
     pub failure_threshold: f64,
     pub min_requests: u32,
@@ -66,7 +66,7 @@ impl CircuitBreaker {
             }
         }
     }
-    
+
     /// Check and potentially transition state (mutating version)
     pub fn check_and_allow(&mut self) -> bool {
         match self.state {
@@ -139,7 +139,7 @@ impl CircuitBreaker {
         }
 
         let failure_rate = self.failure_count as f64 / self.total_requests as f64;
-        
+
         if failure_rate >= self.failure_threshold {
             self.transition_to_open();
         }
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_circuit_breaker_closed_to_open() {
         let mut cb = CircuitBreaker::new(0.5, 20, 60, 5);
-        
+
         // Record failures to trigger opening (need 50% failure rate with 20+ requests)
         for _ in 0..10 {
             cb.record_success();
@@ -206,7 +206,7 @@ mod tests {
         for _ in 0..11 {
             cb.record_failure();
         }
-        
+
         // Should be open now (11/21 = 52% > 50%)
         assert_eq!(cb.state, CircuitState::Open);
     }
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn test_circuit_breaker_half_open_recovery() {
         let mut cb = CircuitBreaker::new(0.5, 20, 0, 5);
-        
+
         // Open the circuit (need 50% failure with 20+ requests)
         for _ in 0..10 {
             cb.record_success();
@@ -223,11 +223,11 @@ mod tests {
             cb.record_failure();
         }
         assert_eq!(cb.state, CircuitState::Open);
-        
+
         // Check and allow request should transition to half-open
         assert!(cb.check_and_allow());
         assert_eq!(cb.state, CircuitState::HalfOpen);
-        
+
         // Record successes to close (need 5 consecutive successes)
         for _ in 0..5 {
             cb.record_success();

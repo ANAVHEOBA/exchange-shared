@@ -7,19 +7,19 @@ use std::time::Duration;
 pub struct RpcEndpoint {
     /// Primary RPC endpoint (Alchemy/QuickNode/Infura)
     pub primary: String,
-    
+
     /// Fallback RPC endpoints (free public endpoints)
     pub fallbacks: Vec<String>,
-    
+
     /// Timeout for RPC calls
     pub timeout: Duration,
-    
+
     /// Maximum retries on failure
     pub max_retries: u32,
-    
+
     /// Blockchain protocol type
     pub protocol: BlockchainProtocol,
-    
+
     /// Chain ID (for EVM chains)
     pub chain_id: Option<String>,
 }
@@ -29,22 +29,22 @@ pub struct RpcEndpoint {
 pub enum BlockchainProtocol {
     /// Ethereum-compatible chains (JSON-RPC over HTTP)
     EVM,
-    
+
     /// Solana (JSON-RPC but different library)
     Solana,
-    
+
     /// Bitcoin (REST API or other)
     Bitcoin,
-    
+
     /// Polkadot (WebSocket JSON-RPC)
     Polkadot,
-    
+
     /// Cardano (REST API via Blockfrost)
     Cardano,
-    
+
     /// XRP Ledger (JSON-RPC)
     Ripple,
-    
+
     /// Tezos (REST API)
     Tezos,
 }
@@ -53,29 +53,30 @@ pub enum BlockchainProtocol {
 pub fn load_rpc_config() -> HashMap<String, RpcEndpoint> {
     // First load from chains.json
     let mut config = load_from_chains_json();
-    
+
     // Then add/override with manually configured chains for better control
     let manual_config = load_manual_config();
     config.extend(manual_config);
-    
+
     config
 }
 
 /// Load RPC configuration from chains.json (133 chains)
 fn load_from_chains_json() -> HashMap<String, RpcEndpoint> {
     let mut config = HashMap::new();
-    
+
     // Load chains.json
     let chains_json = include_str!("chains.json");
-    let chains: Vec<serde_json::Value> = serde_json::from_str(chains_json)
-        .expect("Failed to parse chains.json");
-    
+    let chains: Vec<serde_json::Value> =
+        serde_json::from_str(chains_json).expect("Failed to parse chains.json");
+
     // Get API keys from environment
-    let ankr_id = std::env::var("ANKR_ID")
-        .unwrap_or_else(|_| "255ef0129f301d346a2a784d9bef2bed6feb53f0584208e29751f1593d597662".to_string());
+    let ankr_id = std::env::var("ANKR_ID").unwrap_or_else(|_| {
+        "255ef0129f301d346a2a784d9bef2bed6feb53f0584208e29751f1593d597662".to_string()
+    });
     let alchemy_key = std::env::var("ALCHEMY_API_KEY").ok();
     let infura_id = std::env::var("INFURA_API_KEY").ok();
-    
+
     for chain in chains {
         let name = chain["name"].as_str().unwrap_or("unknown");
         let family = chain["family"].as_str().unwrap_or("special");
@@ -83,30 +84,46 @@ fn load_from_chains_json() -> HashMap<String, RpcEndpoint> {
         let alchemy_slug = chain["alchemy_slug"].as_str().unwrap_or("");
         let infura_slug = chain["infura_slug"].as_str().unwrap_or("");
         let public_rpc = chain["public_rpc"].as_str().unwrap_or("");
-        
+
         // Determine primary RPC (priority: Ankr > Alchemy > Infura > Public)
         let primary = if !ankr_slug.is_empty() {
             format!("https://rpc.ankr.com/{}/{}", ankr_slug, ankr_id)
         } else if !alchemy_slug.is_empty() && alchemy_key.is_some() {
-            format!("https://{}.g.alchemy.com/v2/{}", alchemy_slug, alchemy_key.as_ref().unwrap())
+            format!(
+                "https://{}.g.alchemy.com/v2/{}",
+                alchemy_slug,
+                alchemy_key.as_ref().unwrap()
+            )
         } else if !infura_slug.is_empty() && infura_id.is_some() {
-            format!("https://{}.infura.io/v3/{}", infura_slug, infura_id.as_ref().unwrap())
+            format!(
+                "https://{}.infura.io/v3/{}",
+                infura_slug,
+                infura_id.as_ref().unwrap()
+            )
         } else {
             public_rpc.to_string()
         };
-        
+
         // Build fallbacks
         let mut fallbacks = Vec::new();
         if !alchemy_slug.is_empty() && alchemy_key.is_some() && !primary.contains("alchemy") {
-            fallbacks.push(format!("https://{}.g.alchemy.com/v2/{}", alchemy_slug, alchemy_key.as_ref().unwrap()));
+            fallbacks.push(format!(
+                "https://{}.g.alchemy.com/v2/{}",
+                alchemy_slug,
+                alchemy_key.as_ref().unwrap()
+            ));
         }
         if !infura_slug.is_empty() && infura_id.is_some() && !primary.contains("infura") {
-            fallbacks.push(format!("https://{}.infura.io/v3/{}", infura_slug, infura_id.as_ref().unwrap()));
+            fallbacks.push(format!(
+                "https://{}.infura.io/v3/{}",
+                infura_slug,
+                infura_id.as_ref().unwrap()
+            ));
         }
         if !public_rpc.is_empty() && primary != public_rpc {
             fallbacks.push(public_rpc.to_string());
         }
-        
+
         // Determine protocol
         let protocol = match family {
             "evm" => BlockchainProtocol::EVM,
@@ -115,10 +132,10 @@ fn load_from_chains_json() -> HashMap<String, RpcEndpoint> {
             "cardano" => BlockchainProtocol::Cardano,
             _ => BlockchainProtocol::EVM, // Default to EVM for unknown
         };
-        
+
         // Use lowercase name with underscores as key (matches shell script naming)
         let key = name.to_lowercase().replace(" ", "_").replace("-", "_");
-        
+
         config.insert(
             key,
             RpcEndpoint {
@@ -131,44 +148,49 @@ fn load_from_chains_json() -> HashMap<String, RpcEndpoint> {
             },
         );
     }
-    
+
     config
 }
 
 /// Manually configured chains for fine-grained control
 fn load_manual_config() -> HashMap<String, RpcEndpoint> {
     let mut config = HashMap::new();
-    
+
     let alchemy_key = std::env::var("ALCHEMY_API_KEY").ok();
-    
+
     // Helper function to build Alchemy URL
     let alchemy_url = |network: &str| -> Option<String> {
-        alchemy_key.as_ref().map(|key| {
-            format!("https://{}.g.alchemy.com/v2/{}", network, key)
-        })
+        alchemy_key
+            .as_ref()
+            .map(|key| format!("https://{}.g.alchemy.com/v2/{}", network, key))
     };
-    
+
     // Helper function to build fallback list with Alchemy as backup
-    let build_fallbacks = |network: &str, env_fallback_1: &str, env_fallback_2: &str, default_1: &str, default_2: &str| -> Vec<String> {
+    let build_fallbacks = |network: &str,
+                           env_fallback_1: &str,
+                           env_fallback_2: &str,
+                           default_1: &str,
+                           default_2: &str|
+     -> Vec<String> {
         let mut fallbacks = vec![
             std::env::var(env_fallback_1).unwrap_or(default_1.to_string()),
             std::env::var(env_fallback_2).unwrap_or(default_2.to_string()),
         ];
-        
+
         // Add Alchemy as final fallback if available and not already primary
         if let Some(alchemy) = alchemy_url(network) {
             if !fallbacks.contains(&alchemy) {
                 fallbacks.push(alchemy);
             }
         }
-        
+
         fallbacks
     };
-    
+
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 1: MAJOR EVM CHAINS
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     config.insert(
         "ethereum".to_string(),
         RpcEndpoint {
@@ -180,7 +202,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "ETH_FALLBACK_1_RPC",
                 "ETH_FALLBACK_2_RPC",
                 "https://eth-pokt.nodies.app",
-                "https://rpc.ankr.com/eth"
+                "https://rpc.ankr.com/eth",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -188,7 +210,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x1".to_string()),
         },
     );
-    
+
     config.insert(
         "polygon".to_string(),
         RpcEndpoint {
@@ -200,7 +222,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "POLYGON_FALLBACK_1_RPC",
                 "POLYGON_FALLBACK_2_RPC",
                 "https://polygon-pokt.nodies.app",
-                "https://rpc.ankr.com/polygon"
+                "https://rpc.ankr.com/polygon",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -208,7 +230,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x89".to_string()),
         },
     );
-    
+
     config.insert(
         "bsc".to_string(),
         RpcEndpoint {
@@ -220,7 +242,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "BSC_FALLBACK_1_RPC",
                 "BSC_FALLBACK_2_RPC",
                 "https://bsc-pokt.nodies.app",
-                "https://rpc.ankr.com/bsc"
+                "https://rpc.ankr.com/bsc",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -228,7 +250,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x38".to_string()),
         },
     );
-    
+
     config.insert(
         "arbitrum".to_string(),
         RpcEndpoint {
@@ -240,7 +262,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "ARBITRUM_FALLBACK_1_RPC",
                 "ARBITRUM_FALLBACK_2_RPC",
                 "https://arbitrum-pokt.nodies.app",
-                "https://rpc.ankr.com/arbitrum"
+                "https://rpc.ankr.com/arbitrum",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -248,7 +270,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0xa4b1".to_string()),
         },
     );
-    
+
     config.insert(
         "optimism".to_string(),
         RpcEndpoint {
@@ -260,7 +282,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "OPTIMISM_FALLBACK_1_RPC",
                 "OPTIMISM_FALLBACK_2_RPC",
                 "https://optimism-pokt.nodies.app",
-                "https://rpc.ankr.com/optimism"
+                "https://rpc.ankr.com/optimism",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -268,7 +290,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0xa".to_string()),
         },
     );
-    
+
     config.insert(
         "avalanche".to_string(),
         RpcEndpoint {
@@ -280,7 +302,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "AVALANCHE_FALLBACK_1_RPC",
                 "AVALANCHE_FALLBACK_2_RPC",
                 "https://avax-pokt.nodies.app",
-                "https://rpc.ankr.com/avalanche"
+                "https://rpc.ankr.com/avalanche",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -288,7 +310,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0xa86a".to_string()),
         },
     );
-    
+
     config.insert(
         "fantom".to_string(),
         RpcEndpoint {
@@ -300,7 +322,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "FANTOM_FALLBACK_1_RPC",
                 "FANTOM_FALLBACK_2_RPC",
                 "https://fantom-pokt.nodies.app",
-                "https://rpc.ankr.com/fantom"
+                "https://rpc.ankr.com/fantom",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -308,11 +330,11 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0xfa".to_string()),
         },
     );
-    
+
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 2: LAYER 2 & NEW CHAINS
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     config.insert(
         "base".to_string(),
         RpcEndpoint {
@@ -324,7 +346,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "BASE_FALLBACK_1_RPC",
                 "BASE_FALLBACK_2_RPC",
                 "https://base-pokt.nodies.app",
-                "https://base-mainnet.blockpi.network/v1/rpc/public"
+                "https://base-mainnet.blockpi.network/v1/rpc/public",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -332,71 +354,63 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x2105".to_string()),
         },
     );
-    
+
     config.insert(
         "linea".to_string(),
         RpcEndpoint {
             primary: std::env::var("LINEA_PRIMARY_RPC")
                 .unwrap_or("https://rpc.linea.build".to_string()),
-            fallbacks: vec![
-                std::env::var("LINEA_FALLBACK_1_RPC")
-                    .unwrap_or("https://linea-mainnet.blockpi.network/v1/rpc/public".to_string()),
-            ],
+            fallbacks: vec![std::env::var("LINEA_FALLBACK_1_RPC")
+                .unwrap_or("https://linea-mainnet.blockpi.network/v1/rpc/public".to_string())],
             timeout: Duration::from_secs(10),
             max_retries: 3,
             protocol: BlockchainProtocol::EVM,
             chain_id: Some("0xe708".to_string()),
         },
     );
-    
+
     config.insert(
         "scroll".to_string(),
         RpcEndpoint {
             primary: std::env::var("SCROLL_PRIMARY_RPC")
                 .unwrap_or("https://rpc.scroll.io".to_string()),
-            fallbacks: vec![
-                std::env::var("SCROLL_FALLBACK_1_RPC")
-                    .unwrap_or("https://scroll-mainnet.blockpi.network/v1/rpc/public".to_string()),
-            ],
+            fallbacks: vec![std::env::var("SCROLL_FALLBACK_1_RPC")
+                .unwrap_or("https://scroll-mainnet.blockpi.network/v1/rpc/public".to_string())],
             timeout: Duration::from_secs(10),
             max_retries: 3,
             protocol: BlockchainProtocol::EVM,
             chain_id: Some("0x82f".to_string()),
         },
     );
-    
+
     config.insert(
         "mantle".to_string(),
         RpcEndpoint {
             primary: std::env::var("MANTLE_PRIMARY_RPC")
                 .unwrap_or("https://rpc.mantle.xyz".to_string()),
-            fallbacks: vec![
-                std::env::var("MANTLE_FALLBACK_1_RPC")
-                    .unwrap_or("https://mantle-mainnet.blockpi.network/v1/rpc/public".to_string()),
-            ],
+            fallbacks: vec![std::env::var("MANTLE_FALLBACK_1_RPC")
+                .unwrap_or("https://mantle-mainnet.blockpi.network/v1/rpc/public".to_string())],
             timeout: Duration::from_secs(10),
             max_retries: 3,
             protocol: BlockchainProtocol::EVM,
             chain_id: Some("0x1f0a".to_string()),
         },
     );
-    
+
     config.insert(
         "blast".to_string(),
         RpcEndpoint {
             primary: std::env::var("BLAST_PRIMARY_RPC")
                 .unwrap_or("https://rpc.blast.io".to_string()),
-            fallbacks: vec![
-                std::env::var("BLAST_FALLBACK_1_RPC")
-                    .unwrap_or("https://blast-rpc.blockpi.network/v1/rpc/public".to_string()),
-            ],
+            fallbacks: vec![std::env::var("BLAST_FALLBACK_1_RPC")
+                .unwrap_or("https://blast-rpc.blockpi.network/v1/rpc/public".to_string())],
             timeout: Duration::from_secs(10),
             max_retries: 3,
             protocol: BlockchainProtocol::EVM,
             chain_id: Some("0x81457".to_string()),
         },
     );
-    
+
     config.insert(
         "zksync".to_string(),
         RpcEndpoint {
@@ -408,7 +422,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
                 "ZKSYNC_FALLBACK_1_RPC",
                 "ZKSYNC_FALLBACK_2_RPC",
                 "https://zksync-era-mainnet.blockpi.network/v1/rpc/public",
-                "https://zksync-era.blockpi.network/v1/rpc/public"
+                "https://zksync-era.blockpi.network/v1/rpc/public",
             ),
             timeout: Duration::from_secs(10),
             max_retries: 3,
@@ -416,11 +430,11 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x144".to_string()),
         },
     );
-    
+
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 3: OTHER EVM CHAINS
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     config.insert(
         "gnosis".to_string(),
         RpcEndpoint {
@@ -434,7 +448,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x64".to_string()),
         },
     );
-    
+
     config.insert(
         "cronos".to_string(),
         RpcEndpoint {
@@ -448,11 +462,11 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: Some("0x19".to_string()),
         },
     );
-    
+
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 4: NON-EVM CHAINS
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     config.insert(
         "solana".to_string(),
         RpcEndpoint {
@@ -471,7 +485,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: None,
         },
     );
-    
+
     config.insert(
         "bitcoin".to_string(),
         RpcEndpoint {
@@ -485,7 +499,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: None,
         },
     );
-    
+
     config.insert(
         "polkadot".to_string(),
         RpcEndpoint {
@@ -499,7 +513,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: None,
         },
     );
-    
+
     config.insert(
         "cardano".to_string(),
         RpcEndpoint {
@@ -512,7 +526,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: None,
         },
     );
-    
+
     config.insert(
         "ripple".to_string(),
         RpcEndpoint {
@@ -526,7 +540,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: None,
         },
     );
-    
+
     config.insert(
         "tezos".to_string(),
         RpcEndpoint {
@@ -540,7 +554,7 @@ fn load_manual_config() -> HashMap<String, RpcEndpoint> {
             chain_id: None,
         },
     );
-    
+
     config
 }
 
@@ -552,7 +566,7 @@ pub fn get_rpc_config(blockchain: &str) -> Option<RpcEndpoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_load_rpc_config() {
         let config = load_rpc_config();
@@ -561,7 +575,7 @@ mod tests {
         assert!(config.contains_key("solana"));
         assert!(config.contains_key("bitcoin"));
     }
-    
+
     #[test]
     fn test_ethereum_config() {
         let config = get_rpc_config("ethereum").unwrap();
@@ -569,7 +583,7 @@ mod tests {
         assert_eq!(config.chain_id, Some("0x1".to_string()));
         assert!(!config.fallbacks.is_empty());
     }
-    
+
     #[test]
     fn test_all_configs_have_primary() {
         let config = load_rpc_config();

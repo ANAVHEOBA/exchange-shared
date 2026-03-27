@@ -1,6 +1,6 @@
+use super::circuit_breaker::{CircuitBreaker, CircuitState};
 use std::collections::VecDeque;
 use std::time::Instant;
-use super::circuit_breaker::{CircuitBreaker, CircuitState};
 
 const MAX_LATENCY_SAMPLES: usize = 100;
 
@@ -9,31 +9,43 @@ pub struct EndpointHealth {
     pub url: String,
     pub circuit_breaker: CircuitBreaker,
     pub health_score: f64,
-    
+
     // Metrics (sliding window)
     pub total_requests: u64,
     pub successful_requests: u64,
     pub failed_requests: u64,
     pub latencies: VecDeque<u64>, // Last N latencies in milliseconds
-    
+
     // Availability tracking
     pub last_success: Option<Instant>,
     pub last_failure: Option<Instant>,
-    
+
     // Block height tracking (for blockchain RPCs)
     pub last_block_height: Option<u64>,
     pub last_block_time: Option<Instant>,
-    
+
     // Weighted round robin state
     pub current_weight: i32,
     pub effective_weight: i32,
 }
 
 impl EndpointHealth {
-    pub fn new(url: String, failure_threshold: f64, min_requests: u32, timeout_seconds: u64, half_open_max: u32, weight: u32) -> Self {
+    pub fn new(
+        url: String,
+        failure_threshold: f64,
+        min_requests: u32,
+        timeout_seconds: u64,
+        half_open_max: u32,
+        weight: u32,
+    ) -> Self {
         Self {
             url,
-            circuit_breaker: CircuitBreaker::new(failure_threshold, min_requests, timeout_seconds, half_open_max),
+            circuit_breaker: CircuitBreaker::new(
+                failure_threshold,
+                min_requests,
+                timeout_seconds,
+                half_open_max,
+            ),
             health_score: 1.0,
             total_requests: 0,
             successful_requests: 0,
@@ -53,22 +65,22 @@ impl EndpointHealth {
         self.total_requests += 1;
         self.successful_requests += 1;
         self.last_success = Some(Instant::now());
-        
+
         // Update latencies (keep last N)
         if self.latencies.len() >= MAX_LATENCY_SAMPLES {
             self.latencies.pop_front();
         }
         self.latencies.push_back(latency_ms);
-        
+
         // Update block height
         if let Some(height) = block_height {
             self.last_block_height = Some(height);
             self.last_block_time = Some(Instant::now());
         }
-        
+
         // Update circuit breaker
         self.circuit_breaker.record_success();
-        
+
         // Recalculate health score
         self.calculate_health_score();
     }
@@ -78,16 +90,16 @@ impl EndpointHealth {
         self.total_requests += 1;
         self.failed_requests += 1;
         self.last_failure = Some(Instant::now());
-        
+
         // Still record latency for failed requests
         if self.latencies.len() >= MAX_LATENCY_SAMPLES {
             self.latencies.pop_front();
         }
         self.latencies.push_back(latency_ms);
-        
+
         // Update circuit breaker
         self.circuit_breaker.record_failure();
-        
+
         // Recalculate health score
         self.calculate_health_score();
     }
@@ -157,7 +169,7 @@ impl EndpointHealth {
 
         let mut sorted: Vec<u64> = self.latencies.iter().copied().collect();
         sorted.sort_unstable();
-        
+
         let index = ((sorted.len() as f64 * 0.95) as usize).min(sorted.len() - 1);
         Some(sorted[index])
     }
@@ -215,12 +227,12 @@ mod tests {
     #[test]
     fn test_health_score_calculation() {
         let mut health = EndpointHealth::new("http://test".to_string(), 0.2, 5, 30, 3, 100);
-        
+
         // Record some successes
         for _ in 0..10 {
             health.record_success(100, Some(1000));
         }
-        
+
         // Health score should be high
         assert!(health.health_score > 0.8);
         assert!(health.is_healthy());
@@ -229,7 +241,7 @@ mod tests {
     #[test]
     fn test_p95_calculation() {
         let mut health = EndpointHealth::new("http://test".to_string(), 0.2, 5, 30, 3, 100);
-        
+
         // Add latencies: 100ms x 95, 1000ms x 5
         for _ in 0..95 {
             health.record_success(100, None);
@@ -237,7 +249,7 @@ mod tests {
         for _ in 0..5 {
             health.record_success(1000, None);
         }
-        
+
         let p95 = health.calculate_p95().unwrap();
         assert!(p95 >= 100 && p95 <= 1000);
     }

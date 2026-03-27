@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::model::PayoutStatus;
+use serde::{Deserialize, Serialize};
 
 // =============================================================================
 // REQUESTS
@@ -64,7 +64,7 @@ pub struct EvmTransaction {
     pub to_address: String,
     pub amount: f64,
     pub token: String,
-    pub chain_id: u32,
+    pub chain_id: u64,
     pub nonce: u64,
     pub gas_price: u64,
 }

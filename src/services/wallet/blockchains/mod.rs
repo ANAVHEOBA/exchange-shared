@@ -1,5 +1,16 @@
+pub mod bitcoin;
+pub mod cardano;
+pub mod cosmos;
+pub(crate) mod encoding;
+pub mod evm;
+pub mod icon;
+pub mod monero;
+pub mod neo;
+pub mod solana;
+pub mod special;
+pub mod substrate;
 /// Blockchain-specific address derivation implementations
-/// 
+///
 /// Each blockchain family has its own folder with individual implementations:
 /// - bitcoin/: Bitcoin-compatible UTXO chains (BTC, LTC, DOGE, BCH, DASH, RVN, ZEC)
 /// - evm/: EVM-compatible chains (Ethereum, Polygon, Arbitrum, etc.)
@@ -11,43 +22,31 @@
 /// - neo/: Neo blockchain
 /// - icon/: ICON blockchain
 /// - special/: Specialized implementations (Algorand, NEAR, Stellar, Tezos, etc.)
-
 pub mod traits;
-pub mod bitcoin;
-pub mod evm;
-pub mod solana;
-pub mod cosmos;
-pub mod substrate;
-pub mod cardano;
-pub mod monero;
-pub mod neo;
-pub mod icon;
-pub mod special;
 
 // Re-export trait
 pub use traits::BlockchainDerivation;
 
 // Re-export implementations
-pub use bitcoin::{Bitcoin, Litecoin, Dogecoin, BitcoinCash, DashDerivation, RavencoinDerivation, ZcashDerivation, 
-                  Brc20Derivation, BitcoinLightningDerivation, BitcoinSvDerivation, BitcoinzDerivation};
-pub use evm::EvmChain;
-pub use solana::Solana;
-pub use cosmos::{CosmosHubDerivation, OsmosisDerivation};
-pub use substrate::{PolkadotDerivation, KusamaDerivation};
+pub use bitcoin::{
+    Bitcoin, BitcoinCash, BitcoinLightningDerivation, BitcoinSvDerivation, BitcoinzDerivation,
+    Brc20Derivation, DashDerivation, Dogecoin, Litecoin, RavencoinDerivation, ZcashDerivation,
+};
 pub use cardano::CardanoDerivation;
+pub use cosmos::{CosmosHubDerivation, OsmosisDerivation};
+pub use evm::EvmChain;
+pub use icon::IconDerivation;
 pub use monero::MoneroDerivation;
 pub use neo::NeoDerivation;
-pub use icon::IconDerivation;
+pub use solana::Solana;
 pub use special::{
-    Algorand, Near,
-    TezosDerivation, XrpDerivation, StacksDerivation, StellarDerivation,
-    TronDerivation, WavesDerivation, TonDerivation, VechainDerivation,
-    SuiDerivation, EosDerivation, HederaDerivation, MinaDerivation,
-    AptosDerivation, FlowDerivation, StarknetDerivation, ThetaDerivation,
-    ZilliqaDerivation, MultiversxDerivation,
-    NimiqDerivation, FluxDerivation, OntologyDerivation, PocketDerivation,
-    OmniDerivation, ZanoDerivation, BinanceChainDerivation, PartisiaDerivation,
-    DockDerivation, DefichainDerivation, BeamDerivation, EverscaleDerivation,
-    TerraDerivation, FactomDerivation, AvalancheXDerivation,
-    derive_algorand_key, derive_near_key
+    derive_algorand_key, derive_near_key, Algorand, AptosDerivation, AvalancheXDerivation,
+    BeamDerivation, BinanceChainDerivation, DefichainDerivation, DockDerivation, EosDerivation,
+    EverscaleDerivation, FactomDerivation, FlowDerivation, FluxDerivation, HederaDerivation,
+    MinaDerivation, MultiversxDerivation, Near, NimiqDerivation, OmniDerivation,
+    OntologyDerivation, PartisiaDerivation, PocketDerivation, StacksDerivation, StarknetDerivation,
+    StellarDerivation, SuiDerivation, TerraDerivation, TezosDerivation, ThetaDerivation,
+    TonDerivation, TronDerivation, VechainDerivation, WavesDerivation, XrpDerivation,
+    ZanoDerivation, ZilliqaDerivation,
 };
+pub use substrate::{KusamaDerivation, PolkadotDerivation};

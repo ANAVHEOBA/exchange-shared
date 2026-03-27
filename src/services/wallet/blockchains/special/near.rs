@@ -1,4 +1,4 @@
-use crate::services::wallet::blockchains::traits::{BlockchainDerivation, is_valid_seed_phrase};
+use crate::services::wallet::blockchains::traits::{is_valid_seed_phrase, BlockchainDerivation};
 use bip39::{Language, Mnemonic};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -9,11 +9,11 @@ impl BlockchainDerivation for Near {
     fn coin_type(&self) -> u32 {
         397
     }
-    
+
     fn name(&self) -> &'static str {
         "NEAR"
     }
-    
+
     fn derive_address(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
         if !is_valid_seed_phrase(seed_phrase) {
             return Err("Invalid seed phrase".to_string());

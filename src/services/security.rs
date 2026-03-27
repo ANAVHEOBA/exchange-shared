@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{header, Request, HeaderValue},
+    http::{header, HeaderValue, Request},
     middleware::Next,
     response::Response,
 };
@@ -15,10 +15,7 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response {
         HeaderValue::from_static("nosniff"),
     );
 
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
 
     headers.insert(
         header::X_XSS_PROTECTION,

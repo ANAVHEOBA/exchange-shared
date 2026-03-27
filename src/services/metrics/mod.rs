@@ -1,6 +1,6 @@
-pub mod registry;
-pub mod middleware;
 pub mod collectors;
+pub mod middleware;
+pub mod registry;
 
-pub use registry::MetricsRegistry;
 pub use middleware::metrics_middleware;
+pub use registry::MetricsRegistry;

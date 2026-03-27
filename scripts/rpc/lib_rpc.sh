@@ -84,9 +84,103 @@ check_endpoint() {
                 return 0
             fi
             ;;
+        "bitcoin_rpc")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"1.0","method":"getblockchaininfo","params":[],"id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"result"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result.blocks // .result.headers // "OK"')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
+            ;;
+        "dero")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"get_info","id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"result"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result.height // .result.best_height // "OK"')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
+            ;;
+        "nano")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"action":"version"}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"rpc_version"* ]]; then
+                VERSION=$(echo "$RESPONSE" | jq -r '.node_vendor // .rpc_version // "OK"')
+                echo -e "${GREEN}✅ LIVE ($VERSION)${NC}"
+                return 0
+            fi
+            ;;
+        "radix")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"network_identifier":{"blockchain":"radix","network":"mainnet"}}' \
+                --max-time 10 "$URL")
+            if [[ -n "$RESPONSE" ]]; then
+                echo -e "${GREEN}✅ LIVE${NC}"
+                return 0
+            fi
+            ;;
+        "everscale")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"getLatestKeyBlock","params":{},"id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"result"* ]]; then
+                echo -e "${GREEN}✅ LIVE${NC}"
+                return 0
+            fi
+            ;;
+        "steem")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"condenser_api.get_dynamic_global_properties","params":[],"id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"head_block_number"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result.head_block_number // "OK"')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
+            ;;
+        "substrate")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"chain_getBlock","params":[],"id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"result"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result.block.header.number // "OK"')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
+            ;;
+        "ckb")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"get_tip_block_number","params":[],"id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"result"* ]]; then
+                HEIGHT=$(echo "$RESPONSE" | jq -r '.result // "OK"')
+                echo -e "${GREEN}✅ LIVE ($HEIGHT)${NC}"
+                return 0
+            fi
+            ;;
+        "quai")
+            RESPONSE=$(curl -s -A "Mozilla/5.0" -X POST -H "Content-Type: application/json" \
+                --data '{"jsonrpc":"2.0","method":"quai_chainId","params":[],"id":1}' \
+                --max-time 10 "$URL")
+            if [[ $RESPONSE == *"result"* ]]; then
+                CHAIN_ID=$(echo "$RESPONSE" | jq -r '.result // "OK"')
+                echo -e "${GREEN}✅ LIVE ($CHAIN_ID)${NC}"
+                return 0
+            fi
+            ;;
         *)
             # Generic probe: Must return HTTP 200/405/204
-            HTTP_CODE=$(curl -s -A "Mozilla/5.0" -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
+            PROBE_URL="$URL"
+            if [[ "$PROBE_URL" == ws://* ]]; then
+                PROBE_URL="http://${PROBE_URL#ws://}"
+            elif [[ "$PROBE_URL" == wss://* ]]; then
+                PROBE_URL="https://${PROBE_URL#wss://}"
+            fi
+            HTTP_CODE=$(curl -s -A "Mozilla/5.0" -o /dev/null -w "%{http_code}" --max-time 10 "$PROBE_URL")
             if [[ "$HTTP_CODE" =~ ^(200|405|204|403|401)$ ]]; then
                 echo -e "${GREEN}✅ LIVE (HTTP $HTTP_CODE)${NC}"
                 return 0

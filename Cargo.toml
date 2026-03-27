@@ -10,6 +10,7 @@ axum = "0.8.8"
 base64 = "0.22"
 bip39 = "2.1"
 chrono = { version = "0.4.42", features = ["serde"] }
+csv = "1.4.0"
 coins-bip32 = "0.8"
 coins-bip39 = "0.8"
 dotenvy = "0.15.7"
@@ -38,6 +39,8 @@ tower = { version = "0.5.2", features = ["limit"] }
 tower-http = { version = "0.6.8", features = ["cors", "limit", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored", "debug-embed"] }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 monero = "0.21.0"

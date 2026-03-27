@@ -46,7 +46,7 @@ async fn test_invalid_btc_address_rejection() {
         "amount": 1.0,
         "provider": provider,
         "recipient_address": "1InvalidBTCAddressXYZ", // ❌ Invalid format
-        "refund_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12", // ✅ Valid ETH
+        "refund_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // ✅ Valid ETH
         "rate_type": "floating"
     });
 
@@ -134,7 +134,7 @@ async fn test_solana_address_format_validation() {
     let invalid_payload = json!({
         "ticker": "sol",
         "network": "Solana",
-        "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12" // ❌ Ethereum format
+        "address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e" // ❌ Ethereum format
     });
 
     let invalid_response = timed_post(&server, "/swap/validate-address", &invalid_payload).await;
@@ -296,7 +296,7 @@ async fn test_address_with_whitespace() {
         "network_to": "Ethereum",
         "amount": 0.1,
         "provider": provider,
-        "recipient_address": " 0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12 ", // Spaces
+        "recipient_address": " 0x742d35Cc6634C0532925a3b844Bc454e4438f44e ", // Spaces
         "refund_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
         "rate_type": "floating"
     });
@@ -411,8 +411,8 @@ async fn test_same_recipient_and_refund_address() {
         "network_to": "Ethereum",
         "amount": 0.1,
         "provider": provider,
-        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
-        "refund_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12", // Same as recipient
+        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        "refund_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // Same as recipient
         "rate_type": "floating"
     });
 
@@ -531,7 +531,7 @@ async fn test_batch_address_validation() {
 
     let addresses = vec![
         ("btc", "Mainnet", "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"),
-        ("eth", "Ethereum", "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12"),
+        ("eth", "Ethereum", "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"),
         ("xmr", "Mainnet", "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGvj85ngqVqWfdn4ufSXIzJRHWKJ32khHA7wGwwve"),
     ];
 

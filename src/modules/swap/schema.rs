@@ -1,37 +1,42 @@
-use serde::{Deserialize, Serialize};
+use crate::services::wallet::validation::default_extra_id_name;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+
+pub use super::status::SwapStatus;
 
 // =============================================================================
 // PROVIDERS
 // =============================================================================
 
 // Request query parameters for /swap/providers
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct ProvidersQuery {
-    pub rating: Option<String>,         // Filter by KYC rating (A, B, C, D)
-    pub markup_enabled: Option<bool>,   // Filter by markup support
-    pub sort: Option<String>,           // Sort by: name, rating, eta
+    pub rating: Option<String>,       // Filter by KYC rating (A, B, C, D)
+    pub markup_enabled: Option<bool>, // Filter by markup support
+    pub sort: Option<String>,         // Sort by: name, rating, eta
 }
 
 // Response DTO matching Trocador's /exchanges format EXACTLY
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProviderResponse {
     pub name: String,
-    pub rating: String,           // Maps from kyc_rating (A/B/C/D)
-    pub insurance: f64,           // Maps from insurance_percentage
-    pub markup_enabled: bool,     // Maps from markup_enabled (note: Trocador uses "enabledmarkup")
-    pub eta: i32,                 // Maps from eta_minutes
+    pub rating: String,       // Maps from kyc_rating (A/B/C/D)
+    pub insurance: f64,       // Maps from insurance_percentage
+    pub markup_enabled: bool, // Maps from markup_enabled (note: Trocador uses "enabledmarkup")
+    pub eta: i32,             // Maps from eta_minutes
 }
 
 // Trocador's /exchanges response format (what we GET from them)
 #[derive(Debug, Deserialize)]
 pub struct TrocadorProvider {
     pub name: String,
-    pub rating: String,           // A, B, C, or D
+    pub rating: String, // A, B, C, or D
     pub insurance: f64,
     #[serde(rename = "enabledmarkup")]
-    pub enabled_markup: bool,     // Note the different naming
-    pub eta: f64,                 // Trocador returns this as float, we'll convert to i32
+    pub enabled_markup: bool, // Note the different naming
+    pub eta: f64, // Trocador returns this as float, we'll convert to i32
 }
 
 impl From<crate::modules::swap::model::Provider> for ProviderResponse {
@@ -51,25 +56,27 @@ impl From<crate::modules::swap::model::Provider> for ProviderResponse {
 // =============================================================================
 
 // Request query parameters for /swap/currencies
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct CurrenciesQuery {
-    pub ticker: Option<String>,         // Filter by ticker (e.g., "btc")
-    pub network: Option<String>,        // Filter by network (e.g., "Mainnet")
-    pub memo: Option<bool>,             // Filter by memo required
-    pub page: Option<usize>,            // Pagination: Page number (1-based)
-    pub limit: Option<usize>,           // Pagination: Items per page
+    pub ticker: Option<String>,  // Filter by ticker (e.g., "btc")
+    pub network: Option<String>, // Filter by network (e.g., "Mainnet")
+    pub memo: Option<bool>,      // Filter by memo required
+    pub page: Option<usize>,     // Pagination: Page number (1-based)
+    pub limit: Option<usize>,    // Pagination: Items per page
 }
 
 // Response DTO matching Trocador's /coins format EXACTLY
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct CurrencyResponse {
     pub name: String,
-    pub ticker: String,       // Maps from symbol
+    pub ticker: String, // Maps from symbol
     pub network: String,
-    pub memo: bool,           // Maps from requires_extra_id
-    pub image: String,        // Maps from logo_url
-    pub minimum: f64,         // Maps from min_amount
-    pub maximum: f64,         // Maps from max_amount
+    pub memo: bool, // Maps from requires_extra_id
+    pub extra_id_name: Option<String>,
+    pub image: String, // Maps from logo_url
+    pub minimum: f64,  // Maps from min_amount
+    pub maximum: f64,  // Maps from max_amount
 }
 
 // Trocador's /coins response format (what we GET from them)
@@ -88,9 +95,12 @@ impl From<crate::modules::swap::model::Currency> for CurrencyResponse {
     fn from(c: crate::modules::swap::model::Currency) -> Self {
         Self {
             name: c.name,
-            ticker: c.symbol,
-            network: c.network,
+            ticker: c.symbol.clone(),
+            network: c.network.clone(),
             memo: c.requires_extra_id,
+            extra_id_name: c
+                .extra_id_name
+                .or_else(|| default_extra_id_name(&c.symbol, &c.network, c.requires_extra_id)),
             image: c.logo_url.unwrap_or_else(|| String::from("")),
             minimum: c.min_amount.unwrap_or(0.0),
             maximum: c.max_amount.unwrap_or(0.0),
@@ -102,51 +112,56 @@ impl From<crate::modules::swap::model::Currency> for CurrencyResponse {
 // PAIRS
 // =============================================================================
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct PairsQuery {
     // Filtering
     pub base_currency: Option<String>,
     pub quote_currency: Option<String>,
     pub base_network: Option<String>,
     pub quote_network: Option<String>,
-    pub status: Option<String>,  // "active", "disabled", "all"
-    
+    pub status: Option<String>, // "active", "disabled", "all"
+
     // Pagination
     #[serde(default = "default_page")]
     pub page: u32,
     #[serde(default = "default_pairs_size")]
     pub size: u32,
-    
+
     // Sorting
-    pub order_by: Option<String>,  // e.g., "volume_24h desc", "name asc"
-    
+    pub order_by: Option<String>, // e.g., "volume_24h desc", "name asc"
+
     // Filtering expression (advanced)
     pub filter: Option<String>,
 }
 
-fn default_page() -> u32 { 0 }
-fn default_pairs_size() -> u32 { 20 }
+fn default_page() -> u32 {
+    0
+}
+fn default_pairs_size() -> u32 {
+    20
+}
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PairResponse {
-    pub name: String,  // e.g., "BTC/USDT"
+    pub name: String, // e.g., "BTC/USDT"
     pub base_currency: String,
     pub quote_currency: String,
     pub base_network: String,
     pub quote_network: String,
-    pub status: String,  // "active" or "disabled"
+    pub status: String, // "active" or "disabled"
     pub min_amount: Option<f64>,
     pub max_amount: Option<f64>,
     pub last_updated: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PairsResponse {
     pub pairs: Vec<PairResponse>,
     pub pagination: PairsPaginationInfo,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PairsPaginationInfo {
     pub page: u32,
     pub size: u32,
@@ -160,7 +175,8 @@ pub struct PairsPaginationInfo {
 // RATES
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct RatesQuery {
     pub from: String,
     pub network_from: String,
@@ -173,7 +189,7 @@ pub struct RatesQuery {
     pub min_kycrating: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
 pub enum RateType {
@@ -187,11 +203,22 @@ impl Default for RateType {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl RateType {
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Floating => "floating",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RateResponse {
     pub provider: String,
     pub provider_name: String,
     pub rate: f64,
+    /// Raw provider quote returned by Trocador before our platform/network deductions.
+    pub amount_to: f64,
     pub estimated_amount: f64,
     pub min_amount: f64,
     pub max_amount: f64,
@@ -199,14 +226,29 @@ pub struct RateResponse {
     pub provider_fee: f64,
     pub platform_fee: f64,
     pub total_fee: f64,
+    /// Trocador's spread/waste percentage relative to the best route.
+    pub spread_percentage: Option<f64>,
     pub rate_type: RateType,
+    /// Convenience boolean mirroring `rate_type` for consumers that want Trocador-style fields.
+    pub fixed: bool,
     pub kyc_required: bool,
     pub kyc_rating: Option<String>,
+    /// Alias of `kyc_rating` for UIs that prefer Trocador's "Privacy" wording.
+    pub privacy_rating: Option<String>,
+    pub logpolicy: Option<String>,
+    pub insurance: Option<f64>,
+    pub provider_logo: Option<String>,
+    pub rate_id: Option<String>,
+    pub amount_from_usd: Option<f64>,
+    pub amount_to_usd: Option<f64>,
+    pub estimated_amount_usd: Option<f64>,
+    pub unadjusted_amount_to: Option<f64>,
+    pub usd_total_cost_percentage: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eta_minutes: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RatesResponse {
     pub trade_id: String, // Trocador trade ID
     pub from: String,
@@ -214,11 +256,22 @@ pub struct RatesResponse {
     pub to: String,
     pub network_to: String,
     pub amount: f64,
+    pub amount_to: Option<f64>,
+    pub best_provider: Option<String>,
+    pub best_rate_type: Option<RateType>,
+    pub status: Option<String>,
+    pub payment: Option<bool>,
+    pub markup: bool,
+    pub best_only: Option<bool>,
+    pub min_deposit: Option<f64>,
+    pub max_deposit: Option<f64>,
+    pub kyc_list: Option<Vec<String>>,
+    pub logpolicy_list: Option<Vec<String>>,
     pub rates: Vec<RateResponse>,
 }
 
 // Trocador's internal rate response
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct TrocadorQuote {
     pub provider: String,
     pub amount_to: String, // String in Trocador JSON
@@ -226,13 +279,44 @@ pub struct TrocadorQuote {
     pub max_amount: Option<f64>,
     pub kycrating: Option<String>,
     pub waste: Option<String>, // String in Trocador JSON
+    pub fixed: Option<String>,
+    pub insurance: Option<f64>,
+    pub logpolicy: Option<String>,
+    #[serde(rename = "amount_to_USD")]
+    pub amount_to_usd: Option<String>,
+    pub provider_logo: Option<String>,
+    pub rate_id: Option<String>,
+    #[serde(rename = "amount_from_USD")]
+    pub amount_from_usd: Option<String>,
+    pub unadjusted_amount_to: Option<f64>,
+    #[serde(rename = "USD_total_cost_percentage")]
+    pub usd_total_cost_percentage: Option<String>,
     pub eta: Option<f64>,
+}
+
+impl TrocadorQuote {
+    pub fn is_fixed(&self) -> bool {
+        matches!(self.fixed.as_deref(), Some(value) if value.eq_ignore_ascii_case("true"))
+    }
+
+    pub fn rate_type(&self) -> RateType {
+        if self.is_fixed() {
+            RateType::Fixed
+        } else {
+            RateType::Floating
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TrocadorQuotesWrapper {
     pub markup: bool,
     pub quotes: Vec<TrocadorQuote>,
+    pub kyc_list: Option<Vec<String>>,
+    pub best_only: Option<bool>,
+    pub max_deposit: Option<f64>,
+    pub min_deposit: Option<f64>,
+    pub logpolicy_list: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,8 +327,11 @@ pub struct TrocadorRatesResponse {
     pub ticker_to: String,
     pub network_to: String,
     pub amount_from: f64,
-    pub provider: String,
-    pub amount_to: f64,
+    pub amount_to: Option<f64>,
+    pub provider: Option<String>,
+    pub fixed: Option<bool>,
+    pub status: Option<String>,
+    pub payment: Option<bool>,
     pub quotes: TrocadorQuotesWrapper,
 }
 
@@ -254,25 +341,26 @@ pub struct TrocadorRatesResponse {
 
 use validator::Validate;
 
-#[derive(Debug, Deserialize, Validate, Clone)]
+#[derive(Debug, Deserialize, Validate, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct EstimateQuery {
     #[validate(length(min = 1, max = 20))]
     pub from: String,
-    
+
     #[validate(length(min = 1, max = 20))]
     pub to: String,
-    
+
     #[validate(range(min = 0.0, max = 1000000.0))]
     pub amount: f64,
-    
+
     #[validate(length(min = 1, max = 50))]
     pub network_from: String,
-    
+
     #[validate(length(min = 1, max = 50))]
     pub network_to: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct EstimateResponse {
     // Request echo
     pub from: String,
@@ -280,32 +368,49 @@ pub struct EstimateResponse {
     pub amount: f64,
     pub network_from: String,
     pub network_to: String,
-    
+
     // Best rate summary
     pub best_rate: f64,
     pub estimated_receive: f64,
-    pub estimated_receive_min: f64,  // After slippage
-    pub estimated_receive_max: f64,  // Best case
-    
+    pub estimated_receive_min: f64, // After slippage
+    pub estimated_receive_max: f64, // Best case
+
     // Fee breakdown
     pub network_fee: f64,
     pub provider_fee: f64,
     pub platform_fee: f64,
     pub total_fee: f64,
-    
+
     // Slippage info
     pub slippage_percentage: f64,
     pub price_impact: f64,
-    
+
     // Provider info
     pub best_provider: String,
     pub provider_count: usize,
-    
+    pub trade_id: Option<String>,
+    pub rate_type: Option<RateType>,
+    pub fixed: Option<bool>,
+    pub kyc_required: Option<bool>,
+    pub kyc_rating: Option<String>,
+    pub privacy_rating: Option<String>,
+    pub logpolicy: Option<String>,
+    pub insurance: Option<f64>,
+    pub provider_logo: Option<String>,
+    pub rate_id: Option<String>,
+    pub spread_percentage: Option<f64>,
+    pub amount_from_usd: Option<f64>,
+    pub amount_to: Option<f64>,
+    pub amount_to_usd: Option<f64>,
+    pub estimated_receive_usd: Option<f64>,
+    pub unadjusted_amount_to: Option<f64>,
+    pub usd_total_cost_percentage: Option<f64>,
+
     // Metadata
     pub cached: bool,
     pub cache_age_seconds: i64,
     pub expires_in_seconds: i64,
-    
+
     // Warning flags
     pub warnings: Vec<String>,
 }
@@ -323,7 +428,7 @@ pub struct EstimateCacheEntry {
 // CREATE SWAP
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSwapRequest {
     pub trade_id: Option<String>, // ID from new_rate
     pub from: String,
@@ -351,7 +456,7 @@ pub struct CreateSwapRequest {
     pub min_kycrating: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CreateSwapResponse {
     pub swap_id: String,
     pub provider: String,
@@ -401,31 +506,7 @@ pub struct TrocadorTradeResponse {
     pub payment: Option<bool>,
 }
 
-// =============================================================================
-// SWAP STATUS
-// =============================================================================
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
-#[serde(rename_all = "lowercase")]
-#[sqlx(rename_all = "lowercase")]
-pub enum SwapStatus {
-    Waiting,
-    Confirming,
-    Exchanging,
-    Sending,
-    Completed,
-    Failed,
-    Refunded,
-    Expired,
-}
-
-impl Default for SwapStatus {
-    fn default() -> Self {
-        SwapStatus::Waiting
-    }
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SwapStatusResponse {
     pub swap_id: String,
     pub provider: String,
@@ -466,40 +547,43 @@ pub struct SwapStatusResponse {
 // SWAP HISTORY (Keyset Pagination)
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct HistoryQuery {
     // Keyset pagination
     pub cursor: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: u32,
-    
+
     // Filters
     pub status: Option<String>,
     pub from_currency: Option<String>,
     pub to_currency: Option<String>,
     pub provider: Option<String>,
-    pub date_from: Option<String>,  // ISO 8601
-    pub date_to: Option<String>,    // ISO 8601
-    
+    pub date_from: Option<String>, // ISO 8601
+    pub date_to: Option<String>,   // ISO 8601
+
     // Sorting (optional)
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
 }
 
-fn default_limit() -> u32 { 20 }
+fn default_limit() -> u32 {
+    20
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HistoryCursor {
     pub created_at: DateTime<Utc>,
     pub id: String,
-    
+
     // Filter snapshot for validation
     pub status: Option<String>,
     pub from_currency: Option<String>,
     pub to_currency: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SwapSummary {
     pub id: String,
     pub status: SwapStatus,
@@ -524,14 +608,22 @@ pub struct SwapSummary {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HistoryResponse {
     pub swaps: Vec<SwapSummary>,
     pub pagination: PaginationInfo,
     pub filters_applied: FiltersApplied,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClientHistoryResponse {
+    pub client_id: String,
+    pub swaps: Vec<SwapSummary>,
+    pub pagination: PaginationInfo,
+    pub filters_applied: FiltersApplied,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PaginationInfo {
     pub limit: u32,
     pub has_more: bool,
@@ -539,7 +631,7 @@ pub struct PaginationInfo {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct FiltersApplied {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -559,14 +651,14 @@ pub struct FiltersApplied {
 // ADDRESS VALIDATION
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ValidateAddressRequest {
     pub ticker: String,
     pub network: String,
     pub address: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ValidateAddressResponse {
     pub valid: bool,
     pub ticker: String,
@@ -578,7 +670,7 @@ pub struct ValidateAddressResponse {
 // ERROR RESPONSE
 // =============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SwapErrorResponse {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]

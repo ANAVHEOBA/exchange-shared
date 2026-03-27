@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -80,7 +80,7 @@ async fn test_blockchain_health_check_deployment() {
 
     // Test 5: Address validation works
     println!("5. Testing address validation...");
-    let url = "/swap/validate-address?ticker=eth&network=ERC20&address=0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let url = "/swap/validate-address?ticker=eth&network=ERC20&address=0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
     let response = timed_get(&server, url).await;
     if response.status_code().as_u16() == 200 {
         println!("   ✓ Address validation OK");
@@ -110,8 +110,8 @@ async fn test_blockchain_health_check_swap_creation() {
         "network_to": "Ethereum",
         "amount": 1.0,
         "provider": "changenow",
-        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
-        "refund_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12"
+        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        "refund_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
     });
 
     // Note: This will likely fail due to missing trade_id, but endpoint should respond

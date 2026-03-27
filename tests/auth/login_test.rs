@@ -167,11 +167,7 @@ async fn login_with_missing_password_returns_unprocessable() {
 async fn login_with_empty_body_returns_unprocessable() {
     let ctx = TestContext::new().await;
 
-    let response = ctx
-        .server
-        .post("/auth/login")
-        .json(&json!({}))
-        .await;
+    let response = ctx.server.post("/auth/login").json(&json!({})).await;
 
     response.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -234,7 +230,11 @@ async fn login_responds_within_acceptable_time() {
     println!("Login took: {:?}", duration);
 
     // Login should be faster than register (only verifies hash, doesn't create)
-    assert!(duration.as_millis() < 3000, "Login took too long: {:?}", duration);
+    assert!(
+        duration.as_millis() < 3000,
+        "Login took too long: {:?}",
+        duration
+    );
 
     ctx.cleanup().await;
 }
@@ -266,7 +266,8 @@ async fn measure_register_and_login_times() {
 
     // Measure login
     let login_start = std::time::Instant::now();
-    let login_resp = ctx.server
+    let login_resp = ctx
+        .server
         .post("/auth/login")
         .json(&json!({
             "email": &email,
@@ -288,8 +289,14 @@ async fn measure_register_and_login_times() {
 
     println!("========================================");
     println!("Register (hash password):  {} ms", reg_duration.as_millis());
-    println!("Login (verify password):   {} ms", login_duration.as_millis());
-    println!("JWT verify (/auth/me):     {} ms  <-- THIS IS FAST", jwt_duration.as_millis());
+    println!(
+        "Login (verify password):   {} ms",
+        login_duration.as_millis()
+    );
+    println!(
+        "JWT verify (/auth/me):     {} ms  <-- THIS IS FAST",
+        jwt_duration.as_millis()
+    );
     println!("========================================");
 
     ctx.cleanup().await;

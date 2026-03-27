@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 use std::collections::HashSet;
 
 #[path = "../common/mod.rs"]
@@ -93,7 +93,10 @@ async fn test_each_network_has_currencies() {
         );
     }
 
-    println!("✓ All {} networks have valid currencies", network_counts.len());
+    println!(
+        "✓ All {} networks have valid currencies",
+        network_counts.len()
+    );
 
     // Print distribution
     let mut counts: Vec<_> = network_counts.iter().collect();
@@ -120,7 +123,16 @@ async fn test_network_currency_metadata_complete() {
 
     let currencies: Vec<Value> = response.json();
 
-    let required_fields = vec!["name", "ticker", "network", "memo", "image", "minimum", "maximum"];
+    let required_fields = vec![
+        "name",
+        "ticker",
+        "network",
+        "memo",
+        "extra_id_name",
+        "image",
+        "minimum",
+        "maximum",
+    ];
 
     let mut missing_count = 0;
     let mut invalid_count = 0;
@@ -130,10 +142,7 @@ async fn test_network_currency_metadata_complete() {
         for field in &required_fields {
             if currency.get(field).is_none() {
                 missing_count += 1;
-                println!(
-                    "  ⚠ Currency {} missing field '{}'",
-                    idx, field
-                );
+                println!("  ⚠ Currency {} missing field '{}'", idx, field);
             }
         }
 
@@ -148,6 +157,9 @@ async fn test_network_currency_metadata_complete() {
             invalid_count += 1;
         }
         if !currency["memo"].is_boolean() {
+            invalid_count += 1;
+        }
+        if !(currency["extra_id_name"].is_null() || currency["extra_id_name"].is_string()) {
             invalid_count += 1;
         }
         if !currency["minimum"].is_number() {
@@ -186,12 +198,12 @@ async fn test_filter_by_network_diverse_chains() {
     // Test a diverse set of networks
     // Note: Networks are named by contract type (ERC20=Ethereum, BEP20=BSC, TRC20=Tron, etc)
     let test_networks = vec![
-        ("ERC20", "evm_mainnet"),      // Ethereum
-        ("Mainnet", "layer1"),         // Bitcoin, Solana, Cardano
-        ("BEP20", "evm_sidechain"),    // Binance Smart Chain
-        ("Arbitrum", "evm_l2"),        // Arbitrum
-        ("Optimism", "evm_l2"),        // Optimism
-        ("MATIC", "evm_sidechain"),    // Polygon
+        ("ERC20", "evm_mainnet"),   // Ethereum
+        ("Mainnet", "layer1"),      // Bitcoin, Solana, Cardano
+        ("BEP20", "evm_sidechain"), // Binance Smart Chain
+        ("Arbitrum", "evm_l2"),     // Arbitrum
+        ("Optimism", "evm_l2"),     // Optimism
+        ("MATIC", "evm_sidechain"), // Polygon
     ];
 
     for (network_name, _description) in test_networks {
@@ -212,17 +224,15 @@ async fn test_filter_by_network_diverse_chains() {
             for currency in &currencies {
                 let net = currency.get("network").and_then(|n| n.as_str());
                 assert_eq!(
-                    net, Some(network_name),
+                    net,
+                    Some(network_name),
                     "Returned currency from wrong network. Expected '{}', got '{:?}'",
-                    network_name, net
+                    network_name,
+                    net
                 );
             }
 
-            println!(
-                "✓ {} → {} currencies",
-                network_name,
-                currencies.len()
-            );
+            println!("✓ {} → {} currencies", network_name, currencies.len());
         } else {
             println!(
                 "⚠ {} → Not available (might be renamed or discontinued)",
@@ -249,8 +259,7 @@ async fn test_network_discovery_and_reporting() {
     let currencies: Vec<Value> = response.json();
 
     // Collect all unique networks
-    let mut networks: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut networks: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
 
     for currency in &currencies {
         if let Some(network) = currency.get("network").and_then(|n| n.as_str()) {
@@ -272,8 +281,11 @@ async fn test_network_discovery_and_reporting() {
         idx += 1;
     }
 
-    println!("\n✓ Backend supports {} blockchains with {} total currencies",
-        networks.len(), currencies.len());
+    println!(
+        "\n✓ Backend supports {} blockchains with {} total currencies",
+        networks.len(),
+        currencies.len()
+    );
 }
 
 // =============================================================================
@@ -293,7 +305,7 @@ async fn test_address_validation_diverse_networks() {
         (
             "ETH",
             "Ethereum",
-            "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+            "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
             "Ethereum EVM",
         ),
         (
@@ -329,10 +341,7 @@ async fn test_address_validation_diverse_networks() {
                 result.get("valid").and_then(|v| v.as_bool())
             );
         } else {
-            println!(
-                "  ⚠ {} ({}) - Endpoint not available",
-                description, network
-            );
+            println!("  ⚠ {} ({}) - Endpoint not available", description, network);
         }
     }
 }

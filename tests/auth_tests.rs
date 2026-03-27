@@ -1,2 +1,2 @@
-mod common;
 mod auth;
+mod common;

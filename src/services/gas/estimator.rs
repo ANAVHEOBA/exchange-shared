@@ -1,6 +1,8 @@
-use super::types::{GasEstimate, GasError, TxType};
+use super::types::{GasError, GasEstimate, TxType};
 use crate::config::rpc_config::{get_rpc_config, BlockchainProtocol};
 use crate::services::redis_cache::RedisService;
+use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
+use crate::services::wallet::rest_rpc::RestRpcClient;
 use crate::services::wallet::rpc::{BlockchainProvider, HttpRpcClient};
 use chrono::Utc;
 
@@ -16,6 +18,40 @@ impl GasEstimator {
         Self {
             redis_service,
             ema_alpha: 0.125, // EIP-1559 standard
+        }
+    }
+
+    /// Normalize API-facing ticker/network labels to canonical gas-estimation keys.
+    pub fn normalize_payout_network(ticker: &str, network: &str) -> String {
+        let ticker_lower = ticker.to_lowercase();
+        let network_lower = network.to_lowercase().replace([' ', '-'], "_");
+
+        match network_lower.as_str() {
+            "eth" | "erc20" | "ethereum" => "ethereum".to_string(),
+            "matic" | "polygon" => "polygon".to_string(),
+            "bep20" | "bsc" | "binance_smart_chain" => "bsc".to_string(),
+            "arb" | "arbitrum" | "arbitrum_one" => "arbitrum".to_string(),
+            "op" | "optimism" => "optimism".to_string(),
+            "avax" | "avalanche" | "avalanche_c_chain" => "avalanche".to_string(),
+            "btc" | "bitcoin" => "bitcoin".to_string(),
+            "sol" | "solana" => "solana".to_string(),
+            "ada" | "cardano" => "cardano".to_string(),
+            "xrp" | "ripple" | "xrpl" => "ripple".to_string(),
+            "xtz" | "tezos" => "tezos".to_string(),
+            "mainnet" => match ticker_lower.as_str() {
+                "btc" | "bitcoin" => "bitcoin".to_string(),
+                "eth" => "ethereum".to_string(),
+                "sol" => "solana".to_string(),
+                "ada" => "cardano".to_string(),
+                "xrp" => "ripple".to_string(),
+                "xtz" => "tezos".to_string(),
+                "matic" => "polygon".to_string(),
+                "bnb" => "bsc".to_string(),
+                "arb" => "arbitrum".to_string(),
+                "op" => "optimism".to_string(),
+                other => other.to_string(),
+            },
+            _ => network_lower,
         }
     }
 
@@ -43,11 +79,15 @@ impl GasEstimator {
                     .await?
             }
             BlockchainProtocol::Bitcoin => {
-                self.estimate_bitcoin_gas(&network_lower, tx_type).await?
+                self.estimate_bitcoin_gas(
+                    &network_lower,
+                    tx_type,
+                    &rpc_config.primary,
+                    &rpc_config.fallbacks,
+                )
+                .await?
             }
-            BlockchainProtocol::Solana => {
-                self.estimate_solana_gas(&network_lower, tx_type).await?
-            }
+            BlockchainProtocol::Solana => self.estimate_solana_gas(&network_lower, tx_type).await?,
             _ => {
                 // Fallback to hardcoded for unsupported protocols
                 self.get_fallback_estimate(&network_lower, tx_type)
@@ -73,7 +113,11 @@ impl GasEstimator {
         let gas_price_wei = match client.get_gas_price().await {
             Ok(price) => price,
             Err(e) => {
-                tracing::warn!("RPC gas price fetch failed for {}: {}, using fallback", network, e);
+                tracing::warn!(
+                    "RPC gas price fetch failed for {}: {}, using fallback",
+                    network,
+                    e
+                );
                 return Ok(self.get_fallback_estimate(network, tx_type));
             }
         };
@@ -86,7 +130,8 @@ impl GasEstimator {
 
         // Calculate total cost in native token (ETH, MATIC, BNB, etc.)
         // Formula: cost = gasLimit × gasPrice / 1e18
-        let total_cost_native = (gas_limit as f64 * smoothed_gas_price as f64) / 1_000_000_000_000_000_000.0;
+        let total_cost_native =
+            (gas_limit as f64 * smoothed_gas_price as f64) / 1_000_000_000_000_000_000.0;
 
         Ok(GasEstimate {
             network: network.to_string(),
@@ -103,22 +148,25 @@ impl GasEstimator {
     async fn estimate_bitcoin_gas(
         &self,
         network: &str,
-        _tx_type: TxType,
+        tx_type: TxType,
+        primary_url: &str,
+        fallback_urls: &[String],
     ) -> Result<GasEstimate, GasError> {
-        // Bitcoin uses fee rate (sat/vByte) × transaction size
-        // For now, use conservative estimate
-        // TODO: Fetch from mempool.space API or blockchair
-        
-        let fee_rate_sat_per_vbyte = 10; // Conservative: 10 sat/vByte
-        let avg_tx_size_vbytes = 250; // Average P2PKH transaction
-        let total_fee_sats = fee_rate_sat_per_vbyte * avg_tx_size_vbytes;
-        let total_cost_btc = total_fee_sats as f64 / 100_000_000.0; // Convert sats to BTC
+        let fee_rate_sat_per_vbyte = self
+            .fetch_bitcoin_fee_rate_sat_per_vbyte(primary_url, fallback_urls, 6)
+            .await?;
+        let smoothed_fee_rate = self
+            .apply_ema_smoothing(network, fee_rate_sat_per_vbyte.round() as u64)
+            .await;
+        let tx_size_vbytes = self.bitcoin_tx_size_vbytes(tx_type);
+        let total_fee_sats = smoothed_fee_rate as f64 * tx_size_vbytes as f64;
+        let total_cost_btc = total_fee_sats / 100_000_000.0;
 
         Ok(GasEstimate {
             network: network.to_string(),
-            tx_type: TxType::NativeTransfer,
-            gas_price_wei: fee_rate_sat_per_vbyte as u64,
-            gas_limit: avg_tx_size_vbytes as u64,
+            tx_type,
+            gas_price_wei: smoothed_fee_rate,
+            gas_limit: tx_size_vbytes as u64,
             total_cost_native: total_cost_btc,
             cached: false,
             timestamp: Utc::now(),
@@ -226,14 +274,78 @@ impl GasEstimator {
     }
 
     /// Get simple gas cost for backward compatibility
+    pub async fn try_get_gas_cost_for_network(&self, network: &str) -> Result<f64, GasError> {
+        Ok(self
+            .estimate_gas(network, TxType::NativeTransfer)
+            .await?
+            .total_cost_native)
+    }
+
+    /// Get simple gas cost for backward compatibility
     pub async fn get_gas_cost_for_network(&self, network: &str) -> f64 {
-        match self.estimate_gas(network, TxType::NativeTransfer).await {
-            Ok(estimate) => estimate.total_cost_native,
+        match self.try_get_gas_cost_for_network(network).await {
+            Ok(cost) => cost,
             Err(e) => {
-                tracing::warn!("Gas estimation failed for {}: {}, using fallback", network, e);
+                tracing::warn!(
+                    "Gas estimation failed for {}: {}, using fallback",
+                    network,
+                    e
+                );
                 self.get_fallback_estimate(network, TxType::NativeTransfer)
                     .total_cost_native
             }
+        }
+    }
+
+    async fn fetch_bitcoin_fee_rate_sat_per_vbyte(
+        &self,
+        primary_url: &str,
+        fallback_urls: &[String],
+        blocks: u32,
+    ) -> Result<f64, GasError> {
+        let mut last_error = None;
+
+        for url in std::iter::once(primary_url).chain(fallback_urls.iter().map(String::as_str)) {
+            if url.trim().is_empty() {
+                continue;
+            }
+
+            let result = if self.is_bitcoin_rest_endpoint(url) {
+                RestRpcClient::new(url.to_string())
+                    .estimate_fee(blocks)
+                    .await
+            } else {
+                BitcoinRpcClient::new(url.to_string())
+                    .estimate_fee(blocks)
+                    .await
+            };
+
+            match result {
+                Ok(fee_rate) if fee_rate.is_finite() && fee_rate > 0.0 => return Ok(fee_rate),
+                Ok(_) => {
+                    last_error = Some(format!("Endpoint {} returned a non-positive fee rate", url))
+                }
+                Err(e) => last_error = Some(format!("{}: {}", url, e)),
+            }
+        }
+
+        Err(GasError::Rpc(last_error.unwrap_or_else(|| {
+            "No live Bitcoin fee endpoint was available".to_string()
+        })))
+    }
+
+    fn is_bitcoin_rest_endpoint(&self, url: &str) -> bool {
+        url.contains("mempool.space")
+            || url.contains("blockstream.info")
+            || url.contains("blockchair.com")
+            || url.contains("blockcypher.com")
+            || url.contains("/api/")
+    }
+
+    fn bitcoin_tx_size_vbytes(&self, tx_type: TxType) -> u64 {
+        match tx_type {
+            TxType::NativeTransfer => 250,
+            TxType::TokenTransfer | TxType::TokenApprove | TxType::ComplexContract => 250,
         }
     }
 }
@@ -267,5 +379,30 @@ mod tests {
     fn test_ema_alpha() {
         let estimator = GasEstimator::new(None);
         assert_eq!(estimator.ema_alpha, 0.125); // EIP-1559 standard
+    }
+
+    #[test]
+    fn normalize_payout_network_handles_api_aliases() {
+        assert_eq!(
+            GasEstimator::normalize_payout_network("ETH", "ERC20"),
+            "ethereum"
+        );
+        assert_eq!(
+            GasEstimator::normalize_payout_network("BTC", "Mainnet"),
+            "bitcoin"
+        );
+        assert_eq!(
+            GasEstimator::normalize_payout_network("BNB", "BEP20"),
+            "bsc"
+        );
+    }
+
+    #[test]
+    fn recognizes_bitcoin_rest_fee_endpoints() {
+        let estimator = GasEstimator::new(None);
+
+        assert!(estimator.is_bitcoin_rest_endpoint("https://mempool.space/api"));
+        assert!(estimator.is_bitcoin_rest_endpoint("https://blockstream.info/testnet/api"));
+        assert!(!estimator.is_bitcoin_rest_endpoint("http://127.0.0.1:8332"));
     }
 }

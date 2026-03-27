@@ -1,5 +1,5 @@
-use serial_test::serial;
 use serde_json::{json, Value};
+use serial_test::serial;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -25,7 +25,7 @@ fn get_test_address(network: &str) -> String {
         "Mainnet" | "Bitcoin" => "1A1z7agoat2LWSE6BY2Zust4gLssQwSgd".to_string(),
         // Ethereum & EVM
         "ERC20" | "Polygon" | "Arbitrum" | "Optimism" | "BASE" | "Avalanche"
-        | "Blast" | "zkSync" => "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        | "Blast" | "zkSync" => "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         // Solana
         "Solana" => "9B5X1CbM3nDZCoDjiHWuqJ3UaYNaEX9vJ7A13jgTgJJJ".to_string(),
         // Cardano
@@ -43,7 +43,7 @@ fn get_test_address(network: &str) -> String {
             "4GFDWQF2KZPPVVH4LFQ2GVFUMRB3MQ5Q4HYIJMRJH2UMRUZRDAZKUULM5UA".to_string()
         }
         // Fallback to Ethereum format for unknown networks
-        _ => "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        _ => "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
     }
 }
 
@@ -210,7 +210,7 @@ async fn test_gas_estimation_estimated_networks() {
     let server = setup_test_server().await;
 
     let test_pairs = vec![
-        ("ada", "eth", "ADA", "ERC20"), // Cardano to Ethereum
+        ("ada", "eth", "ADA", "ERC20"),      // Cardano to Ethereum
         ("dot", "eth", "Polkadot", "ERC20"), // Polkadot to Ethereum
     ];
 
@@ -293,7 +293,8 @@ async fn test_create_swap_eth_to_usdc() {
     let server = setup_test_server().await;
 
     // First get rates
-    let rate_url = "/swap/rates?from=eth&to=usdc&amount=1&network_from=Ethereum&network_to=Ethereum";
+    let rate_url =
+        "/swap/rates?from=eth&to=usdc&amount=1&network_from=Ethereum&network_to=Ethereum";
     let rate_response = timed_get(&server, rate_url).await;
 
     if !rate_response.status_code().as_u16() == 200 {
@@ -325,8 +326,8 @@ async fn test_create_swap_eth_to_usdc() {
         "network_to": "ERC20",
         "amount": 1.0,
         "provider": provider,
-        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
-        "refund_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12"
+        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        "refund_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
     });
 
     let response = timed_post(&server, "/swap/create", &payload).await;
@@ -399,10 +400,26 @@ async fn test_blockchain_support_summary() {
 
     // Test multiple network combinations using actual Trocador network names
     let tests = vec![
-        ("ERC20", "USDT → USDC (Ethereum)", "/swap/rates?from=usdt&to=usdc&amount=100&network_from=ERC20&network_to=ERC20"),
-        ("Mainnet", "BTC → SOL (Layer-1)", "/swap/rates?from=btc&to=sol&amount=0.1&network_from=Mainnet&network_to=Mainnet"),
-        ("BEP20", "ETH → USDC (BSC)", "/swap/rates?from=eth&to=usdc&amount=1&network_from=BEP20&network_to=BEP20"),
-        ("Arbitrum", "ETH → USDT (Arbitrum)", "/swap/rates?from=eth&to=usdt&amount=1&network_from=Arbitrum&network_to=Arbitrum"),
+        (
+            "ERC20",
+            "USDT → USDC (Ethereum)",
+            "/swap/rates?from=usdt&to=usdc&amount=100&network_from=ERC20&network_to=ERC20",
+        ),
+        (
+            "Mainnet",
+            "BTC → SOL (Layer-1)",
+            "/swap/rates?from=btc&to=sol&amount=0.1&network_from=Mainnet&network_to=Mainnet",
+        ),
+        (
+            "BEP20",
+            "ETH → USDC (BSC)",
+            "/swap/rates?from=eth&to=usdc&amount=1&network_from=BEP20&network_to=BEP20",
+        ),
+        (
+            "Arbitrum",
+            "ETH → USDT (Arbitrum)",
+            "/swap/rates?from=eth&to=usdt&amount=1&network_from=Arbitrum&network_to=Arbitrum",
+        ),
     ];
 
     let mut passed = 0;

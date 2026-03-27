@@ -78,7 +78,7 @@ async fn test_usdt_chain_mismatch_rejection() {
         "network_to": "Ethereum",
         "amount": 100.0,
         "provider": "changenow",
-        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12", // ❌ ETH address, not Solana
+        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // ❌ ETH address, not Solana
         "refund_address": "9B5X1CbM3nDZCoDjiHWuqJ3UaYN2..." // ✅ Valid Solana address
     });
 
@@ -248,8 +248,8 @@ async fn test_refund_address_chain_validation() {
         "network_to": "Ethereum",
         "amount": 0.01,
         "provider": "changenow",
-        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12", // ✅ Valid ETH address
-        "refund_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12", // ❌ ETH address, not BTC
+        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // ✅ Valid ETH address
+        "refund_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", // ❌ ETH address, not BTC
         "rate_type": "floating"
     });
 

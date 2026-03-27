@@ -1,15 +1,15 @@
-use sqlx::MySqlPool;
 use alloy::primitives::Address;
+use rust_decimal::Decimal;
+use sqlx::MySqlPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use rust_decimal::Decimal;
 
-use crate::services::token::{Token, TokenType, TokenError};
+use crate::services::token::{Token, TokenError, TokenType};
 
 pub struct TokenRegistry {
     pool: MySqlPool,
-    cache: Arc<RwLock<HashMap<String, Token>>>,  // key: "network:contract_address" or "network:symbol"
+    cache: Arc<RwLock<HashMap<String, Token>>>, // key: "network:contract_address" or "network:symbol"
 }
 
 impl TokenRegistry {
@@ -19,11 +19,15 @@ impl TokenRegistry {
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-    
+
     /// Get token by contract address and network
-    pub async fn get_token(&self, contract_address: &str, network: &str) -> Result<Token, TokenError> {
+    pub async fn get_token(
+        &self,
+        contract_address: &str,
+        network: &str,
+    ) -> Result<Token, TokenError> {
         let cache_key = format!("{}:{}", network, contract_address.to_lowercase());
-        
+
         // Check cache first
         {
             let cache = self.cache.read().await;
@@ -31,7 +35,7 @@ impl TokenRegistry {
                 return Ok(token.clone());
             }
         }
-        
+
         // Query database
         let token = sqlx::query!(
             r#"
@@ -60,7 +64,7 @@ impl TokenRegistry {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| TokenError::TokenNotFound(format!("{} on {}", contract_address, network)))?;
-        
+
         let token_obj = Token {
             id: token.id,
             symbol: token.symbol,
@@ -74,24 +78,35 @@ impl TokenRegistry {
             coinmarketcap_id: token.coinmarketcap_id,
             is_active: token.is_active != 0,
             is_verified: token.is_verified != 0,
-            min_swap_amount: token.min_swap_amount.and_then(|s| Decimal::from_str_exact(&s).ok()),
-            max_swap_amount: token.max_swap_amount.and_then(|s| Decimal::from_str_exact(&s).ok()),
-            gas_multiplier: Decimal::from_str_exact(&token.gas_multiplier.unwrap_or("3.0".to_string())).unwrap_or(Decimal::from(3)),
+            min_swap_amount: token
+                .min_swap_amount
+                .and_then(|s| Decimal::from_str_exact(&s).ok()),
+            max_swap_amount: token
+                .max_swap_amount
+                .and_then(|s| Decimal::from_str_exact(&s).ok()),
+            gas_multiplier: Decimal::from_str_exact(
+                &token.gas_multiplier.unwrap_or("3.0".to_string()),
+            )
+            .unwrap_or(Decimal::from(3)),
         };
-        
+
         // Update cache
         {
             let mut cache = self.cache.write().await;
             cache.insert(cache_key, token_obj.clone());
         }
-        
+
         Ok(token_obj)
     }
-    
+
     /// Get token by symbol and network
-    pub async fn get_token_by_symbol(&self, symbol: &str, network: &str) -> Result<Token, TokenError> {
+    pub async fn get_token_by_symbol(
+        &self,
+        symbol: &str,
+        network: &str,
+    ) -> Result<Token, TokenError> {
         let cache_key = format!("{}:symbol:{}", network, symbol.to_uppercase());
-        
+
         // Check cache first
         {
             let cache = self.cache.read().await;
@@ -99,7 +114,7 @@ impl TokenRegistry {
                 return Ok(token.clone());
             }
         }
-        
+
         let token = sqlx::query!(
             r#"
             SELECT 
@@ -129,7 +144,7 @@ impl TokenRegistry {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| TokenError::TokenNotFound(format!("{} on {}", symbol, network)))?;
-        
+
         let token_obj = Token {
             id: token.id,
             symbol: token.symbol,
@@ -143,20 +158,27 @@ impl TokenRegistry {
             coinmarketcap_id: token.coinmarketcap_id,
             is_active: token.is_active != 0,
             is_verified: token.is_verified != 0,
-            min_swap_amount: token.min_swap_amount.and_then(|s| Decimal::from_str_exact(&s).ok()),
-            max_swap_amount: token.max_swap_amount.and_then(|s| Decimal::from_str_exact(&s).ok()),
-            gas_multiplier: Decimal::from_str_exact(&token.gas_multiplier.unwrap_or("3.0".to_string())).unwrap_or(Decimal::from(3)),
+            min_swap_amount: token
+                .min_swap_amount
+                .and_then(|s| Decimal::from_str_exact(&s).ok()),
+            max_swap_amount: token
+                .max_swap_amount
+                .and_then(|s| Decimal::from_str_exact(&s).ok()),
+            gas_multiplier: Decimal::from_str_exact(
+                &token.gas_multiplier.unwrap_or("3.0".to_string()),
+            )
+            .unwrap_or(Decimal::from(3)),
         };
-        
+
         // Update cache
         {
             let mut cache = self.cache.write().await;
             cache.insert(cache_key, token_obj.clone());
         }
-        
+
         Ok(token_obj)
     }
-    
+
     /// Register a new token
     pub async fn register_token(
         &self,
@@ -168,7 +190,7 @@ impl TokenRegistry {
         token_type: TokenType,
     ) -> Result<i64, TokenError> {
         let contract_addr_str = contract_address.map(|addr| format!("{:?}", addr));
-        
+
         let result = sqlx::query!(
             r#"
             INSERT INTO tokens (symbol, name, network, contract_address, decimals, token_type, is_verified)
@@ -183,13 +205,13 @@ impl TokenRegistry {
         )
         .execute(&self.pool)
         .await?;
-        
+
         // Clear cache for this network
         self.clear_cache_for_network(network).await;
-        
+
         Ok(result.last_insert_id() as i64)
     }
-    
+
     /// List all active tokens for a network
     pub async fn list_tokens(&self, network: &str) -> Result<Vec<Token>, TokenError> {
         let tokens = sqlx::query!(
@@ -218,26 +240,36 @@ impl TokenRegistry {
         )
         .fetch_all(&self.pool)
         .await?;
-        
-        Ok(tokens.into_iter().map(|t| Token {
-            id: t.id,
-            symbol: t.symbol,
-            name: t.name,
-            network: t.network,
-            contract_address: t.contract_address,
-            decimals: t.decimals as u8,
-            token_type: t.token_type,
-            logo_url: t.logo_url,
-            coingecko_id: t.coingecko_id,
-            coinmarketcap_id: t.coinmarketcap_id,
-            is_active: t.is_active != 0,
-            is_verified: t.is_verified != 0,
-            min_swap_amount: t.min_swap_amount.and_then(|s| Decimal::from_str_exact(&s).ok()),
-            max_swap_amount: t.max_swap_amount.and_then(|s| Decimal::from_str_exact(&s).ok()),
-            gas_multiplier: Decimal::from_str_exact(&t.gas_multiplier.unwrap_or("3.0".to_string())).unwrap_or(Decimal::from(3)),
-        }).collect())
+
+        Ok(tokens
+            .into_iter()
+            .map(|t| Token {
+                id: t.id,
+                symbol: t.symbol,
+                name: t.name,
+                network: t.network,
+                contract_address: t.contract_address,
+                decimals: t.decimals as u8,
+                token_type: t.token_type,
+                logo_url: t.logo_url,
+                coingecko_id: t.coingecko_id,
+                coinmarketcap_id: t.coinmarketcap_id,
+                is_active: t.is_active != 0,
+                is_verified: t.is_verified != 0,
+                min_swap_amount: t
+                    .min_swap_amount
+                    .and_then(|s| Decimal::from_str_exact(&s).ok()),
+                max_swap_amount: t
+                    .max_swap_amount
+                    .and_then(|s| Decimal::from_str_exact(&s).ok()),
+                gas_multiplier: Decimal::from_str_exact(
+                    &t.gas_multiplier.unwrap_or("3.0".to_string()),
+                )
+                .unwrap_or(Decimal::from(3)),
+            })
+            .collect())
     }
-    
+
     /// Update token metadata
     pub async fn update_token(
         &self,
@@ -261,19 +293,19 @@ impl TokenRegistry {
         )
         .execute(&self.pool)
         .await?;
-        
+
         // Clear entire cache since we don't know which keys to invalidate
         self.clear_cache().await;
-        
+
         Ok(())
     }
-    
+
     /// Clear cache for a specific network
     async fn clear_cache_for_network(&self, network: &str) {
         let mut cache = self.cache.write().await;
         cache.retain(|key, _| !key.starts_with(&format!("{}:", network)));
     }
-    
+
     /// Clear entire cache
     pub async fn clear_cache(&self) {
         let mut cache = self.cache.write().await;
@@ -285,7 +317,7 @@ impl TokenRegistry {
 mod tests {
     // Integration tests would require database connection
     // These are unit tests for the cache key logic
-    
+
     #[test]
     fn test_cache_key_format() {
         let network = "ethereum";
@@ -293,7 +325,7 @@ mod tests {
         let key = format!("{}:{}", network, contract.to_lowercase());
         assert_eq!(key, "ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7");
     }
-    
+
     #[test]
     fn test_symbol_cache_key() {
         let network = "ethereum";

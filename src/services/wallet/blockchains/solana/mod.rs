@@ -1,8 +1,8 @@
-use crate::services::wallet::blockchains::traits::{BlockchainDerivation, is_valid_seed_phrase};
+use crate::services::wallet::blockchains::traits::{is_valid_seed_phrase, BlockchainDerivation};
 use bip39::{Language, Mnemonic};
+use bs58;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
-use bs58;
 
 pub struct Solana;
 
@@ -10,11 +10,11 @@ impl BlockchainDerivation for Solana {
     fn coin_type(&self) -> u32 {
         501
     }
-    
+
     fn name(&self) -> &'static str {
         "Solana"
     }
-    
+
     fn derive_address(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
         if !is_valid_seed_phrase(seed_phrase) {
             return Err("Invalid seed phrase".to_string());
@@ -39,7 +39,7 @@ impl BlockchainDerivation for Solana {
 
         Ok(bs58::encode(&public_key_bytes).into_string())
     }
-    
+
     fn derive_private_key(&self, seed_phrase: &str, index: u32) -> Result<String, String> {
         if !is_valid_seed_phrase(seed_phrase) {
             return Err("Invalid seed phrase".to_string());

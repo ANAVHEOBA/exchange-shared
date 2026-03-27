@@ -1,6 +1,6 @@
-mod register_test;
-mod login_test;
 mod email_verification_test;
+mod login_test;
+mod register_test;
 // TODO: Implement these features and uncomment tests
 // mod logout_test;
 // mod me_test;

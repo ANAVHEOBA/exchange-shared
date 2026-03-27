@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use ed25519_dalek::{SigningKey, Signer, Signature};
-use sha2::{Sha256, Digest};
 use bs58;
+use ed25519_dalek::{Signature, Signer, SigningKey};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// NEAR Protocol transaction builder
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -40,38 +40,39 @@ impl NearTransaction {
             }],
         }
     }
-    
+
     /// Sign the transaction with Ed25519
     pub fn sign(&self, private_key: &[u8]) -> Result<SignedNearTransaction, String> {
         // Serialize transaction to borsh format (NEAR uses borsh, not JSON)
         // This is simplified - production should use borsh crate
         let tx_bytes = self.to_borsh()?;
-        
+
         // Hash the transaction
         let mut hasher = Sha256::new();
         hasher.update(&tx_bytes);
         let hash = hasher.finalize();
-        
+
         // Sign with Ed25519
         let signing_key = SigningKey::from_bytes(
-            private_key[..32].try_into()
-                .map_err(|_| "Invalid key length")?
+            private_key[..32]
+                .try_into()
+                .map_err(|_| "Invalid key length")?,
         );
         let signature: Signature = signing_key.sign(&hash);
-        
+
         Ok(SignedNearTransaction {
             transaction: self.clone(),
             signature: bs58::encode(signature.to_bytes()).into_string(),
             hash: bs58::encode(hash).into_string(),
         })
     }
-    
+
     /// Convert to borsh format (simplified)
     fn to_borsh(&self) -> Result<Vec<u8>, String> {
         // NEAR uses borsh serialization
         // This is a simplified version - production should use borsh crate
-        let json = serde_json::to_string(self)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
+        let json =
+            serde_json::to_string(self).map_err(|e| format!("Failed to serialize: {}", e))?;
         Ok(json.into_bytes())
     }
 }
@@ -106,21 +107,19 @@ pub async fn get_near_access_key(
         .send()
         .await
         .map_err(|e| format!("Failed to get access key: {}", e))?;
-    
+
     let result: serde_json::Value = response
         .json()
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    let nonce = result["result"]["nonce"]
-        .as_u64()
-        .ok_or("Missing nonce")?;
-    
+
+    let nonce = result["result"]["nonce"].as_u64().ok_or("Missing nonce")?;
+
     let block_hash = result["result"]["block_hash"]
         .as_str()
         .ok_or("Missing block_hash")?
         .to_string();
-    
+
     Ok(NearAccessKey {
         nonce: nonce + 1, // Increment for next transaction
         block_hash,

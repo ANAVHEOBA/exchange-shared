@@ -332,11 +332,7 @@ async fn register_with_missing_fields_returns_unprocessable() {
 async fn register_with_empty_body_returns_unprocessable() {
     let ctx = TestContext::new().await;
 
-    let response = ctx
-        .server
-        .post("/auth/register")
-        .json(&json!({}))
-        .await;
+    let response = ctx.server.post("/auth/register").json(&json!({})).await;
 
     response.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -386,7 +382,8 @@ async fn register_handles_concurrent_duplicate_emails() {
 
     assert!(
         has_created || has_rate_limited,
-        "Unexpected statuses: {:?}", statuses
+        "Unexpected statuses: {:?}",
+        statuses
     );
 
     ctx.cleanup().await;
@@ -460,7 +457,7 @@ async fn register_rejects_oversized_payload() {
     // Should reject with 413 Payload Too Large or 400 Bad Request
     assert!(
         response.status_code() == StatusCode::PAYLOAD_TOO_LARGE
-        || response.status_code() == StatusCode::BAD_REQUEST
+            || response.status_code() == StatusCode::BAD_REQUEST
     );
 
     ctx.cleanup().await;
@@ -489,7 +486,11 @@ async fn register_responds_within_acceptable_time() {
     let duration = start.elapsed();
 
     // Should respond within 10 seconds (argon2 + email sending + parallel test overhead)
-    assert!(duration.as_secs() < 10, "Response took too long: {:?}", duration);
+    assert!(
+        duration.as_secs() < 10,
+        "Response took too long: {:?}",
+        duration
+    );
 
     ctx.cleanup().await;
 }
