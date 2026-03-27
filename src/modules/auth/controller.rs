@@ -10,7 +10,7 @@ use crate::modules::auth::{
     schema,
     schema::{
         ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse,
-        UserResponse, VerifyEmailQuery,
+        UserResponse, VerifyEmailQuery, VerifyEmailRequest,
     },
 };
 use crate::services::hashing;
@@ -234,22 +234,47 @@ pub async fn login(
     responses(
         (status = 200, description = "Email verified", body = schema::VerifyEmailResponse),
         (status = 400, description = "Missing or invalid token", body = ErrorResponse),
+        (status = 409, description = "Verification token already used", body = ErrorResponse),
+        (status = 410, description = "Verification token expired", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn verify_email_get(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<VerifyEmailQuery>,
+) -> Result<(StatusCode, Json<schema::VerifyEmailResponse>), (StatusCode, Json<ErrorResponse>)> {
+    verify_email_token(state, params.token).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/verify-email",
+    tag = "Auth",
+    request_body = VerifyEmailRequest,
+    responses(
+        (status = 200, description = "Email verified", body = schema::VerifyEmailResponse),
+        (status = 400, description = "Missing or invalid token", body = ErrorResponse),
+        (status = 409, description = "Verification token already used", body = ErrorResponse),
+        (status = 410, description = "Verification token expired", body = ErrorResponse),
         (status = 500, description = "Server error", body = ErrorResponse)
     )
 )]
 pub async fn verify_email(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<VerifyEmailQuery>,
+    Json(req): Json<VerifyEmailRequest>,
+) -> Result<(StatusCode, Json<schema::VerifyEmailResponse>), (StatusCode, Json<ErrorResponse>)> {
+    verify_email_token(state, req.token).await
+}
+
+async fn verify_email_token(
+    state: Arc<AppState>,
+    token: String,
 ) -> Result<(StatusCode, Json<schema::VerifyEmailResponse>), (StatusCode, Json<ErrorResponse>)> {
     let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
 
-    crud.verify_email_token(&params.token).await.map_err(|e| {
-        let status = match e {
-            AuthError::TokenError(_) => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, Json(ErrorResponse::new(e.to_string())))
-    })?;
+    crud.verify_email_token(&token)
+        .await
+        .map_err(map_verify_email_error)?;
 
     Ok((
         StatusCode::OK,
@@ -257,4 +282,34 @@ pub async fn verify_email(
             message: "Email verified successfully",
         }),
     ))
+}
+
+fn map_verify_email_error(error: AuthError) -> (StatusCode, Json<ErrorResponse>) {
+    match error {
+        AuthError::InvalidVerificationToken => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_code(
+                "Invalid verification token",
+                "invalid",
+            )),
+        ),
+        AuthError::ExpiredVerificationToken => (
+            StatusCode::GONE,
+            Json(ErrorResponse::with_code(
+                "Verification token expired",
+                "expired",
+            )),
+        ),
+        AuthError::VerificationTokenAlreadyUsed => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::with_code(
+                "Verification token already used",
+                "already_used",
+            )),
+        ),
+        other => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(other.to_string())),
+        ),
+    }
 }

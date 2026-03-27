@@ -140,6 +140,11 @@ pub struct VerifyEmailQuery {
     pub token: String,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct VerifyEmailRequest {
+    pub token: String,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VerifyEmailResponse {
     pub message: &'static str,
@@ -193,6 +198,8 @@ pub struct BackupCodesResponse {
 pub struct ErrorResponse {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
@@ -200,6 +207,15 @@ impl ErrorResponse {
     pub fn new(error: impl Into<String>) -> Self {
         Self {
             error: error.into(),
+            code: None,
+            message: None,
+        }
+    }
+
+    pub fn with_code(error: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            code: Some(code.into()),
             message: None,
         }
     }
@@ -207,6 +223,19 @@ impl ErrorResponse {
     pub fn with_message(error: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             error: error.into(),
+            code: None,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn with_code_message(
+        error: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            error: error.into(),
+            code: Some(code.into()),
             message: Some(message.into()),
         }
     }

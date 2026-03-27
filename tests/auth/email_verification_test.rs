@@ -91,10 +91,41 @@ async fn verify_email_with_valid_token_succeeds() {
     .await
     .unwrap();
 
-    // Verify email using GET endpoint with query param
+    // Verify email using legacy GET endpoint with query param
     let response = ctx
         .server
         .get(&format!("/auth/verify-email?token={}", token))
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert!(body["message"].as_str().unwrap().contains("verified"));
+
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn verify_email_with_post_body_succeeds() {
+    let ctx = TestContext::new().await;
+    let email = create_unverified_user(&ctx).await;
+
+    let token: String = sqlx::query_scalar(
+        "SELECT token FROM email_verifications ev
+         JOIN users u ON ev.user_id = u.id
+         WHERE u.email = ?
+         ORDER BY ev.created_at DESC
+         LIMIT 1",
+    )
+    .bind(&email)
+    .fetch_one(&ctx.db)
+    .await
+    .unwrap();
+
+    let response = ctx
+        .server
+        .post("/auth/verify-email")
+        .json(&json!({ "token": token }))
         .await;
 
     response.assert_status(StatusCode::OK);
@@ -190,12 +221,13 @@ async fn verify_email_with_invalid_token_returns_bad_request() {
 
     let body: serde_json::Value = response.json();
     assert!(body.get("error").is_some());
+    assert_eq!(body["code"].as_str(), Some("invalid"));
 
     ctx.cleanup().await;
 }
 
 #[tokio::test]
-async fn verify_email_with_expired_token_returns_bad_request() {
+async fn verify_email_with_expired_token_returns_gone() {
     let ctx = TestContext::new().await;
     let email = create_unverified_user(&ctx).await;
 
@@ -226,10 +258,11 @@ async fn verify_email_with_expired_token_returns_bad_request() {
         .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
-    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_status(StatusCode::GONE);
 
     let body: serde_json::Value = response.json();
     assert!(body["error"].as_str().unwrap().contains("expired"));
+    assert_eq!(body["code"].as_str(), Some("expired"));
 
     ctx.cleanup().await;
 }
@@ -260,13 +293,16 @@ async fn verification_token_can_only_be_used_once() {
         .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
-    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_status(StatusCode::CONFLICT);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["code"].as_str(), Some("already_used"));
 
     ctx.cleanup().await;
 }
 
 #[tokio::test]
-async fn verification_token_deleted_after_successful_verification() {
+async fn verification_token_marked_used_after_successful_verification() {
     let ctx = TestContext::new().await;
     let email = create_unverified_user(&ctx).await;
 
@@ -285,14 +321,16 @@ async fn verification_token_deleted_after_successful_verification() {
         .get(&format!("/auth/verify-email?token={}", token))
         .await;
 
-    // Check token is deleted
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM email_verifications WHERE token = ?")
+    // Check token is retained and marked used
+    let used_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT used_at FROM email_verifications WHERE token = ?",
+    )
         .bind(&token)
         .fetch_one(&ctx.db)
         .await
         .unwrap();
 
-    assert_eq!(count.0, 0, "Token should be deleted after verification");
+    assert!(used_at.is_some(), "Token should be marked used after verification");
 
     ctx.cleanup().await;
 }

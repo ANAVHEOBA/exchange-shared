@@ -80,5 +80,10 @@ async fn main() {
     let bind_addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
     tracing::info!("Server running on http://localhost:{}", config.port);
+    tracing::info!("Swagger UI available at http://localhost:{}/docs", config.port);
+    tracing::info!(
+        "OpenAPI JSON available at http://localhost:{}/api-docs/openapi.json",
+        config.port
+    );
     axum::serve(listener, app).await.unwrap();
 }

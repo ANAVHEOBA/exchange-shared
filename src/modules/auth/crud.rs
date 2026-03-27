@@ -12,6 +12,9 @@ pub enum AuthError {
     InvalidCredentials,
     UserNotFound,
     EmailNotVerified,
+    InvalidVerificationToken,
+    ExpiredVerificationToken,
+    VerificationTokenAlreadyUsed,
     DatabaseError(String),
     HashingError(String),
     TokenError(String),
@@ -23,6 +26,11 @@ impl std::fmt::Display for AuthError {
             AuthError::InvalidCredentials => write!(f, "Invalid credentials"),
             AuthError::UserNotFound => write!(f, "User not found"),
             AuthError::EmailNotVerified => write!(f, "Email not verified"),
+            AuthError::InvalidVerificationToken => write!(f, "Invalid verification token"),
+            AuthError::ExpiredVerificationToken => write!(f, "Verification token expired"),
+            AuthError::VerificationTokenAlreadyUsed => {
+                write!(f, "Verification token already used")
+            }
             AuthError::DatabaseError(e) => write!(f, "Database error: {}", e),
             AuthError::HashingError(e) => write!(f, "Hashing error: {}", e),
             AuthError::TokenError(e) => write!(f, "Token error: {}", e),
@@ -169,44 +177,51 @@ impl<'a> UserCrud<'a> {
     }
 
     pub async fn verify_email_token(&self, token: &str) -> Result<String, AuthError> {
-        let verification = sqlx::query!(
+        let verification = sqlx::query_as::<
+            _,
+            (
+                String,
+                chrono::DateTime<chrono::Utc>,
+                Option<chrono::DateTime<chrono::Utc>>,
+                bool,
+            ),
+        >(
             r#"
-            SELECT user_id, expires_at
-            FROM email_verifications
-            WHERE token = ?
+            SELECT ev.user_id, ev.expires_at, ev.used_at, u.email_verified
+            FROM email_verifications ev
+            JOIN users u ON u.id = ev.user_id
+            WHERE ev.token = ?
             "#,
-            token
         )
+        .bind(token)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?
-        .ok_or(AuthError::TokenError(
-            "Invalid verification token".to_string(),
-        ))?;
+        .ok_or(AuthError::InvalidVerificationToken)?;
 
-        // Check if expired
-        if verification.expires_at < chrono::Utc::now() {
-            return Err(AuthError::TokenError(
-                "Verification token expired".to_string(),
-            ));
+        let (user_id, expires_at, used_at, email_verified) = verification;
+
+        if used_at.is_some() || email_verified {
+            return Err(AuthError::VerificationTokenAlreadyUsed);
         }
 
-        // Mark email as verified
-        sqlx::query!(
-            "UPDATE users SET email_verified = TRUE, updated_at = NOW() WHERE id = ?",
-            verification.user_id
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+        if expires_at < chrono::Utc::now() {
+            return Err(AuthError::ExpiredVerificationToken);
+        }
 
-        // Delete the verification token
-        sqlx::query!("DELETE FROM email_verifications WHERE token = ?", token)
+        sqlx::query("UPDATE users SET email_verified = TRUE, updated_at = NOW() WHERE id = ?")
+            .bind(&user_id)
             .execute(&self.pool)
             .await
             .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
-        Ok(verification.user_id)
+        sqlx::query("UPDATE email_verifications SET used_at = NOW() WHERE token = ?")
+            .bind(token)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(user_id)
     }
 
     pub async fn login(&self, email: &str, password: &str) -> Result<LoginResult, AuthError> {
