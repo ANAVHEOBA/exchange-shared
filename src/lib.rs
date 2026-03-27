@@ -54,7 +54,10 @@ pub async fn create_app(
     if email_service.is_none() {
         tracing::warn!("⚠️  Email service not configured - email verification will be disabled");
     } else {
-        tracing::info!("✉️  Email service configured successfully");
+        tracing::info!(
+            "✉️  Email service configured successfully (provider={})",
+            email_service.as_ref().unwrap().provider_name()
+        );
     }
 
     let state = Arc::new(AppState {
