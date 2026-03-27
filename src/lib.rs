@@ -78,7 +78,7 @@ pub async fn create_app(
         .route("/", get(root))
         .route("/health", get(health_check))
         .nest("/admin", admin_routes())
-        .nest("/auth", auth_routes())
+        .nest("/auth", auth_routes(state.clone()))
         .nest("/swap", swap_routes())
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(axum_middleware::from_fn(

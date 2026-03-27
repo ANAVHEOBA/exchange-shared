@@ -3,17 +3,28 @@ use serde_json::json;
 
 use crate::common::{test_email, test_password, TestContext};
 
+fn test_username() -> String {
+    format!("user_{}", &uuid::Uuid::new_v4().to_string()[..8])
+}
+
 async fn create_user_and_get_reset_token(ctx: &TestContext) -> (String, String) {
     let email = test_email();
 
     ctx.server
         .post("/auth/register")
         .json(&json!({
+            "username": test_username(),
             "email": &email,
             "password": test_password(),
             "password_confirm": test_password()
         }))
         .await;
+
+    sqlx::query("UPDATE users SET email_verified = TRUE WHERE email = ?")
+        .bind(&email)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
 
     ctx.server
         .post("/auth/forgot-password")

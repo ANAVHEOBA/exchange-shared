@@ -1,6 +1,9 @@
 use crate::modules::auth::model::User;
 use crate::services::{hashing, jwt::JwtService};
-use sqlx::{MySql, Pool};
+use chrono::{Duration, Utc};
+use sha2::{Digest, Sha256};
+use sqlx::{FromRow, MySql, Pool};
+use uuid::Uuid;
 
 pub struct UserCrud<'a> {
     pool: Pool<MySql>,
@@ -45,7 +48,19 @@ pub struct LoginResult {
     pub expires_in: i64,
 }
 
+#[derive(Debug, FromRow)]
+pub struct UserDashboardStats {
+    pub total_trades: i64,
+    pub traded_value_btc: f64,
+}
+
 impl<'a> UserCrud<'a> {
+    fn hash_token(token: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
     pub fn new(pool: Pool<MySql>, jwt_service: &'a JwtService) -> Self {
         Self { pool, jwt_service }
     }
@@ -85,6 +100,21 @@ impl<'a> UserCrud<'a> {
             id
         )
         .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn get_dashboard_stats(&self, user_id: &str) -> Result<UserDashboardStats, sqlx::Error> {
+        sqlx::query_as::<_, UserDashboardStats>(
+            r#"
+            SELECT
+                COUNT(*) as total_trades,
+                COALESCE(SUM(CASE WHEN LOWER(from_currency) = 'btc' AND status = 'completed' THEN amount ELSE 0 END), 0) as traded_value_btc
+            FROM swaps
+            WHERE user_id = ?
+            "#,
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
         .await
     }
 
@@ -134,6 +164,103 @@ impl<'a> UserCrud<'a> {
         )
         .fetch_optional(&self.pool)
         .await
+    }
+
+    pub async fn store_refresh_token(
+        &self,
+        user_id: &str,
+        refresh_token: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), sqlx::Error> {
+        let token_hash = Self::hash_token(refresh_token);
+        sqlx::query(
+            r#"
+            INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked, created_at)
+            VALUES (?, ?, ?, ?, FALSE, NOW())
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn revoke_refresh_token(&self, refresh_token: &str) -> Result<u64, sqlx::Error> {
+        let token_hash = Self::hash_token(refresh_token);
+        let result = sqlx::query(
+            "UPDATE refresh_tokens SET revoked = TRUE WHERE token_hash = ? AND revoked = FALSE",
+        )
+        .bind(token_hash)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn revoke_all_refresh_tokens_for_user(&self, user_id: &str) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ? AND revoked = FALSE")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn refresh_token_belongs_to_user(
+        &self,
+        user_id: &str,
+        refresh_token: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let token_hash = Self::hash_token(refresh_token);
+        let exists = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM refresh_tokens
+            WHERE user_id = ?
+              AND token_hash = ?
+              AND revoked = FALSE
+              AND expires_at > NOW()
+            "#,
+        )
+        .bind(user_id)
+        .bind(token_hash)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(exists > 0)
+    }
+
+    pub async fn validate_refresh_token(&self, refresh_token: &str) -> Result<String, AuthError> {
+        let claims = self
+            .jwt_service
+            .verify_refresh_token(refresh_token)
+            .map_err(|_| AuthError::InvalidCredentials)?;
+
+        let token_hash = Self::hash_token(refresh_token);
+        let row = sqlx::query_as::<_, (String, bool, chrono::DateTime<chrono::Utc>)>(
+            r#"
+            SELECT user_id, revoked, expires_at
+            FROM refresh_tokens
+            WHERE token_hash = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?
+        .ok_or(AuthError::InvalidCredentials)?;
+
+        let (user_id, revoked, expires_at) = row;
+        if revoked || expires_at <= Utc::now() || claims.claims.sub != user_id {
+            return Err(AuthError::InvalidCredentials);
+        }
+
+        Ok(user_id)
     }
 
     pub async fn delete_unverified_user(&self, user_id: &str) -> Result<(), sqlx::Error> {
@@ -224,6 +351,97 @@ impl<'a> UserCrud<'a> {
         Ok(user_id)
     }
 
+    pub async fn create_password_reset(
+        &self,
+        user_id: &str,
+        token: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM password_resets WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO password_resets (id, user_id, token, expires_at, used, created_at)
+            VALUES (?, ?, ?, ?, FALSE, NOW())
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user_id)
+        .bind(token)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn consume_password_reset(&self, token: &str) -> Result<String, AuthError> {
+        let row = sqlx::query_as::<_, (String, chrono::DateTime<chrono::Utc>, bool)>(
+            r#"
+            SELECT user_id, expires_at, used
+            FROM password_resets
+            WHERE token = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?
+        .ok_or(AuthError::InvalidVerificationToken)?;
+
+        let (user_id, expires_at, used) = row;
+
+        if used || expires_at <= Utc::now() {
+            return Err(AuthError::ExpiredVerificationToken);
+        }
+
+        sqlx::query("UPDATE password_resets SET used = TRUE WHERE token = ?")
+            .bind(token)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(user_id)
+    }
+
+    pub async fn update_password(&self, user_id: &str, password_hash: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?")
+            .bind(password_hash)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn issue_token_pair(&self, user: &User) -> Result<LoginResult, AuthError> {
+        let access_token = self
+            .jwt_service
+            .create_access_token(&user.id, &user.email)
+            .map_err(|e| AuthError::TokenError(e.to_string()))?;
+
+        let refresh_token = self
+            .jwt_service
+            .create_refresh_token(&user.id)
+            .map_err(|e| AuthError::TokenError(e.to_string()))?;
+
+        let refresh_expires_at = Utc::now() + Duration::days(7);
+        self.store_refresh_token(&user.id, &refresh_token, refresh_expires_at)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        Ok(LoginResult {
+            user: user.clone(),
+            access_token,
+            refresh_token,
+            expires_in: self.jwt_service.get_access_token_duration_secs(),
+        })
+    }
+
     pub async fn login(&self, email: &str, password: &str) -> Result<LoginResult, AuthError> {
         let user = self
             .find_by_email(email)
@@ -243,21 +461,6 @@ impl<'a> UserCrud<'a> {
             return Err(AuthError::EmailNotVerified);
         }
 
-        let access_token = self
-            .jwt_service
-            .create_access_token(&user.id, &user.email)
-            .map_err(|e| AuthError::TokenError(e.to_string()))?;
-
-        let refresh_token = self
-            .jwt_service
-            .create_refresh_token(&user.id)
-            .map_err(|e| AuthError::TokenError(e.to_string()))?;
-
-        Ok(LoginResult {
-            user,
-            access_token,
-            refresh_token,
-            expires_in: self.jwt_service.get_access_token_duration_secs(),
-        })
+        self.issue_token_pair(&user).await
     }
 }
