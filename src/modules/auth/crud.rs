@@ -108,7 +108,18 @@ impl<'a> UserCrud<'a> {
             r#"
             SELECT
                 COUNT(*) as total_trades,
-                COALESCE(SUM(CASE WHEN LOWER(from_currency) = 'btc' AND status = 'completed' THEN amount ELSE 0 END), 0) as traded_value_btc
+                CAST(
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN LOWER(from_currency) = 'btc' AND status = 'completed'
+                                    THEN amount
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS DOUBLE
+                ) as traded_value_btc
             FROM swaps
             WHERE user_id = ?
             "#,
