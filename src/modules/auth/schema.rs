@@ -57,12 +57,12 @@ pub struct LoginRequires2faResponse {
 // LOGOUT
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LogoutRequest {
     pub refresh_token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LogoutResponse {
     pub message: &'static str,
 }
@@ -71,12 +71,12 @@ pub struct LogoutResponse {
 // REFRESH TOKEN
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RefreshTokenResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -99,28 +99,37 @@ pub struct UserResponse {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MeResponse {
+    pub email: String,
+    pub username: Option<String>,
+    pub total_trades: u64,
+    pub traded_value_btc: f64,
+}
+
 // =============================================================================
 // PASSWORD RESET
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ForgotPasswordRequest {
+    #[validate(email(message = "Invalid email format"))]
     pub email: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ForgotPasswordResponse {
     pub message: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub password: String,
     pub password_confirm: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ResetPasswordResponse {
     pub message: &'static str,
 }
@@ -129,7 +138,13 @@ pub struct ResetPasswordResponse {
 // EMAIL VERIFICATION
 // =============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct RequestVerificationRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RequestVerificationResponse {
     pub message: String,
 }

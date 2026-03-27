@@ -157,6 +157,44 @@ impl EmailService {
             .await
     }
 
+    pub async fn send_password_reset_email(
+        &self,
+        to_email: &str,
+        username: &str,
+        token: &str,
+    ) -> Result<(), EmailError> {
+        let reset_link = format!("{}/reset-password/{}", self.app_url.trim_end_matches('/'), token);
+        let subject = "Reset your password";
+        let html_body = format!(
+            r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <p>Hi, <strong>{}</strong>!</p>
+    <p>You requested a password reset. Use the link below to continue:</p>
+    <p><a href="{}">Reset Password</a></p>
+    <p>If clicking the link above doesn't work, copy and paste this URL into your browser:</p>
+    <p>{}</p>
+    <p>This link is valid for 1 hour.</p>
+</body>
+</html>
+            "#,
+            username, reset_link, reset_link
+        );
+
+        let text_body = format!(
+            "Hi, {}!\n\nYou requested a password reset. Use the link below to continue:\n\n{}\n\nIf clicking the link above doesn't work, copy and paste this URL into your browser:\n\n{}\n\nThis link is valid for 1 hour.",
+            username, reset_link, reset_link
+        );
+
+        self.send_email(to_email, username, subject, &html_body, &text_body)
+            .await
+    }
+
     async fn send_email(
         &self,
         to: &str,

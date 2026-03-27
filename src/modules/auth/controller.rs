@@ -6,15 +6,18 @@ use validator::Validate;
 
 use crate::modules::auth::{
     crud::{AuthError, UserCrud},
-    model::User,
+    model::User as UserModel,
     schema,
     schema::{
-        ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse,
-        UserResponse, VerifyEmailQuery, VerifyEmailRequest,
+        ErrorResponse, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest,
+        LoginResponse, LogoutRequest, LogoutResponse, MeResponse, RefreshTokenRequest,
+        RefreshTokenResponse, RegisterRequest, RegisterResponse, RequestVerificationRequest,
+        RequestVerificationResponse, ResetPasswordRequest, ResetPasswordResponse, UserResponse,
+        VerifyEmailQuery, VerifyEmailRequest,
     },
 };
 use crate::services::hashing;
-use crate::AppState;
+use crate::{middleware::user::User as AuthenticatedUser, AppState};
 
 #[utoipa::path(
     post,
@@ -119,7 +122,7 @@ pub async fn register(
     })?;
 
     let now = Utc::now();
-    let user = User {
+    let user = UserModel {
         id: Uuid::new_v4().to_string(),
         email: req.email.clone(),
         username: Some(req.username.clone()),
@@ -222,6 +225,349 @@ pub async fn login(
             refresh_token: result.refresh_token,
             token_type: "Bearer",
             expires_in: result.expires_in,
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/refresh",
+    tag = "Auth",
+    request_body = RefreshTokenRequest,
+    responses(
+        (status = 200, description = "Tokens refreshed", body = RefreshTokenResponse),
+        (status = 401, description = "Invalid refresh token", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn refresh(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RefreshTokenRequest>,
+) -> Result<(StatusCode, Json<RefreshTokenResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
+    let user_id = crud.validate_refresh_token(&req.refresh_token).await.map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse::new("Invalid refresh token")),
+        )
+    })?;
+
+    let user = crud.find_by_id(&user_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
+    })?
+    .ok_or((
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse::new("User not found")),
+    ))?;
+
+    crud.revoke_refresh_token(&req.refresh_token)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    let token_pair = crud.issue_token_pair(&user).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
+    })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(RefreshTokenResponse {
+            access_token: token_pair.access_token,
+            refresh_token: token_pair.refresh_token,
+            token_type: "Bearer",
+            expires_in: token_pair.expires_in,
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "Auth",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body = LogoutRequest,
+    responses(
+        (status = 200, description = "Logout succeeded", body = LogoutResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn logout(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Json(req): Json<LogoutRequest>,
+) -> Result<(StatusCode, Json<LogoutResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
+    let belongs_to_user = crud
+        .refresh_token_belongs_to_user(&user.id, &req.refresh_token)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    if !belongs_to_user {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse::new("Invalid refresh token")),
+        ));
+    }
+
+    crud.revoke_refresh_token(&req.refresh_token)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(LogoutResponse {
+            message: "Logged out successfully",
+        }),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    tag = "Auth",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Current user profile", body = MeResponse),
+        (status = 401, description = "Missing or invalid token", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn me(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> Result<(StatusCode, Json<MeResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
+    let stats = crud.get_dashboard_stats(&user.id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
+    })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(MeResponse {
+            email: user.email,
+            username: user.username,
+            total_trades: stats.total_trades.max(0) as u64,
+            traded_value_btc: stats.traded_value_btc,
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/forgot-password",
+    tag = "Auth",
+    request_body = ForgotPasswordRequest,
+    responses(
+        (status = 200, description = "Reset requested", body = ForgotPasswordResponse),
+        (status = 400, description = "Validation error", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn forgot_password(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ForgotPasswordRequest>,
+) -> Result<(StatusCode, Json<ForgotPasswordResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if let Err(e) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(e.to_string())),
+        ));
+    }
+
+    let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
+    if let Some(user) = crud.find_by_email(&req.email).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
+    })? {
+        let reset_token = Uuid::new_v4().to_string();
+        let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+        if let Err(e) = crud
+            .create_password_reset(&user.id, &reset_token, expires_at)
+            .await
+        {
+            tracing::error!("Failed to create password reset token: {}", e);
+        } else if let Some(email_service) = &state.email_service {
+            let username = user.username.as_deref().unwrap_or("there");
+            if let Err(e) = email_service
+                .send_password_reset_email(&user.email, username, &reset_token)
+                .await
+            {
+                tracing::error!("Failed to send password reset email: {}", e);
+            }
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(ForgotPasswordResponse {
+            message: "If that email exists, a reset link has been sent.",
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/reset-password",
+    tag = "Auth",
+    request_body = ResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset succeeded", body = ResetPasswordResponse),
+        (status = 400, description = "Invalid token or password", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn reset_password(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ResetPasswordRequest>,
+) -> Result<(StatusCode, Json<ResetPasswordResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if req.token.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Token is required")),
+        ));
+    }
+
+    if req.password != req.password_confirm {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Passwords do not match")),
+        ));
+    }
+
+    if req.password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Password must be at least 8 characters")),
+        ));
+    }
+
+    let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
+    let user_id = crud.consume_password_reset(&req.token).await.map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Invalid or expired reset token")),
+        )
+    })?;
+
+    let password_hash = hashing::hash_password(&req.password).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
+    })?;
+
+    crud.update_password(&user_id, &password_hash)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    crud.revoke_all_refresh_tokens_for_user(&user_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(ResetPasswordResponse {
+            message: "Password reset successfully",
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/request-verification",
+    tag = "Auth",
+    request_body = RequestVerificationRequest,
+    responses(
+        (status = 200, description = "Verification requested", body = RequestVerificationResponse),
+        (status = 400, description = "Validation error", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
+pub async fn request_verification(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RequestVerificationRequest>,
+) -> Result<(StatusCode, Json<RequestVerificationResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if let Err(e) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(e.to_string())),
+        ));
+    }
+
+    let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
+    if let Some(user) = crud.find_by_email(&req.email).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(e.to_string())),
+        )
+    })? {
+        if !user.email_verified {
+            let verification_token = Uuid::new_v4().to_string();
+            let expires_at = Utc::now() + chrono::Duration::hours(24);
+
+            if let Err(e) = crud
+                .create_email_verification(&user.id, &verification_token, expires_at)
+                .await
+            {
+                tracing::error!("Failed to create verification token: {}", e);
+            } else if let Some(email_service) = &state.email_service {
+                let username = user.username.as_deref().unwrap_or("there");
+                if let Err(e) = email_service
+                    .send_verification_email(&user.email, username, &verification_token)
+                    .await
+                {
+                    tracing::error!("Failed to resend verification email: {}", e);
+                }
+            }
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(RequestVerificationResponse {
+            message: "If the account exists and is unverified, a verification email has been sent."
+                .to_string(),
         }),
     ))
 }
