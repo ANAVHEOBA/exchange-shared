@@ -54,11 +54,8 @@ impl EmailService {
         username: &str,
         token: &str,
     ) -> Result<(), EmailError> {
-        let verification_link = format!(
-            "{}/activate/{}",
-            self.app_url.trim_end_matches('/'),
-            token
-        );
+        let verification_link =
+            format!("{}/activate/{}", self.app_url.trim_end_matches('/'), token);
 
         let subject = "Confirm your e-mail";
         let html_body = format!(

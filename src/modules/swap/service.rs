@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::{MySql, Pool};
 use std::sync::Arc;
 use std::time::Duration;
@@ -327,6 +327,8 @@ impl SwapService {
         };
 
         let status = Self::map_created_trade_status(&trocador_res.status);
+        let created_at = Utc::now();
+        let expires_at = created_at + chrono::Duration::minutes(60);
         let normalized_provider_id = self
             .repository
             .ensure_provider_exists(&request.provider)
@@ -360,6 +362,7 @@ impl SwapService {
                 rate_type: request.rate_type.clone(),
                 is_sandbox: request.sandbox,
                 is_payment: trocador_res.payment.unwrap_or(false),
+                expires_at,
             })
             .await?;
 
@@ -401,8 +404,8 @@ impl SwapService {
             rate_type: request.rate_type.clone(),
             is_sandbox: request.sandbox,
             is_payment: trocador_res.payment.unwrap_or(false),
-            expires_at: Utc::now() + chrono::Duration::minutes(60),
-            created_at: Utc::now(),
+            expires_at,
+            created_at,
         })
     }
 
@@ -917,6 +920,7 @@ impl SwapService {
         status: SwapStatus,
         actual_receive: f64,
     ) -> SwapStatusResponse {
+        let expires_at = Self::resolve_swap_expiry(swap.expires_at, swap.created_at);
         SwapStatusResponse {
             swap_id: swap.id.clone(),
             provider: swap.provider_id.clone(),
@@ -941,7 +945,7 @@ impl SwapService {
             error: swap.error.clone(),
             created_at: swap.created_at,
             updated_at: Utc::now(),
-            expires_at: swap.expires_at,
+            expires_at,
             completed_at: if status == SwapStatus::Completed {
                 Some(Utc::now())
             } else {
@@ -951,6 +955,7 @@ impl SwapService {
     }
 
     fn build_cached_status_response(swap: SwapStatusRecord) -> SwapStatusResponse {
+        let expires_at = Self::resolve_swap_expiry(swap.expires_at, swap.created_at);
         SwapStatusResponse {
             swap_id: swap.id,
             provider: swap.provider_id,
@@ -975,9 +980,16 @@ impl SwapService {
             error: swap.error,
             created_at: swap.created_at,
             updated_at: swap.updated_at,
-            expires_at: swap.expires_at,
+            expires_at,
             completed_at: swap.completed_at,
         }
+    }
+
+    fn resolve_swap_expiry(
+        expires_at: Option<DateTime<Utc>>,
+        created_at: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        expires_at.or(Some(created_at + chrono::Duration::minutes(60)))
     }
 
     async fn call_trocador_with_retry<F, Fut, T>(&self, f: F) -> Result<T, SwapError>

@@ -87,8 +87,8 @@ async fn main() {
         local_base_url
     );
 
-    if let Ok(external_base_url) = std::env::var("RENDER_EXTERNAL_URL")
-        .or_else(|_| std::env::var("API_BASE_URL"))
+    if let Ok(external_base_url) =
+        std::env::var("RENDER_EXTERNAL_URL").or_else(|_| std::env::var("API_BASE_URL"))
     {
         let external_base_url = external_base_url.trim_end_matches('/');
         tracing::info!("Public server URL: {}", external_base_url);
