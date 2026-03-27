@@ -122,6 +122,10 @@ async fn test_get_swap_status_successful() {
         status_json.get("updated_at").is_some(),
         "Response should have updated_at"
     );
+    assert!(
+        status_json.get("expires_at").is_some(),
+        "Response should have expires_at"
+    );
 
     // 4. Verify data matches what we created
     assert_eq!(status_json["swap_id"].as_str().unwrap(), swap_id);
@@ -130,6 +134,17 @@ async fn test_get_swap_status_successful() {
     assert_eq!(
         status_json["recipient_address"].as_str().unwrap(),
         recipient_address
+    );
+
+    let created_at = status_json["created_at"]
+        .as_str()
+        .expect("created_at should be present");
+    let expires_at = status_json["expires_at"]
+        .as_str()
+        .expect("expires_at should be present");
+    assert!(
+        expires_at > created_at,
+        "expires_at should be later than created_at"
     );
 
     // 5. Verify status is one of the valid statuses

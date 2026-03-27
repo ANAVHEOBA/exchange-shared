@@ -322,15 +322,17 @@ async fn verification_token_marked_used_after_successful_verification() {
         .await;
 
     // Check token is retained and marked used
-    let used_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT used_at FROM email_verifications WHERE token = ?",
-    )
-        .bind(&token)
-        .fetch_one(&ctx.db)
-        .await
-        .unwrap();
+    let used_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT used_at FROM email_verifications WHERE token = ?")
+            .bind(&token)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
 
-    assert!(used_at.is_some(), "Token should be marked used after verification");
+    assert!(
+        used_at.is_some(),
+        "Token should be marked used after verification"
+    );
 
     ctx.cleanup().await;
 }

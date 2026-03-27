@@ -41,6 +41,7 @@ pub struct NewSwapRecord<'a> {
     pub rate_type: RateType,
     pub is_sandbox: bool,
     pub is_payment: bool,
+    pub expires_at: DateTime<Utc>,
 }
 
 pub struct SwapStatusRecord {
@@ -450,9 +451,9 @@ impl SwapRepository {
                 refund_address, refund_extra_id,
                 platform_fee, total_fee,
                 status, rate_type, is_sandbox, is_payment,
-                created_at, updated_at
+                expires_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             "#,
         )
         .bind(record.id)
@@ -480,6 +481,7 @@ impl SwapRepository {
         .bind(record.rate_type.as_db_str())
         .bind(record.is_sandbox)
         .bind(record.is_payment)
+        .bind(record.expires_at)
         .execute(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
