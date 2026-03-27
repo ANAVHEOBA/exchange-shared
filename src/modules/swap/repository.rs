@@ -564,6 +564,83 @@ impl SwapRepository {
         }))
     }
 
+    pub async fn get_swap_status_record_by_provider_trade_id(
+        &self,
+        provider_trade_id: &str,
+    ) -> Result<Option<SwapStatusRecord>, SwapError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, user_id, provider_id, provider_swap_id,
+                   client_id,
+                   from_currency, from_network, to_currency, to_network,
+                   CAST(amount AS DOUBLE) AS amount,
+                   CAST(estimated_receive AS DOUBLE) AS estimated_receive,
+                   CAST(actual_receive AS DOUBLE) AS actual_receive,
+                   CAST(rate AS DOUBLE) AS rate,
+                   CAST(network_fee AS DOUBLE) AS network_fee,
+                   CAST(COALESCE(provider_fee, 0) AS DOUBLE) AS provider_fee,
+                   CAST(platform_fee AS DOUBLE) AS platform_fee,
+                   CAST(total_fee AS DOUBLE) AS total_fee,
+                   deposit_address, deposit_extra_id,
+                   recipient_address, recipient_extra_id,
+                   refund_address, refund_extra_id,
+                   tx_hash_in, tx_hash_out,
+                   status,
+                   rate_type,
+                   is_sandbox, error,
+                   expires_at, completed_at, created_at, updated_at
+            FROM swaps
+            WHERE provider_swap_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(provider_trade_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
+
+        Ok(row.map(|swap| SwapStatusRecord {
+            id: swap.get("id"),
+            user_id: swap.get("user_id"),
+            client_id: swap.get("client_id"),
+            provider_id: swap.get("provider_id"),
+            provider_swap_id: swap.get("provider_swap_id"),
+            from_currency: swap.get("from_currency"),
+            from_network: swap.get("from_network"),
+            to_currency: swap.get("to_currency"),
+            to_network: swap.get("to_network"),
+            amount: swap.get("amount"),
+            estimated_receive: swap.get("estimated_receive"),
+            actual_receive: swap.try_get("actual_receive").ok(),
+            rate: swap.get("rate"),
+            network_fee: swap.get("network_fee"),
+            provider_fee: swap.get("provider_fee"),
+            platform_fee: swap.get("platform_fee"),
+            total_fee: swap.get("total_fee"),
+            deposit_address: swap.get("deposit_address"),
+            deposit_extra_id: swap.get("deposit_extra_id"),
+            recipient_address: swap.get("recipient_address"),
+            recipient_extra_id: swap.get("recipient_extra_id"),
+            refund_address: swap.get("refund_address"),
+            refund_extra_id: swap.get("refund_extra_id"),
+            tx_hash_in: swap.get("tx_hash_in"),
+            tx_hash_out: swap.get("tx_hash_out"),
+            status: SwapStatus::from_persisted(&swap.get::<String, _>("status"))
+                .unwrap_or(SwapStatus::Waiting),
+            rate_type: match swap.get::<String, _>("rate_type").as_str() {
+                "fixed" => RateType::Fixed,
+                _ => RateType::Floating,
+            },
+            is_sandbox: swap.get("is_sandbox"),
+            error: swap.get("error"),
+            expires_at: swap.get("expires_at"),
+            completed_at: swap.get("completed_at"),
+            created_at: swap.get("created_at"),
+            updated_at: swap.get("updated_at"),
+        }))
+    }
+
     pub async fn update_swap_status(
         &self,
         swap_id: &str,

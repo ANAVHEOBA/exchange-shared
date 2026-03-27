@@ -1,9 +1,12 @@
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
+use serde::Deserialize;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::sync::Arc;
 
 use super::crud::{CurrenciesResult, SwapCrud};
@@ -35,6 +38,101 @@ fn swap_service(state: &Arc<AppState>) -> SwapService {
         state.rpc_manager.clone(),
         state.payout_policy.clone(),
     )
+}
+
+#[derive(Debug, Deserialize)]
+struct TrocadorWebhookPayload {
+    #[serde(flatten)]
+    trade: super::schema::TrocadorTradeResponse,
+    #[serde(default)]
+    webhook_key: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
+}
+
+impl TrocadorWebhookPayload {
+    fn provided_webhook_key(&self) -> Option<&str> {
+        self.webhook_key.as_deref().or(self.key.as_deref())
+    }
+}
+
+fn parse_trocador_webhook_payload(body: &str) -> Result<TrocadorWebhookPayload, String> {
+    serde_json::from_str(body).or_else(|json_error| {
+        parse_trocador_webhook_form(body).map_err(|form_error| {
+            format!(
+                "Invalid webhook payload. JSON parse error: {}; form parse error: {}",
+                json_error, form_error
+            )
+        })
+    })
+}
+
+fn parse_trocador_webhook_form(body: &str) -> Result<TrocadorWebhookPayload, String> {
+    let mut map = JsonMap::new();
+
+    for pair in body.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+
+        let mut parts = pair.splitn(2, '=');
+        let raw_key = parts.next().unwrap_or_default();
+        let raw_value = parts.next().unwrap_or_default();
+        let key = decode_form_component(raw_key)?;
+        let value = decode_form_component(raw_value)?;
+        map.insert(key.clone(), coerce_form_value(&key, value));
+    }
+
+    serde_json::from_value(JsonValue::Object(map)).map_err(|e| e.to_string())
+}
+
+fn decode_form_component(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = &input[i + 1..i + 3];
+                let value = u8::from_str_radix(hex, 16)
+                    .map_err(|_| format!("Invalid percent-encoding: %{}", hex))?;
+                out.push(value);
+                i += 3;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8(out).map_err(|e| format!("Invalid UTF-8 in form payload: {}", e))
+}
+
+fn coerce_form_value(key: &str, value: String) -> JsonValue {
+    if matches!(key, "amount_from" | "amount_to") {
+        return value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(JsonValue::Number)
+            .unwrap_or(JsonValue::String(value));
+    }
+
+    if matches!(key, "payment" | "fixed") {
+        match value.to_ascii_lowercase().as_str() {
+            "true" => return JsonValue::Bool(true),
+            "false" => return JsonValue::Bool(false),
+            _ => {}
+        }
+    }
+
+    JsonValue::String(value)
 }
 
 // ... (existing handlers)
@@ -82,6 +180,53 @@ pub async fn create_swap(
         })?;
 
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+pub async fn trocador_webhook(
+    State(state): State<Arc<AppState>>,
+    _headers: HeaderMap,
+    body: String,
+) -> Result<StatusCode, (StatusCode, Json<SwapErrorResponse>)> {
+    let expected_webhook_key = std::env::var("TROCADOR_WEBHOOK_KEY").map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SwapErrorResponse::new(
+                "Trocador webhook is not configured".to_string(),
+            )),
+        )
+    })?;
+
+    let payload = parse_trocador_webhook_payload(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(SwapErrorResponse::new(format!(
+                "Failed to parse Trocador webhook payload: {}",
+                e
+            ))),
+        )
+    })?;
+
+    if payload.provided_webhook_key() != Some(expected_webhook_key.as_str()) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(SwapErrorResponse::new(
+                "Invalid Trocador webhook key".to_string(),
+            )),
+        ));
+    }
+
+    let service = swap_service(&state);
+    service
+        .handle_trocador_trade_webhook(&payload.trade)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SwapErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    Ok(StatusCode::OK)
 }
 
 #[utoipa::path(
@@ -447,4 +592,65 @@ pub async fn get_estimate(
     })?;
 
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_trocador_webhook_payload, TrocadorWebhookPayload};
+
+    #[test]
+    fn parses_trocador_webhook_json_payload() {
+        let body = r#"{
+            "trade_id":"trade_123",
+            "status":"finished",
+            "ticker_from":"btc",
+            "network_from":"Mainnet",
+            "ticker_to":"eth",
+            "network_to":"ERC20",
+            "coin_from":"Bitcoin",
+            "coin_to":"Ethereum",
+            "amount_from":0.1,
+            "amount_to":1.5,
+            "provider":"provider_x",
+            "address_provider":"provider_address",
+            "address_provider_memo":null,
+            "address_user":"user_address",
+            "address_user_memo":null,
+            "refund_address":"refund_address",
+            "refund_address_memo":null,
+            "id_provider":"provider_trade_id",
+            "date":"2026-03-27T14:00:00Z",
+            "payment":false,
+            "webhook_key":"secret_123",
+            "details":{"hashout":"tx_hash_out"}
+        }"#;
+
+        let payload: TrocadorWebhookPayload =
+            parse_trocador_webhook_payload(body).expect("json webhook payload should parse");
+
+        assert_eq!(payload.trade.trade_id, "trade_123");
+        assert_eq!(payload.trade.status, "finished");
+        assert_eq!(payload.provided_webhook_key(), Some("secret_123"));
+        assert_eq!(
+            payload
+                .trade
+                .details
+                .as_ref()
+                .and_then(|details| details.hashout.as_deref()),
+            Some("tx_hash_out")
+        );
+    }
+
+    #[test]
+    fn parses_trocador_webhook_form_payload() {
+        let body = "trade_id=trade_456&status=finished&ticker_from=btc&network_from=Mainnet&ticker_to=eth&network_to=ERC20&coin_from=Bitcoin&coin_to=Ethereum&amount_from=0.1&amount_to=1.5&provider=provider_x&address_provider=provider_address&address_user=user_address&refund_address=refund_address&payment=False&webhook_key=secret_456";
+
+        let payload: TrocadorWebhookPayload =
+            parse_trocador_webhook_payload(body).expect("form webhook payload should parse");
+
+        assert_eq!(payload.trade.trade_id, "trade_456");
+        assert_eq!(payload.trade.amount_to, 1.5);
+        assert_eq!(payload.trade.payment, Some(false));
+        assert_eq!(payload.provided_webhook_key(), Some("secret_456"));
+    }
 }
