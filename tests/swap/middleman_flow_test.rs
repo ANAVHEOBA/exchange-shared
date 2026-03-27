@@ -48,7 +48,7 @@ async fn test_create_swap_middleman_address_swap() {
 
     // 2. Create the swap
     // The user provides THEIR recipient address (must be ERC20/ETH address for this pair)
-    let user_recipient_address = "0x742d35Cc6634C0532925a3b844Bc9e7595f42bE0";
+    let user_recipient_address = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
     let payload = json!({
         "trade_id": trade_id,
         "from": "eth",

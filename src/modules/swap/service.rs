@@ -1,5 +1,6 @@
 use chrono::Utc;
 use sqlx::{MySql, Pool};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::crud::SwapError;
@@ -7,13 +8,28 @@ use super::repository::{NewSwapRecord, SwapRepository, SwapStatusRecord};
 use super::schema::{CreateSwapRequest, CreateSwapResponse, SwapStatus, SwapStatusResponse};
 use crate::modules::wallet::crud::WalletCrud;
 use crate::services::gas::GasEstimator;
+use crate::services::payout_policy::PayoutPolicyConfig;
 use crate::services::pricing::CommissionService;
 use crate::services::redis_cache::RedisService;
+use crate::services::rpc::{
+    resolve_configured_send_chain_key, supports_direct_provider_chain, RpcManager,
+};
 use crate::services::trocador::{TrocadorError, TrocadorGateway};
+use crate::services::wallet::manager::{
+    canonical_payout_asset_network, ensure_local_payout_capability,
+};
+use crate::services::wallet::signing::SigningService;
 use crate::services::wallet::validation::{
     normalize_supported_recipient_extra_id, supported_recipient_extra_id_format,
     validate_address_by_network_family, AddressValidation,
 };
+use alloy::primitives::U256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayoutRoute {
+    DirectSettlement,
+    ProviderManaged,
+}
 
 pub struct SwapService {
     pool: Pool<MySql>,
@@ -21,6 +37,8 @@ pub struct SwapService {
     redis_service: Option<RedisService>,
     wallet_mnemonic: Option<String>,
     gas_estimator: GasEstimator,
+    rpc_manager: Arc<RpcManager>,
+    payout_policy: PayoutPolicyConfig,
 }
 
 impl SwapService {
@@ -28,6 +46,8 @@ impl SwapService {
         pool: Pool<MySql>,
         redis_service: Option<RedisService>,
         wallet_mnemonic: Option<String>,
+        rpc_manager: Arc<RpcManager>,
+        payout_policy: PayoutPolicyConfig,
     ) -> Self {
         let gas_estimator = GasEstimator::new(redis_service.clone());
         Self {
@@ -36,6 +56,8 @@ impl SwapService {
             redis_service,
             wallet_mnemonic,
             gas_estimator,
+            rpc_manager,
+            payout_policy,
         }
     }
 
@@ -43,6 +65,7 @@ impl SwapService {
         &self,
         request: &CreateSwapRequest,
         user_id: Option<String>,
+        client_id: Option<String>,
     ) -> Result<CreateSwapResponse, SwapError> {
         let trocador_gateway = TrocadorGateway::from_env()
             .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
@@ -55,6 +78,28 @@ impl SwapService {
             request.recipient_extra_id.as_deref(),
         )
         .map_err(SwapError::ValidationError)?;
+        let refund_address = request
+            .refund_address
+            .as_ref()
+            .map(|address| address.trim().to_string())
+            .filter(|address| !address.is_empty());
+
+        if refund_address.is_none() && request.refund_extra_id.is_some() {
+            return Err(SwapError::ValidationError(
+                "refund_extra_id was provided without a refund_address".to_string(),
+            ));
+        }
+
+        let refund_extra_id = if refund_address.is_some() {
+            normalize_supported_recipient_extra_id(
+                &request.from,
+                &request.network_from,
+                request.refund_extra_id.as_deref(),
+            )
+            .map_err(SwapError::ValidationError)?
+        } else {
+            None
+        };
 
         tracing::info!(
             "🟢 Starting swap creation: {} {} -> {} {}, amount: {}, provider: {}",
@@ -74,58 +119,138 @@ impl SwapService {
         )
         .await?;
 
-        let (internal_payout_address, address_index) = if let Some(mnemonic) = &self.wallet_mnemonic
-        {
-            let wallet_crud = WalletCrud::new(self.pool.clone());
-            let index = wallet_crud
-                .get_next_index()
-                .await
-                .map_err(|e| SwapError::DatabaseError(format!("Wallet error: {}", e)))?;
-
-            let addr = crate::services::wallet::derivation::derive_address(
-                mnemonic,
+        let initial_payout_route = self
+            .resolve_payout_route(
                 &request.to,
                 &request.network_to,
-                index,
+                recipient_extra_id.as_deref(),
             )
-            .await
-            .map_err(|e| SwapError::DatabaseError(format!("Derivation error: {}", e)))?;
-
-            tracing::info!(
-                "🟢 Generated internal payout address for {} on {}: {} (index: {})",
-                request.to,
-                request.network_to,
-                addr,
-                index
-            );
-            (addr, index)
+            .await?;
+        let destination_requires_extra_id = self
+            .currency_requires_extra_id(&trocador_gateway, &request.to, &request.network_to)
+            .await?;
+        let source_requires_extra_id = if refund_address.is_some() {
+            self.currency_requires_extra_id(&trocador_gateway, &request.from, &request.network_from)
+                .await?
         } else {
-            return Err(SwapError::DatabaseError(
-                "Wallet mnemonic not configured".to_string(),
-            ));
+            false
         };
 
-        tracing::info!("🟡 Validating internal payout address with Trocador...");
-        let is_valid = trocador_gateway
-            .validate_address(&request.to, &request.network_to, &internal_payout_address)
-            .await
-            .map_err(|e| {
-                SwapError::ExternalApiError(format!("Address validation failed: {}", e))
-            })?;
+        let (payout_route, trocador_payout_address, address_tracking) = match initial_payout_route {
+            PayoutRoute::DirectSettlement => {
+                let mnemonic = self.wallet_mnemonic.as_ref().ok_or_else(|| {
+                    SwapError::DatabaseError("Wallet mnemonic not configured".to_string())
+                })?;
+                let wallet_crud = WalletCrud::new(self.pool.clone());
+                let index = wallet_crud
+                    .get_next_index()
+                    .await
+                    .map_err(|e| SwapError::DatabaseError(format!("Wallet error: {}", e)))?;
 
-        if !is_valid {
-            tracing::error!(
-                "🔴 Generated address is invalid: {} for {} on {}",
-                internal_payout_address,
-                request.to,
-                request.network_to
-            );
-            return Err(SwapError::ExternalApiError(format!(
-                "Generated payout address is invalid for {} on {}. This is a system error - please contact support.",
-                request.to, request.network_to
-            )));
-        }
-        tracing::info!("✅ Address validated successfully");
+                let addr = crate::services::wallet::derivation::derive_address(
+                    mnemonic,
+                    &request.to,
+                    &request.network_to,
+                    index,
+                )
+                .await
+                .map_err(|e| SwapError::DatabaseError(format!("Derivation error: {}", e)))?;
+
+                tracing::info!(
+                    "🟢 Using internal direct-settlement route for {} on {} via {} (index: {})",
+                    request.to,
+                    request.network_to,
+                    addr,
+                    index
+                );
+
+                if let Err(reason) = self
+                    .preflight_local_signing_capability(
+                        &request.to,
+                        &request.network_to,
+                        index,
+                        &addr,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        "⚠️ Local payout preflight failed for {}/{} at {} (index: {}): {}. Falling back to provider-managed payout.",
+                        request.to,
+                        request.network_to,
+                        addr,
+                        index,
+                        reason
+                    );
+                    (
+                        PayoutRoute::ProviderManaged,
+                        recipient_address.clone(),
+                        None,
+                    )
+                } else {
+                    tracing::info!("🟡 Validating internal payout address with Trocador...");
+                    let is_valid = trocador_gateway
+                        .validate_address(&request.to, &request.network_to, &addr)
+                        .await
+                        .map_err(|e| {
+                            SwapError::ExternalApiError(format!("Address validation failed: {}", e))
+                        })?;
+
+                    if !is_valid {
+                        tracing::warn!(
+                            "⚠️ Generated internal payout address {} was rejected by Trocador for {}/{}. Falling back to provider-managed payout.",
+                            addr,
+                            request.to,
+                            request.network_to
+                        );
+                        (
+                            PayoutRoute::ProviderManaged,
+                            recipient_address.clone(),
+                            None,
+                        )
+                    } else {
+                        tracing::info!("✅ Address validated successfully");
+
+                        let coin_type = crate::services::wallet::derivation::resolve_coin_type(
+                            &request.to,
+                            &request.network_to,
+                        )
+                        .map_err(|e| {
+                            SwapError::DatabaseError(format!("Coin type resolution error: {}", e))
+                        })? as i32;
+
+                        (
+                            PayoutRoute::DirectSettlement,
+                            addr.clone(),
+                            Some((addr, index, coin_type)),
+                        )
+                    }
+                }
+            }
+            PayoutRoute::ProviderManaged => {
+                tracing::warn!(
+                    "⚠️ Falling back to provider-managed payout for {}/{}; Trocador will pay the user's address directly",
+                    request.to,
+                    request.network_to
+                );
+                (
+                    PayoutRoute::ProviderManaged,
+                    recipient_address.clone(),
+                    None,
+                )
+            }
+        };
+        let direct_settlement = payout_route == PayoutRoute::DirectSettlement;
+        let trocador_address_memo = match payout_route {
+            PayoutRoute::DirectSettlement => {
+                Self::trocador_memo_value(None, destination_requires_extra_id)
+            }
+            PayoutRoute::ProviderManaged => Self::trocador_memo_value(
+                recipient_extra_id.as_deref(),
+                destination_requires_extra_id,
+            ),
+        };
+        let trocador_refund_memo =
+            Self::trocador_memo_value(refund_extra_id.as_deref(), source_requires_extra_id);
 
         let provider_spread = self
             .resolve_provider_spread_for_create(request, &trocador_gateway, &commission_service)
@@ -142,8 +267,10 @@ impl SwapService {
                         &request.to,
                         &request.network_to,
                         request.amount,
-                        &internal_payout_address,
-                        request.refund_address.as_deref(),
+                        &trocador_payout_address,
+                        trocador_address_memo.as_deref(),
+                        refund_address.as_deref(),
+                        trocador_refund_memo.as_deref(),
                         &request.provider,
                         fixed,
                         request.payment,
@@ -160,10 +287,13 @@ impl SwapService {
 
         let normalized_payout_network =
             GasEstimator::normalize_payout_network(&request.to, &request.network_to);
-        let gas_cost = self
-            .gas_estimator
-            .get_gas_cost_for_network(&normalized_payout_network)
-            .await;
+        let gas_cost = if direct_settlement {
+            self.gas_estimator
+                .get_gas_cost_for_network(&normalized_payout_network)
+                .await
+        } else {
+            0.0
+        };
         let amount_usd = commission_service
             .resolve_live_amount_usd(
                 &trocador_gateway,
@@ -184,9 +314,17 @@ impl SwapService {
             gas_cost,
             provider_spread,
         );
-        let network_fee = gas_cost.max(0.0);
+        let network_fee = if direct_settlement {
+            gas_cost.max(0.0)
+        } else {
+            0.0
+        };
         let platform_fee = commission.platform_fee;
-        let estimated_user_receive = (commission.user_receive - network_fee).max(0.0);
+        let estimated_user_receive = if direct_settlement {
+            (commission.user_receive - network_fee).max(0.0)
+        } else {
+            commission.user_receive.max(0.0)
+        };
 
         let status = Self::map_created_trade_status(&trocador_res.status);
         let normalized_provider_id = self
@@ -199,6 +337,7 @@ impl SwapService {
             .insert_swap(NewSwapRecord {
                 id: &swap_id,
                 user_id: user_id.as_deref(),
+                client_id: client_id.as_deref(),
                 provider_id: &normalized_provider_id,
                 provider_swap_id: &trocador_res.trade_id,
                 from_currency: &request.from,
@@ -213,8 +352,8 @@ impl SwapService {
                 deposit_extra_id: trocador_res.address_provider_memo.as_deref(),
                 recipient_address: &recipient_address,
                 recipient_extra_id: recipient_extra_id.as_deref(),
-                refund_address: request.refund_address.as_deref(),
-                refund_extra_id: request.refund_extra_id.as_deref(),
+                refund_address: refund_address.as_deref(),
+                refund_extra_id: refund_extra_id.as_deref(),
                 platform_fee,
                 total_fee: platform_fee + network_fee,
                 status: status.clone(),
@@ -224,24 +363,22 @@ impl SwapService {
             })
             .await?;
 
-        let wallet_crud = WalletCrud::new(self.pool.clone());
-        let coin_type = crate::services::wallet::derivation::resolve_coin_type(
-            &request.to,
-            &request.network_to,
-        )
-        .map_err(|e| SwapError::DatabaseError(format!("Coin type resolution error: {}", e)))?
-            as i32;
-        wallet_crud
-            .save_address_info(
-                &swap_id,
-                &internal_payout_address,
-                address_index,
-                coin_type,
-                &recipient_address,
-                recipient_extra_id.as_deref(),
-            )
-            .await
-            .map_err(|e| SwapError::DatabaseError(format!("Failed to save address info: {}", e)))?;
+        if let Some((internal_payout_address, address_index, coin_type)) = address_tracking {
+            let wallet_crud = WalletCrud::new(self.pool.clone());
+            wallet_crud
+                .save_address_info(
+                    &swap_id,
+                    &internal_payout_address,
+                    address_index,
+                    coin_type,
+                    &recipient_address,
+                    recipient_extra_id.as_deref(),
+                )
+                .await
+                .map_err(|e| {
+                    SwapError::DatabaseError(format!("Failed to save address info: {}", e))
+                })?;
+        }
 
         Ok(CreateSwapResponse {
             swap_id,
@@ -310,7 +447,7 @@ impl SwapService {
         }
 
         let destination_requires_extra_id = self
-            .destination_requires_extra_id(trocador_gateway, &request.to, &request.network_to)
+            .currency_requires_extra_id(trocador_gateway, &request.to, &request.network_to)
             .await?;
 
         if !destination_requires_extra_id {
@@ -337,7 +474,7 @@ impl SwapService {
         Ok(())
     }
 
-    async fn destination_requires_extra_id(
+    async fn currency_requires_extra_id(
         &self,
         trocador_gateway: &TrocadorGateway,
         ticker: &str,
@@ -499,6 +636,250 @@ impl SwapService {
         }
     }
 
+    async fn resolve_payout_route(
+        &self,
+        ticker: &str,
+        network: &str,
+        recipient_extra_id: Option<&str>,
+    ) -> Result<PayoutRoute, SwapError> {
+        let direct_available = self.direct_settlement_available(ticker, network).await;
+        Self::select_payout_route(direct_available, recipient_extra_id, ticker, network)
+            .map_err(SwapError::ValidationError)
+    }
+
+    async fn direct_settlement_available(&self, ticker: &str, network: &str) -> bool {
+        if self.wallet_mnemonic.is_none() {
+            tracing::warn!(
+                "Wallet mnemonic not configured; falling back to provider-managed payout for {}/{}",
+                ticker,
+                network
+            );
+            return false;
+        }
+
+        let wallet_crud = WalletCrud::new(self.pool.clone());
+        let lookup_network = canonical_payout_asset_network(network);
+        let payout_asset_metadata = match wallet_crud
+            .get_payout_asset_metadata(ticker, network, &lookup_network)
+            .await
+        {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to load payout asset metadata for {}/{}; using provider-managed fallback: {}",
+                    ticker,
+                    network,
+                    error
+                );
+                return false;
+            }
+        };
+
+        if let Err(reason) =
+            ensure_local_payout_capability(ticker, network, payout_asset_metadata.as_ref())
+        {
+            tracing::warn!(
+                "No exact local payout implementation for {}/{}; using provider-managed fallback: {}",
+                ticker,
+                network,
+                reason
+            );
+            return false;
+        }
+
+        let chain_key =
+            match resolve_configured_send_chain_key(self.rpc_manager.as_ref(), ticker, network) {
+                Ok(chain_key) => chain_key,
+                Err(error) => {
+                    tracing::warn!(
+                    "No direct payout chain mapping for {}/{}; using provider-managed fallback: {}",
+                    ticker,
+                    network,
+                    error
+                );
+                    return false;
+                }
+            };
+
+        let Some(family) = self.rpc_manager.chain_family(&chain_key) else {
+            tracing::warn!(
+                "Resolved payout chain '{}' for {}/{} has no family; using provider-managed fallback",
+                chain_key,
+                ticker,
+                network
+            );
+            return false;
+        };
+
+        if !self.payout_policy.is_local_certified(&chain_key) {
+            tracing::warn!(
+                "Resolved payout chain '{}' for {}/{} is not in local_certified policy; using provider-managed fallback",
+                chain_key,
+                ticker,
+                network
+            );
+            return false;
+        }
+
+        if !supports_direct_provider_chain(&chain_key, family) {
+            tracing::warn!(
+                "Resolved payout chain '{}' for {}/{} does not have a direct wallet provider for family '{}'; using provider-managed fallback",
+                chain_key,
+                ticker,
+                network,
+                family
+            );
+            return false;
+        }
+
+        match self.rpc_manager.select_endpoint(&chain_key).await {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(
+                    "No active payout RPC endpoint available for '{}' ({}/{}); using provider-managed fallback: {}",
+                    chain_key,
+                    ticker,
+                    network,
+                    error
+                );
+                false
+            }
+        }
+    }
+
+    async fn preflight_local_signing_capability(
+        &self,
+        ticker: &str,
+        network: &str,
+        index: u32,
+        derived_address: &str,
+    ) -> Result<(), String> {
+        let mnemonic = self
+            .wallet_mnemonic
+            .as_deref()
+            .ok_or_else(|| "Wallet mnemonic not configured".to_string())?;
+        let chain_key =
+            resolve_configured_send_chain_key(self.rpc_manager.as_ref(), ticker, network)
+                .map_err(|e| format!("Failed to resolve payout chain mapping: {}", e))?;
+        let family = self
+            .rpc_manager
+            .chain_family(&chain_key)
+            .ok_or_else(|| format!("Resolved payout chain '{}' has no family", chain_key))?;
+        let probe_digest_hex = "00".repeat(32);
+
+        if chain_key == "tron" {
+            let private_key = crate::services::wallet::derivation::derive_tron_key(mnemonic, index)
+                .await
+                .map_err(|e| format!("Failed to derive Tron key: {}", e))?;
+            SigningService::sign_tron_transaction_id(&private_key, &probe_digest_hex)
+                .map_err(|e| format!("Failed to sign Tron preflight probe: {}", e))?;
+            return Ok(());
+        }
+
+        if chain_key == "algorand" {
+            let private_key =
+                crate::services::wallet::derivation::derive_algorand_key(mnemonic, index)
+                    .await
+                    .map_err(|e| format!("Failed to derive Algorand key: {}", e))?;
+            SigningService::sign_ed25519_transaction(&private_key, &probe_digest_hex)
+                .map_err(|e| format!("Failed to sign Algorand preflight probe: {}", e))?;
+            return Ok(());
+        }
+
+        match family {
+            "evm" => {
+                let private_key =
+                    crate::services::wallet::derivation::derive_evm_key(mnemonic, index)
+                        .await
+                        .map_err(|e| format!("Failed to derive EVM key: {}", e))?;
+                let sender_address =
+                    crate::services::wallet::derivation::derive_evm_address(mnemonic, index)
+                        .await
+                        .map_err(|e| format!("Failed to derive EVM sender address: {}", e))?;
+
+                if !sender_address.eq_ignore_ascii_case(derived_address) {
+                    return Err(format!(
+                        "Derived EVM sender address {} does not match internal payout address {}",
+                        sender_address, derived_address
+                    ));
+                }
+
+                SigningService::sign_evm_raw_transaction(
+                    &private_key,
+                    1,
+                    0,
+                    1,
+                    21_000,
+                    derived_address,
+                    U256::ZERO,
+                    &[],
+                )
+                .map_err(|e| format!("Failed to sign EVM preflight probe: {}", e))?;
+
+                Ok(())
+            }
+            "solana" => {
+                let private_key =
+                    crate::services::wallet::derivation::derive_solana_key(mnemonic, index)
+                        .await
+                        .map_err(|e| format!("Failed to derive Solana key: {}", e))?;
+                SigningService::sign_ed25519_transaction(&private_key, &probe_digest_hex)
+                    .map_err(|e| format!("Failed to sign Solana preflight probe: {}", e))?;
+                Ok(())
+            }
+            "btc" => {
+                let private_key =
+                    crate::services::wallet::derivation::derive_btc_key(mnemonic, index)
+                        .await
+                        .map_err(|e| format!("Failed to derive Bitcoin key: {}", e))?;
+                SigningService::sign_btc_transaction(&private_key, &probe_digest_hex)
+                    .map_err(|e| format!("Failed to sign Bitcoin preflight probe: {}", e))?;
+                Ok(())
+            }
+            "utxo" => {
+                let private_key = crate::services::wallet::derivation::derive_exact_key(
+                    mnemonic, ticker, network, index,
+                )
+                .await
+                .map_err(|e| format!("Failed to derive UTXO key: {}", e))?;
+                SigningService::sign_utxo_transaction(&private_key, &probe_digest_hex)
+                    .map_err(|e| format!("Failed to sign UTXO preflight probe: {}", e))?;
+                Ok(())
+            }
+            _ => {
+                let private_key = crate::services::wallet::derivation::derive_exact_key(
+                    mnemonic, ticker, network, index,
+                )
+                .await
+                .map_err(|e| format!("Failed to derive exact payout key: {}", e))?;
+                SigningService::sign_cosmos_transaction(&private_key, &probe_digest_hex)
+                    .map_err(|e| format!("Failed to sign chain-specific preflight probe: {}", e))?;
+                Ok(())
+            }
+        }
+    }
+
+    fn select_payout_route(
+        direct_available: bool,
+        _recipient_extra_id: Option<&str>,
+        _ticker: &str,
+        _network: &str,
+    ) -> Result<PayoutRoute, String> {
+        if direct_available {
+            return Ok(PayoutRoute::DirectSettlement);
+        }
+
+        Ok(PayoutRoute::ProviderManaged)
+    }
+
+    fn trocador_memo_value(extra_id: Option<&str>, requires_extra_id: bool) -> Option<String> {
+        match extra_id {
+            Some(extra_id) => Some(extra_id.to_string()),
+            None if requires_extra_id => Some("0".to_string()),
+            None => None,
+        }
+    }
+
     fn map_created_trade_status(trocador_status: &str) -> SwapStatus {
         SwapStatus::from_trocador_status(trocador_status)
     }
@@ -647,5 +1028,39 @@ impl SwapService {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PayoutRoute, SwapService};
+
+    #[test]
+    fn provider_managed_route_is_allowed_without_extra_id() {
+        let route = SwapService::select_payout_route(false, None, "USDT", "ERC20").unwrap();
+        assert_eq!(route, PayoutRoute::ProviderManaged);
+    }
+
+    #[test]
+    fn provider_managed_route_accepts_extra_id_destinations() {
+        let route = SwapService::select_payout_route(false, Some("12345"), "XRP", "Mainnet")
+            .expect("extra-id destinations should be allowed on provider-managed payout");
+        assert_eq!(route, PayoutRoute::ProviderManaged);
+    }
+
+    #[test]
+    fn trocador_memo_defaults_to_zero_when_required() {
+        assert_eq!(
+            SwapService::trocador_memo_value(None, true).as_deref(),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn trocador_memo_uses_explicit_extra_id_when_present() {
+        assert_eq!(
+            SwapService::trocador_memo_value(Some("123456"), true).as_deref(),
+            Some("123456")
+        );
     }
 }

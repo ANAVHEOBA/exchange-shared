@@ -24,7 +24,7 @@ async fn test_sign_evm_transaction() {
 
     // 2. Real transaction data
     let tx = EvmTransaction {
-        to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        to_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         amount: 7.1993,
         token: "eth".to_string(),
         chain_id: 1, // Ethereum
@@ -59,7 +59,7 @@ async fn test_different_txs_different_signatures() {
     let priv_key = derive_evm_key(&seed_phrase, 0).await.unwrap();
 
     let tx1 = EvmTransaction {
-        to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        to_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         amount: 1.0,
         token: "eth".to_string(),
         chain_id: 1,
@@ -68,7 +68,7 @@ async fn test_different_txs_different_signatures() {
     };
 
     let tx2 = EvmTransaction {
-        to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        to_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         amount: 2.0,
         token: "eth".to_string(),
         chain_id: 1,
@@ -98,7 +98,7 @@ async fn test_polygon_signing_same_key() {
 
     // Ethereum signature
     let eth_tx = EvmTransaction {
-        to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        to_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         amount: 5.0,
         token: "usdc".to_string(),
         chain_id: 1, // Ethereum
@@ -108,7 +108,7 @@ async fn test_polygon_signing_same_key() {
 
     // Polygon signature (same key, different chain_id)
     let poly_tx = EvmTransaction {
-        to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        to_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         amount: 5.0,
         token: "usdc".to_string(),
         chain_id: 137, // Polygon
@@ -139,7 +139,7 @@ async fn test_nonce_affects_signature() {
     let priv_key = derive_evm_key(&seed_phrase, 0).await.unwrap();
 
     let tx1 = EvmTransaction {
-        to_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        to_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         amount: 1.0,
         token: "eth".to_string(),
         chain_id: 1,

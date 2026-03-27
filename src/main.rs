@@ -73,10 +73,12 @@ async fn main() {
         jwt_service,
         config.wallet_mnemonic,
         rpc_manager,
+        config.payout_policy,
     )
     .await;
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    tracing::info!("Server running on http://localhost:3000");
+    let bind_addr = format!("0.0.0.0:{}", config.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+    tracing::info!("Server running on http://localhost:{}", config.port);
     axum::serve(listener, app).await.unwrap();
 }

@@ -58,7 +58,7 @@ async fn test_end_to_end_payout_flow() {
     // If not set, test will skip payout execution (but still test detection logic)
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
     let estimated_receive = 1.0;
     let platform_fee = 0.012;
 

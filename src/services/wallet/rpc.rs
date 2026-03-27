@@ -72,6 +72,13 @@ pub struct TronBroadcastResponse {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CosmosAccountState {
+    pub account_number: u64,
+    pub sequence: u64,
+    pub chain_id: String,
+}
+
 #[async_trait]
 pub trait BlockchainProvider: Send + Sync {
     // EVM / Common methods
@@ -140,6 +147,13 @@ pub trait BlockchainProvider: Send + Sync {
         &self,
         _transaction: &TronPreparedTransaction,
     ) -> Result<String, RpcError> {
+        Err(RpcError::Unsupported)
+    }
+
+    async fn cosmos_get_account_state(
+        &self,
+        _address: &str,
+    ) -> Result<CosmosAccountState, RpcError> {
         Err(RpcError::Unsupported)
     }
 }

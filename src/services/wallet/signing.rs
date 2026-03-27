@@ -68,7 +68,7 @@ impl SigningService {
 
     pub fn sign_evm_raw_transaction(
         private_key_hex: &str,
-        chain_id: u32,
+        chain_id: u64,
         nonce: u64,
         gas_price: u64,
         gas_limit: u64,
@@ -86,7 +86,7 @@ impl SigningService {
             .map_err(|e| format!("Invalid EVM recipient address: {}", e))?;
 
         let tx = TxLegacy {
-            chain_id: Some(chain_id as u64),
+            chain_id: Some(chain_id),
             nonce,
             gas_price: gas_price as u128,
             gas_limit,
@@ -106,7 +106,7 @@ impl SigningService {
             rec_id.to_i32() as u64,
         )
         .map_err(|e| format!("Failed to build EVM signature: {}", e))?
-        .with_chain_id(chain_id as u64);
+        .with_chain_id(chain_id);
 
         let envelope: TxEnvelope = tx.into_signed(signature).into();
         let raw_tx = envelope.encoded_2718();

@@ -1,0 +1,3 @@
+#!/bin/bash
+source $(dirname "$0")/lib_rpc.sh
+test_rpc "Reef" "substrate" "" "" "" "https://rpc.reefscan.com"

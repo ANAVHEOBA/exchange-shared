@@ -1,22 +1,29 @@
 pub mod config;
+pub mod docs;
+pub mod middleware;
 pub mod modules;
 pub mod services;
 
 use axum::{
     extract::State,
     http::{header, HeaderValue, Method},
-    middleware,
+    middleware as axum_middleware,
     routing::get,
     Json, Router,
 };
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
+use utoipa::{OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
 
 use config::DbPool;
+use docs::ApiDoc;
+use modules::admin::admin_routes;
 use modules::auth::auth_routes;
 use modules::swap::swap_routes;
 use services::jwt::JwtService;
+use services::payout_policy::PayoutPolicyConfig;
 use services::rate_limit::{create_rate_limiter, RateLimitLayer};
 use services::redis_cache::RedisService;
 use services::rpc::{RpcHealthOverview, RpcManager};
@@ -31,6 +38,7 @@ pub struct AppState {
     pub wallet_mnemonic: String,
     pub email_service: Option<services::email::EmailService>,
     pub rpc_manager: Arc<RpcManager>,
+    pub payout_policy: PayoutPolicyConfig,
 }
 
 pub async fn create_app(
@@ -39,6 +47,7 @@ pub async fn create_app(
     jwt_service: JwtService,
     wallet_mnemonic: String,
     rpc_manager: Arc<RpcManager>,
+    payout_policy: PayoutPolicyConfig,
 ) -> Router {
     // Initialize email service (optional, won't fail if not configured)
     let email_service = services::email::EmailService::from_env().ok();
@@ -56,6 +65,7 @@ pub async fn create_app(
         wallet_mnemonic,
         email_service,
         rpc_manager,
+        payout_policy,
     });
 
     // Rate limit: burst of 100, then 60 per minute (1 per second sustained)
@@ -64,9 +74,14 @@ pub async fn create_app(
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health_check))
+        .nest("/admin", admin_routes())
         .nest("/auth", auth_routes())
         .nest("/swap", swap_routes())
-        .layer(middleware::from_fn(security_headers))
+        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .layer(axum_middleware::from_fn(
+            crate::middleware::client_identity::attach_client_identity,
+        ))
+        .layer(axum_middleware::from_fn(security_headers))
         .layer(RequestBodyLimitLayer::new(1024 * 100)) // 100KB max body
         .layer(RateLimitLayer::new(rate_limiter))
         .layer(TraceLayer::new_for_http())
@@ -78,18 +93,26 @@ pub async fn create_app(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "System",
+    responses(
+        (status = 200, description = "API root", body = String, example = "Exchange Platform API")
+    )
+)]
 async fn root() -> &'static str {
     "Exchange Platform API"
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct HealthResponse {
     status: String,
     version: &'static str,
     checks: HealthChecks,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct HealthChecks {
     database: DependencyHealth,
     redis: DependencyHealth,
@@ -97,14 +120,14 @@ struct HealthChecks {
     rpc: RpcDependencyHealth,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct DependencyHealth {
     status: String,
     latency_ms: u128,
     details: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct RpcDependencyHealth {
     status: String,
     configured_chains: usize,
@@ -133,6 +156,15 @@ impl HealthState {
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "System",
+    responses(
+        (status = 200, description = "Health check status", body = HealthResponse),
+        (status = 503, description = "Health check status with one or more failing dependencies", body = HealthResponse)
+    )
+)]
 async fn health_check(
     State(state): State<Arc<AppState>>,
 ) -> (axum::http::StatusCode, Json<HealthResponse>) {

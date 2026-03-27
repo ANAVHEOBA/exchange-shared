@@ -35,6 +35,10 @@ async fn test_get_all_currencies_from_trocador() {
     assert!(first.get("ticker").is_some(), "Missing 'ticker' field");
     assert!(first.get("network").is_some(), "Missing 'network' field");
     assert!(first.get("memo").is_some(), "Missing 'memo' field");
+    assert!(
+        first.get("extra_id_name").is_some(),
+        "Missing 'extra_id_name' field"
+    );
     assert!(first.get("image").is_some(), "Missing 'image' field");
     assert!(first.get("minimum").is_some(), "Missing 'minimum' field");
     assert!(first.get("maximum").is_some(), "Missing 'maximum' field");
@@ -44,6 +48,10 @@ async fn test_get_all_currencies_from_trocador() {
     assert!(first["ticker"].is_string());
     assert!(first["network"].is_string());
     assert!(first["memo"].is_boolean());
+    assert!(
+        first["extra_id_name"].is_null() || first["extra_id_name"].is_string(),
+        "extra_id_name should be null or string"
+    );
     assert!(first["image"].is_string());
     assert!(first["minimum"].is_number());
     assert!(first["maximum"].is_number());
@@ -259,11 +267,23 @@ async fn test_currencies_with_memo_required() {
         .any(|c| c["ticker"].as_str().unwrap().to_lowercase() == "xrp");
     assert!(has_xrp, "Missing XRP in memo currencies");
 
+    let xrp = currencies
+        .iter()
+        .find(|c| c["ticker"].as_str().unwrap().eq_ignore_ascii_case("xrp"))
+        .expect("Missing XRP in memo currencies");
+    assert_eq!(xrp["extra_id_name"].as_str(), Some("Destination Tag"));
+
     // Should include XLM (Stellar)
     let has_xlm = currencies
         .iter()
         .any(|c| c["ticker"].as_str().unwrap().to_lowercase() == "xlm");
     assert!(has_xlm, "Missing XLM in memo currencies");
+
+    let xlm = currencies
+        .iter()
+        .find(|c| c["ticker"].as_str().unwrap().eq_ignore_ascii_case("xlm"))
+        .expect("Missing XLM in memo currencies");
+    assert_eq!(xlm["extra_id_name"].as_str(), Some("Memo"));
 }
 
 #[serial]
@@ -293,6 +313,12 @@ async fn test_currencies_without_memo() {
         .iter()
         .any(|c| c["ticker"].as_str().unwrap().to_lowercase() == "btc");
     assert!(has_btc, "Missing BTC in non-memo currencies");
+
+    let btc = currencies
+        .iter()
+        .find(|c| c["ticker"].as_str().unwrap().eq_ignore_ascii_case("btc"))
+        .expect("Missing BTC in non-memo currencies");
+    assert!(btc["extra_id_name"].is_null());
 }
 
 #[serial]

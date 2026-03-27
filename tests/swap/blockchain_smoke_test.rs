@@ -25,7 +25,7 @@ fn get_test_address(network: &str) -> String {
         "Mainnet" | "Bitcoin" => "1A1z7agoat2LWSE6BY2Zust4gLssQwSgd".to_string(),
         // Ethereum & EVM
         "ERC20" | "Polygon" | "Arbitrum" | "Optimism" | "BASE" | "Avalanche"
-        | "Blast" | "zkSync" => "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        | "Blast" | "zkSync" => "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         // Solana
         "Solana" => "9B5X1CbM3nDZCoDjiHWuqJ3UaYNaEX9vJ7A13jgTgJJJ".to_string(),
         // Cardano
@@ -43,7 +43,7 @@ fn get_test_address(network: &str) -> String {
             "4GFDWQF2KZPPVVH4LFQ2GVFUMRB3MQ5Q4HYIJMRJH2UMRUZRDAZKUULM5UA".to_string()
         }
         // Fallback to Ethereum format for unknown networks
-        _ => "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        _ => "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
     }
 }
 
@@ -326,8 +326,8 @@ async fn test_create_swap_eth_to_usdc() {
         "network_to": "ERC20",
         "amount": 1.0,
         "provider": provider,
-        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
-        "refund_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12"
+        "recipient_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        "refund_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
     });
 
     let response = timed_post(&server, "/swap/create", &payload).await;

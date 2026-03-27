@@ -53,7 +53,7 @@ async fn test_unique_address_per_swap() {
             swap_id: swap_id.clone(),
             ticker: "ETH".to_string(),
             network: "ethereum".to_string(),
-            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
             user_recipient_extra_id: None,
         };
 
@@ -99,7 +99,7 @@ async fn test_address_sequence_predictable() {
             swap_id: swap_id_0,
             ticker: "ETH".to_string(),
             network: "ethereum".to_string(),
-            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
             user_recipient_extra_id: None,
         })
         .await
@@ -112,7 +112,7 @@ async fn test_address_sequence_predictable() {
             swap_id: swap_id_1,
             ticker: "ETH".to_string(),
             network: "ethereum".to_string(),
-            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
             user_recipient_extra_id: None,
         })
         .await
@@ -149,7 +149,7 @@ async fn test_address_idempotency() {
         swap_id: swap_id.to_string(),
         ticker: "ETH".to_string(),
         network: "ethereum".to_string(),
-        user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+        user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
         user_recipient_extra_id: None,
     };
 
@@ -202,7 +202,7 @@ async fn test_cross_chain_generation() {
             swap_id: eth_swap,
             ticker: "ETH".to_string(),
             network: "ethereum".to_string(),
-            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
             user_recipient_extra_id: None,
         })
         .await

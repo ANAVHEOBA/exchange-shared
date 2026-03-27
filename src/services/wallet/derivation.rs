@@ -557,6 +557,16 @@ pub async fn derive_cosmos_key(seed_phrase: &str, index: u32) -> Result<String, 
     CosmosHubDerivation.derive_private_key(seed_phrase, index)
 }
 
+pub async fn derive_exact_key(
+    seed_phrase: &str,
+    ticker: &str,
+    network: &str,
+    index: u32,
+) -> Result<String, String> {
+    let chain = select_derivation(ticker, network)?;
+    chain.derive_private_key(seed_phrase, index)
+}
+
 pub async fn derive_tron_key(seed_phrase: &str, index: u32) -> Result<String, String> {
     TronDerivation.derive_private_key(seed_phrase, index)
 }

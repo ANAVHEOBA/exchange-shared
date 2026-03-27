@@ -53,6 +53,13 @@ impl RecipientExtraIdFormat {
             RecipientExtraIdFormat::Memo => "memo",
         }
     }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            RecipientExtraIdFormat::DestinationTag => "Destination Tag",
+            RecipientExtraIdFormat::Memo => "Memo",
+        }
+    }
 }
 
 pub fn supported_recipient_extra_id_format(
@@ -65,14 +72,48 @@ pub fn supported_recipient_extra_id_format(
     if network_lower == "mainnet" {
         return match mainnet_family(&ticker_lower) {
             MainnetFamily::Ripple => Some(RecipientExtraIdFormat::DestinationTag),
-            MainnetFamily::Stellar => Some(RecipientExtraIdFormat::Memo),
+            MainnetFamily::Stellar
+            | MainnetFamily::CosmosHub
+            | MainnetFamily::Osmosis
+            | MainnetFamily::Juno
+            | MainnetFamily::Akash
+            | MainnetFamily::Injective
+            | MainnetFamily::Regen
+            | MainnetFamily::Stargaze
+            | MainnetFamily::Secret
+            | MainnetFamily::Band
+            | MainnetFamily::Ion
+            | MainnetFamily::GravityBridge
+            | MainnetFamily::Cronos
+            | MainnetFamily::Kava
+            | MainnetFamily::Agoric
+            | MainnetFamily::Axelar
+            | MainnetFamily::Cheqd
+            | MainnetFamily::Coreum
+            | MainnetFamily::Shentu
+            | MainnetFamily::Dydx
+            | MainnetFamily::Dymension
+            | MainnetFamily::Fetch
+            | MainnetFamily::Initia
+            | MainnetFamily::Kyve
+            | MainnetFamily::Neutron
+            | MainnetFamily::Oraichain
+            | MainnetFamily::Persistence
+            | MainnetFamily::Sei
+            | MainnetFamily::Celestia
+            | MainnetFamily::Terra
+            | MainnetFamily::Thorchain => Some(RecipientExtraIdFormat::Memo),
             _ => None,
         };
     }
 
     match network_lower.as_str() {
         "ripple" | "xrp" => Some(RecipientExtraIdFormat::DestinationTag),
-        "stellar" | "xlm" => Some(RecipientExtraIdFormat::Memo),
+        "stellar" | "xlm" | "cosmos" | "cosmos_hub" | "osmosis" | "juno" | "akash"
+        | "injective" | "regen" | "stargaze" | "secret" | "band" | "ion" | "gravity" | "agoric"
+        | "axelar" | "cheqd" | "coreum" | "shentu" | "dydx" | "dymension" | "fetch" | "initia"
+        | "kyve" | "neutron" | "oraichain" | "persistence" | "sei" | "celestia" | "terra"
+        | "thorchain" => Some(RecipientExtraIdFormat::Memo),
         _ => None,
     }
 }
@@ -107,6 +148,16 @@ pub fn normalize_supported_recipient_extra_id(
             ticker, network
         )),
     }
+}
+
+pub fn default_extra_id_name(
+    ticker: &str,
+    network: &str,
+    requires_extra_id: bool,
+) -> Option<String> {
+    supported_recipient_extra_id_format(ticker, network)
+        .map(|format| format.display_name().to_string())
+        .or_else(|| requires_extra_id.then(|| "Memo / Extra ID".to_string()))
 }
 
 pub fn validate_address_by_network_family(
@@ -459,8 +510,16 @@ fn validate_cashaddr_p2pkh(address: &str) -> AddressValidation {
 }
 
 fn validate_evm_address(family: &'static str, address: &str) -> AddressValidation {
-    if EvmAddress::parse_checksummed(address, None).is_ok() || EvmAddress::from_str(address).is_ok()
-    {
+    let has_lowercase_hex = address.chars().any(|c| matches!(c, 'a'..='f'));
+    let has_uppercase_hex = address.chars().any(|c| matches!(c, 'A'..='F'));
+
+    if has_lowercase_hex && has_uppercase_hex {
+        if EvmAddress::parse_checksummed(address, None).is_ok() {
+            valid(family)
+        } else {
+            invalid(family, "invalid EVM checksum".to_string())
+        }
+    } else if EvmAddress::from_str(address).is_ok() {
         valid(family)
     } else {
         invalid(family, "invalid EVM address".to_string())
@@ -1165,7 +1224,7 @@ fn unsupported(family: &'static str, reason: impl Into<String>) -> AddressValida
 mod tests {
     use super::{
         normalize_supported_recipient_extra_id, supported_recipient_extra_id_format,
-        RecipientExtraIdFormat,
+        validate_address_by_network_family, AddressValidation, RecipientExtraIdFormat,
     };
 
     #[test]
@@ -1180,6 +1239,14 @@ mod tests {
     fn stellar_network_supports_memos() {
         assert_eq!(
             supported_recipient_extra_id_format("XLM", "stellar"),
+            Some(RecipientExtraIdFormat::Memo)
+        );
+    }
+
+    #[test]
+    fn cosmos_mainnet_supports_memos() {
+        assert_eq!(
+            supported_recipient_extra_id_format("ATOM", "Mainnet"),
             Some(RecipientExtraIdFormat::Memo)
         );
     }
@@ -1205,5 +1272,44 @@ mod tests {
                 .expect("memo should normalize")
                 .expect("memo should be present");
         assert_eq!(normalized, "memo-42");
+    }
+
+    #[test]
+    fn mixed_case_evm_address_requires_valid_checksum() {
+        let result = validate_address_by_network_family(
+            "ETH",
+            "ERC20",
+            "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+        );
+
+        assert_eq!(
+            result,
+            AddressValidation::Invalid {
+                family: "evm",
+                reason: "invalid EVM checksum".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn checksummed_evm_address_is_valid() {
+        let result = validate_address_by_network_family(
+            "ETH",
+            "ERC20",
+            "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        );
+
+        assert_eq!(result, AddressValidation::Valid { family: "evm" });
+    }
+
+    #[test]
+    fn lowercase_evm_address_remains_valid() {
+        let result = validate_address_by_network_family(
+            "ETH",
+            "ERC20",
+            "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        );
+
+        assert_eq!(result, AddressValidation::Valid { family: "evm" });
     }
 }

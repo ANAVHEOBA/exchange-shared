@@ -361,3 +361,76 @@ test wallet::trocador_live_current_support_test::test_live_trocador_validation_f
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 144 filtered out; finished in 4639.52s
 
 a@a:~/exchange-shared$ 
+
+
+  1. more EVM
+  2. more Cosmos
+  3. Substrate
+  4. NEAR/XRP/Stellar
+  5. Antelope
+  6. one-offs last
+
+
+  1. More EVM coverage
+
+  - same EVM family, but many configured EVM chains are not yet in the exact native-route map
+
+  2. More Cosmos coverage
+
+  - same Cosmos family, but only the curated subset is direct-local so far
+
+  3. Substrate / Polkadot
+
+  - still a major missing family
+
+  4. Account-based quick wins
+
+  - NEAR
+  - XRP
+  - Stellar
+
+  5. Antelope-style chains
+
+  - EOS
+  - FIO
+  - similar API pattern
+
+  6. True one-off families
+
+  - Cardano
+  - TON
+  - Stacks
+  - Tezos
+  - Waves
+  - CKB
+  - Hedera
+  - Starknet
+  - Zilliqa
+  - ICON
+  - Nano
+  - NEO
+  - Radix
+  - Quai
+  - Everscale/Venom
+  - Steem
+  - privacy-style chains like Monero/Dero/Zano
+//codex resume 019d2832-113a-7f12-80dd-1181093fb3c5
+
+
+  1. EVM Family (119 chains): 
+       * This includes Ethereum, BNB Smart Chain, Polygon, Arbitrum, Base, Avalanche C-Chain, and 113 other Layer 2s and EVM-compatible chains.
+   2. UTXO Family (18 chains):
+       * This includes Bitcoin, Dash, Dogecoin, Bitcoin Cash, Litecoin, and 13 other Bitcoin-forks.
+   3. Cosmos Family (16 chains):
+       * Includes Cosmos Hub, Osmosis, Neutron, Injective, Celestia, and 11 others.
+   4. Special Implementations (2 chains):
+       * Solana (and its tokens).
+       * Tron (and TRC20 tokens).
+
+  ---
+
+
+   AbeyChain, Acala, ApeChain, Arena-Z, Aurora, B2 Network, Bahamut, Blast, Boba Network, Botanix, BounceBit, Canto, Chiliz, Conflux, Conflux eSpace, COTI, Cyber, Dione,
+  Electroneum, Endurance, Energi, Ethereum Classic, EthereumPoW, Evmos, Findora, Fraxtal, Fuse, Gravity, Haqq, Humanode, HyperEVM, IOST, IOTA EVM, Japan Open Chain, Kaia,
+  Kaia Legacy, KaiChain, Karura, Katana, Lisk, MAP Protocol, Merlin, Metal L2, Meter, Mode, Peaq, Pocket, PulseChain, Redbelly, REI Network, Rootstock, Shibarium, Step
+  Network, Stratis EVM, Ternoa zkEVM, ThunderCore, TomoChain, U2U, Vanar, Viction, WhiteChain, ZetaChain.

@@ -1,4 +1,5 @@
 use super::bitcoin_rpc::{build_bitcoin_transaction_sats, estimate_bitcoin_fee_sats};
+use super::cosmos_rpc::{supported_cosmos_chain, CosmosChainConfig};
 use super::derivation;
 use super::rpc::BlockchainProvider;
 use super::signing::SigningService;
@@ -8,6 +9,7 @@ use crate::modules::wallet::model::PayoutAssetMetadata;
 use crate::modules::wallet::schema::{
     GenerateAddressRequest, PayoutRequest, PayoutResponse, WalletAddressResponse,
 };
+use crate::services::rpc::{canonical_chain_key, chain_key_candidates};
 use crate::services::token::{from_base_units, to_base_units};
 use crate::services::wallet::blockchains::encoding::tron_address_to_hex;
 use crate::services::wallet::catalog::{mainnet_family, MainnetFamily};
@@ -37,12 +39,12 @@ enum PayoutRoute {
     Waves,
     Stacks,
     Ton,
-    EvmNative { chain_id: u32 },
+    EvmNative { chain_id: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenPayoutRoute {
-    Evm { chain_id: u32 },
+    Evm { chain_id: u64 },
     Trc20,
     Spl,
 }
@@ -61,6 +63,17 @@ struct PayoutContext {
     service_fee: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SupportedCosmosRoute {
+    config: CosmosChainConfig,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EvmNativeChainConfig {
+    chain_id: u64,
+    native_tickers: &'static [&'static str],
+}
+
 fn resolve_payout_route(ticker: &str, network: &str) -> Result<PayoutRoute, String> {
     let ticker_lower = ticker.to_ascii_lowercase();
     let network_lower = network.to_ascii_lowercase();
@@ -73,9 +86,10 @@ fn resolve_payout_route(ticker: &str, network: &str) -> Result<PayoutRoute, Stri
         "bitcoin" | "btc" => Ok(PayoutRoute::Bitcoin),
         "solana" | "sol" => Ok(PayoutRoute::Solana),
         "cosmos" | "cosmos_hub" | "osmosis" | "juno" | "akash" | "injective" | "regen"
-        | "stargaze" | "secret" | "band" | "ion" | "gravity" | "terra" | "terra_classic" => {
-            Ok(PayoutRoute::Cosmos)
-        }
+        | "stargaze" | "secret" | "band" | "ion" | "gravity" | "terra" | "terra_classic"
+        | "agoric" | "axelar" | "cheqd" | "coreum" | "shentu" | "dydx" | "dymension" | "fetch"
+        | "initia" | "kyve" | "neutron" | "oraichain" | "persistence" | "sei" | "celestia"
+        | "thorchain" => Ok(PayoutRoute::Cosmos),
         "polkadot" | "dot" | "kusama" | "ksm" | "acala" | "astar" | "shiden" | "parallel" => {
             Ok(PayoutRoute::Substrate)
         }
@@ -119,47 +133,48 @@ fn resolve_mainnet_payout_route(ticker_lower: &str, network: &str) -> Result<Pay
         | MainnetFamily::Band
         | MainnetFamily::Ion
         | MainnetFamily::GravityBridge
-        | MainnetFamily::Terra => Ok(PayoutRoute::Cosmos),
+        | MainnetFamily::Cronos
+        | MainnetFamily::Kava
+        | MainnetFamily::Agoric
+        | MainnetFamily::Axelar
+        | MainnetFamily::Cheqd
+        | MainnetFamily::Coreum
+        | MainnetFamily::Shentu
+        | MainnetFamily::Dydx
+        | MainnetFamily::Dymension
+        | MainnetFamily::Fetch
+        | MainnetFamily::Initia
+        | MainnetFamily::Kyve
+        | MainnetFamily::Neutron
+        | MainnetFamily::Oraichain
+        | MainnetFamily::Persistence
+        | MainnetFamily::Sei
+        | MainnetFamily::Celestia
+        | MainnetFamily::Terra
+        | MainnetFamily::Thorchain => Ok(PayoutRoute::Cosmos),
         MainnetFamily::Polkadot
         | MainnetFamily::Kusama
         | MainnetFamily::Acala
         | MainnetFamily::Astar
         | MainnetFamily::Shiden => Ok(PayoutRoute::Substrate),
-        MainnetFamily::Evm if ticker_lower == "eth" => Ok(PayoutRoute::EvmNative { chain_id: 1 }),
+        MainnetFamily::Evm => resolve_evm_native_chain_config(ticker_lower, network)
+            .map(|config| PayoutRoute::EvmNative {
+                chain_id: config.chain_id,
+            })
+            .ok_or_else(|| unsupported_payout_route_message(ticker_lower, network)),
         _ => Err(unsupported_payout_route_message(ticker_lower, network)),
     }
 }
 
 fn resolve_evm_payout_route(ticker_lower: &str, network_lower: &str) -> Option<PayoutRoute> {
-    let chain_id = resolve_evm_chain_id(network_lower)?;
-    let canonical_network = canonical_payout_asset_network(network_lower);
-
-    let is_native_asset = match canonical_network.as_str() {
-        "ethereum" => ticker_lower == "eth",
-        "polygon" => matches!(ticker_lower, "matic" | "pol"),
-        "bsc" => ticker_lower == "bnb",
-        "arbitrum" | "optimism" | "base" | "aurora" => ticker_lower == "eth",
-        "avalanche" => ticker_lower == "avax",
-        "fantom" => ticker_lower == "ftm",
-        "celo" => ticker_lower == "celo",
-        "moonbeam" => ticker_lower == "glmr",
-        "moonriver" => ticker_lower == "movr",
-        "cronos" => ticker_lower == "cro",
-        "evmos" => ticker_lower == "evmos",
-        "kava" => ticker_lower == "kava",
-        "harmony" => ticker_lower == "one",
-        "ronin" => ticker_lower == "ron",
-        "flare" => ticker_lower == "flr",
-        "rootstock" => ticker_lower == "rbtc",
-        "opbnb" => ticker_lower == "bnb",
-        "gnosis" => ticker_lower == "xdai",
-        _ => false,
-    };
-
-    is_native_asset.then_some(PayoutRoute::EvmNative { chain_id })
+    resolve_evm_native_chain_config(ticker_lower, network_lower).map(|config| {
+        PayoutRoute::EvmNative {
+            chain_id: config.chain_id,
+        }
+    })
 }
 
-fn canonical_payout_asset_network(network: &str) -> String {
+pub(crate) fn canonical_payout_asset_network(network: &str) -> String {
     match network.to_ascii_lowercase().as_str() {
         "ethereum" | "eth" | "erc20" => "ethereum".to_string(),
         "polygon" | "matic" => "polygon".to_string(),
@@ -188,29 +203,361 @@ fn canonical_payout_asset_network(network: &str) -> String {
     }
 }
 
-fn resolve_evm_chain_id(network_lower: &str) -> Option<u32> {
-    match canonical_payout_asset_network(network_lower).as_str() {
-        "ethereum" => Some(1),
-        "polygon" => Some(137),
-        "bsc" => Some(56),
-        "arbitrum" => Some(42_161),
-        "optimism" => Some(10),
-        "base" => Some(8_453),
-        "avalanche" => Some(43_114),
-        "fantom" => Some(250),
-        "celo" => Some(42_220),
-        "moonbeam" => Some(1_284),
-        "moonriver" => Some(1_285),
-        "cronos" => Some(25),
-        "aurora" => Some(1_313_161_554),
-        "evmos" => Some(9_001),
-        "kava" => Some(2_222),
-        "harmony" => Some(1_666_600_000),
-        "ronin" => Some(2_020),
-        "flare" => Some(14),
-        "rootstock" => Some(30),
-        "opbnb" => Some(204),
-        "gnosis" => Some(100),
+fn resolve_evm_chain_id(network_lower: &str) -> Option<u64> {
+    let canonical_network = canonical_chain_key(network_lower);
+    if let Some(config) = resolve_evm_chain_config_by_key(&canonical_network) {
+        return Some(config.chain_id);
+    }
+
+    for candidate in chain_key_candidates("ETH", network_lower) {
+        if let Some(config) = resolve_evm_chain_config_by_key(&candidate) {
+            return Some(config.chain_id);
+        }
+    }
+
+    None
+}
+
+fn resolve_evm_native_chain_config(ticker: &str, network: &str) -> Option<EvmNativeChainConfig> {
+    let ticker_key = canonical_chain_key(ticker);
+
+    for candidate in chain_key_candidates(ticker, network) {
+        if let Some(config) = resolve_evm_chain_config_by_key(&candidate) {
+            if config
+                .native_tickers
+                .iter()
+                .any(|native| *native == ticker_key)
+            {
+                return Some(config);
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_evm_chain_config_by_key(chain_key: &str) -> Option<EvmNativeChainConfig> {
+    match chain_key {
+        "ethereum" => Some(EvmNativeChainConfig {
+            chain_id: 1,
+            native_tickers: &["eth"],
+        }),
+        "polygon" => Some(EvmNativeChainConfig {
+            chain_id: 137,
+            native_tickers: &["matic", "pol"],
+        }),
+        "bnb_smart_chain" | "bsc" => Some(EvmNativeChainConfig {
+            chain_id: 56,
+            native_tickers: &["bnb"],
+        }),
+        "arbitrum_one" | "arbitrum" => Some(EvmNativeChainConfig {
+            chain_id: 42_161,
+            native_tickers: &["eth"],
+        }),
+        "optimism" => Some(EvmNativeChainConfig {
+            chain_id: 10,
+            native_tickers: &["eth"],
+        }),
+        "base" => Some(EvmNativeChainConfig {
+            chain_id: 8_453,
+            native_tickers: &["eth"],
+        }),
+        "avalanche_c_chain" | "avalanche" | "avaxc" => Some(EvmNativeChainConfig {
+            chain_id: 43_114,
+            native_tickers: &["avax"],
+        }),
+        "fantom" => Some(EvmNativeChainConfig {
+            chain_id: 250,
+            native_tickers: &["ftm"],
+        }),
+        "celo" => Some(EvmNativeChainConfig {
+            chain_id: 42_220,
+            native_tickers: &["celo"],
+        }),
+        "moonbeam" => Some(EvmNativeChainConfig {
+            chain_id: 1_284,
+            native_tickers: &["glmr"],
+        }),
+        "moonriver" => Some(EvmNativeChainConfig {
+            chain_id: 1_285,
+            native_tickers: &["movr"],
+        }),
+        "cronos" => Some(EvmNativeChainConfig {
+            chain_id: 25,
+            native_tickers: &["cro"],
+        }),
+        "aurora" => Some(EvmNativeChainConfig {
+            chain_id: 1_313_161_554,
+            native_tickers: &["eth"],
+        }),
+        "evmos" => Some(EvmNativeChainConfig {
+            chain_id: 9_001,
+            native_tickers: &["evmos"],
+        }),
+        "kava_evm" | "kava" => Some(EvmNativeChainConfig {
+            chain_id: 2_222,
+            native_tickers: &["kava"],
+        }),
+        "harmony" => Some(EvmNativeChainConfig {
+            chain_id: 1_666_600_000,
+            native_tickers: &["one"],
+        }),
+        "ronin" => Some(EvmNativeChainConfig {
+            chain_id: 2_020,
+            native_tickers: &["ron"],
+        }),
+        "flare" => Some(EvmNativeChainConfig {
+            chain_id: 14,
+            native_tickers: &["flr"],
+        }),
+        "rootstock" | "rsk" => Some(EvmNativeChainConfig {
+            chain_id: 30,
+            native_tickers: &["rbtc"],
+        }),
+        "opbnb" => Some(EvmNativeChainConfig {
+            chain_id: 204,
+            native_tickers: &["bnb"],
+        }),
+        "gnosis" | "xdai" => Some(EvmNativeChainConfig {
+            chain_id: 100,
+            native_tickers: &["xdai"],
+        }),
+        "scroll" => Some(EvmNativeChainConfig {
+            chain_id: 534_352,
+            native_tickers: &["eth"],
+        }),
+        "zksync_era" | "zksync" => Some(EvmNativeChainConfig {
+            chain_id: 324,
+            native_tickers: &["eth"],
+        }),
+        "linea" => Some(EvmNativeChainConfig {
+            chain_id: 59_144,
+            native_tickers: &["eth"],
+        }),
+        "blast" => Some(EvmNativeChainConfig {
+            chain_id: 81_457,
+            native_tickers: &["eth"],
+        }),
+        "mode" => Some(EvmNativeChainConfig {
+            chain_id: 34_443,
+            native_tickers: &["eth"],
+        }),
+        "taiko" => Some(EvmNativeChainConfig {
+            chain_id: 167_000,
+            native_tickers: &["eth"],
+        }),
+        "zora" => Some(EvmNativeChainConfig {
+            chain_id: 7_777_777,
+            native_tickers: &["eth"],
+        }),
+        "morph" => Some(EvmNativeChainConfig {
+            chain_id: 2_818,
+            native_tickers: &["eth"],
+        }),
+        "metis" => Some(EvmNativeChainConfig {
+            chain_id: 1_088,
+            native_tickers: &["metis"],
+        }),
+        "mantle" => Some(EvmNativeChainConfig {
+            chain_id: 5_000,
+            native_tickers: &["mnt"],
+        }),
+        "syscoin_nevm" | "sysnevm" => Some(EvmNativeChainConfig {
+            chain_id: 57,
+            native_tickers: &["sys"],
+        }),
+        "songbird" => Some(EvmNativeChainConfig {
+            chain_id: 19,
+            native_tickers: &["sgb"],
+        }),
+        "wanchain" => Some(EvmNativeChainConfig {
+            chain_id: 888,
+            native_tickers: &["wan"],
+        }),
+        "telos" => Some(EvmNativeChainConfig {
+            chain_id: 40,
+            native_tickers: &["tlos"],
+        }),
+        "pulsechain" | "pulse" => Some(EvmNativeChainConfig {
+            chain_id: 369,
+            native_tickers: &["pls"],
+        }),
+        "bouncebit" => Some(EvmNativeChainConfig {
+            chain_id: 6_001,
+            native_tickers: &["bb"],
+        }),
+        "beam" => Some(EvmNativeChainConfig {
+            chain_id: 4_337,
+            native_tickers: &["beam"],
+        }),
+        "bahamut" => Some(EvmNativeChainConfig {
+            chain_id: 5_165,
+            native_tickers: &["ftn"],
+        }),
+        "canto" => Some(EvmNativeChainConfig {
+            chain_id: 7_700,
+            native_tickers: &["canto"],
+        }),
+        "chiliz" => Some(EvmNativeChainConfig {
+            chain_id: 88_888,
+            native_tickers: &["chz"],
+        }),
+        "core_dao" => Some(EvmNativeChainConfig {
+            chain_id: 1_116,
+            native_tickers: &["core"],
+        }),
+        "electroneum" => Some(EvmNativeChainConfig {
+            chain_id: 52_014,
+            native_tickers: &["etn"],
+        }),
+        "energy_web" => Some(EvmNativeChainConfig {
+            chain_id: 246,
+            native_tickers: &["ewt"],
+        }),
+        "ethereum_classic" => Some(EvmNativeChainConfig {
+            chain_id: 61,
+            native_tickers: &["etc"],
+        }),
+        "ethereumpow" => Some(EvmNativeChainConfig {
+            chain_id: 10_001,
+            native_tickers: &["ethw"],
+        }),
+        "filecoin" => Some(EvmNativeChainConfig {
+            chain_id: 314,
+            native_tickers: &["fil"],
+        }),
+        "findora" => Some(EvmNativeChainConfig {
+            chain_id: 2_152,
+            native_tickers: &["fra"],
+        }),
+        "fuse" => Some(EvmNativeChainConfig {
+            chain_id: 122,
+            native_tickers: &["fuse"],
+        }),
+        "graphlinq" => Some(EvmNativeChainConfig {
+            chain_id: 614,
+            native_tickers: &["glq"],
+        }),
+        "gmmt" => Some(EvmNativeChainConfig {
+            chain_id: 8_989,
+            native_tickers: &["gmmt"],
+        }),
+        "haqq" => Some(EvmNativeChainConfig {
+            chain_id: 11_235,
+            native_tickers: &["islm"],
+        }),
+        "hyper_evm" => Some(EvmNativeChainConfig {
+            chain_id: 1_000,
+            native_tickers: &["hype"],
+        }),
+        "humanode" => Some(EvmNativeChainConfig {
+            chain_id: 5_234,
+            native_tickers: &["hmnd"],
+        }),
+        "iota_evm" => Some(EvmNativeChainConfig {
+            chain_id: 8_822,
+            native_tickers: &["iota"],
+        }),
+        "iotex" => Some(EvmNativeChainConfig {
+            chain_id: 4_689,
+            native_tickers: &["iotx"],
+        }),
+        "japan_open_chain" => Some(EvmNativeChainConfig {
+            chain_id: 81,
+            native_tickers: &["joc"],
+        }),
+        "kaichain" => Some(EvmNativeChainConfig {
+            chain_id: 2_989,
+            native_tickers: &["kai"],
+        }),
+        "kcc" => Some(EvmNativeChainConfig {
+            chain_id: 321,
+            native_tickers: &["kcs"],
+        }),
+        "lisk" => Some(EvmNativeChainConfig {
+            chain_id: 1_135,
+            native_tickers: &["lsk"],
+        }),
+        "lukso" => Some(EvmNativeChainConfig {
+            chain_id: 42,
+            native_tickers: &["lyx"],
+        }),
+        "map_protocol" => Some(EvmNativeChainConfig {
+            chain_id: 22_776,
+            native_tickers: &["mapo"],
+        }),
+        "meter" => Some(EvmNativeChainConfig {
+            chain_id: 82,
+            native_tickers: &["mtrg"],
+        }),
+        "neon" => Some(EvmNativeChainConfig {
+            chain_id: 245_022_934,
+            native_tickers: &["neon"],
+        }),
+        "okx_chain" => Some(EvmNativeChainConfig {
+            chain_id: 66,
+            native_tickers: &["okt"],
+        }),
+        "redbelly" => Some(EvmNativeChainConfig {
+            chain_id: 151,
+            native_tickers: &["rbnt"],
+        }),
+        "rei_network" | "rei" => Some(EvmNativeChainConfig {
+            chain_id: 47_805,
+            native_tickers: &["rei"],
+        }),
+        "sei" => Some(EvmNativeChainConfig {
+            chain_id: 1_329,
+            native_tickers: &["sei"],
+        }),
+        "sophon" => Some(EvmNativeChainConfig {
+            chain_id: 50_168,
+            native_tickers: &["soph"],
+        }),
+        "supra" => Some(EvmNativeChainConfig {
+            chain_id: 523_994_005_626,
+            native_tickers: &["supra"],
+        }),
+        "step_network" => Some(EvmNativeChainConfig {
+            chain_id: 1_234,
+            native_tickers: &["fitfi"],
+        }),
+        "stratis_evm" | "strax" => Some(EvmNativeChainConfig {
+            chain_id: 105_105,
+            native_tickers: &["strx"],
+        }),
+        "thundercore" => Some(EvmNativeChainConfig {
+            chain_id: 108,
+            native_tickers: &["tt"],
+        }),
+        "tomochain" => Some(EvmNativeChainConfig {
+            chain_id: 88,
+            native_tickers: &["tomo"],
+        }),
+        "u2u" => Some(EvmNativeChainConfig {
+            chain_id: 39,
+            native_tickers: &["u2u"],
+        }),
+        "vanar" => Some(EvmNativeChainConfig {
+            chain_id: 2_040,
+            native_tickers: &["vanry"],
+        }),
+        "velas" => Some(EvmNativeChainConfig {
+            chain_id: 106,
+            native_tickers: &["vlx"],
+        }),
+        "viction" => Some(EvmNativeChainConfig {
+            chain_id: 88,
+            native_tickers: &["vic"],
+        }),
+        "x_layer" => Some(EvmNativeChainConfig {
+            chain_id: 196,
+            native_tickers: &["okb"],
+        }),
+        "zetachain" => Some(EvmNativeChainConfig {
+            chain_id: 7_000,
+            native_tickers: &["zeta"],
+        }),
         _ => None,
     }
 }
@@ -220,6 +567,132 @@ fn unsupported_payout_route_message(ticker: &str, network: &str) -> String {
         "No exact payout handler is implemented for {}/{}. This route still needs a network-specific sender.",
         ticker, network
     )
+}
+
+fn resolve_supported_cosmos_route(ticker: &str, network: &str) -> Option<SupportedCosmosRoute> {
+    let ticker_lower = ticker.to_ascii_lowercase();
+    let network_lower = network.to_ascii_lowercase();
+
+    let chain_key = if network_lower == "mainnet" {
+        match mainnet_family(&ticker_lower) {
+            MainnetFamily::Agoric => "agoric",
+            MainnetFamily::Akash => "akash",
+            MainnetFamily::Axelar => "axelar",
+            MainnetFamily::Band => "band",
+            MainnetFamily::Celestia => "celestia",
+            MainnetFamily::Cheqd => "cheqd",
+            MainnetFamily::Coreum => "coreum",
+            MainnetFamily::CosmosHub => "cosmos_hub",
+            MainnetFamily::Dydx => "dydx",
+            MainnetFamily::Dymension => "dymension",
+            MainnetFamily::Fetch => "fetch",
+            MainnetFamily::Initia => "initia",
+            MainnetFamily::Juno => "juno",
+            MainnetFamily::Kyve => "kyve",
+            MainnetFamily::Neutron => "neutron",
+            MainnetFamily::Oraichain => "oraichain",
+            MainnetFamily::Osmosis => "osmosis",
+            MainnetFamily::Persistence => "persistence",
+            MainnetFamily::Regen => "regen",
+            MainnetFamily::Secret => "secret",
+            MainnetFamily::Shentu => "shentu",
+            MainnetFamily::Stargaze => "stargaze",
+            MainnetFamily::Terra => "terra",
+            _ => return None,
+        }
+    } else {
+        match network_lower.as_str() {
+            "agoric" => "agoric",
+            "akash" => "akash",
+            "axelar" => "axelar",
+            "band" => "band",
+            "celestia" => "celestia",
+            "cheqd" => "cheqd",
+            "coreum" => "coreum",
+            "cosmos" | "cosmos_hub" => "cosmos_hub",
+            "dydx" => "dydx",
+            "dymension" => "dymension",
+            "fetch" | "fetchhub" => "fetch",
+            "initia" => "initia",
+            "juno" => "juno",
+            "kyve" => "kyve",
+            "neutron" => "neutron",
+            "oraichain" => "oraichain",
+            "osmosis" => "osmosis",
+            "persistence" => "persistence",
+            "regen" => "regen",
+            "secret" => "secret",
+            "shentu" => "shentu",
+            "stargaze" => "stargaze",
+            "terra" => "terra",
+            _ => return None,
+        }
+    };
+
+    supported_cosmos_chain(chain_key).map(|config| SupportedCosmosRoute { config })
+}
+
+pub(crate) fn ensure_local_payout_capability(
+    ticker: &str,
+    network: &str,
+    token_metadata: Option<&PayoutAssetMetadata>,
+) -> Result<(), String> {
+    if let Some(token_asset) = token_metadata
+        .map(|metadata| resolve_token_payout(metadata, network))
+        .transpose()?
+        .flatten()
+    {
+        return match token_asset.route {
+            TokenPayoutRoute::Evm { .. } | TokenPayoutRoute::Trc20 => Ok(()),
+            TokenPayoutRoute::Spl => Err(format!(
+                "SPL token payout broadcasting is not implemented yet for {}/{}.",
+                ticker, network
+            )),
+        };
+    }
+
+    match resolve_payout_route(ticker, network)? {
+        PayoutRoute::Bitcoin
+        | PayoutRoute::Solana
+        | PayoutRoute::Algorand
+        | PayoutRoute::Near
+        | PayoutRoute::Xrp
+        | PayoutRoute::Tron
+        | PayoutRoute::Stellar
+        | PayoutRoute::EvmNative { .. } => Ok(()),
+        PayoutRoute::Cosmos => resolve_supported_cosmos_route(ticker, network)
+            .map(|_| ())
+            .ok_or_else(|| {
+                format!(
+                    "Cosmos payout broadcasting for {}/{} is not implemented for this exact chain yet.",
+                    ticker, network
+                )
+            }),
+        PayoutRoute::Substrate => Err(format!(
+            "Substrate payout broadcasting for {}/{} is disabled until a chain-native transaction builder is implemented.",
+            ticker, network
+        )),
+        PayoutRoute::Cardano => Err(format!(
+            "Cardano payout broadcasting for {}/{} is disabled until a chain-native transaction builder is implemented.",
+            ticker, network
+        )),
+        PayoutRoute::Tezos => Err(format!(
+            "Tezos payout broadcasting for {}/{} is disabled until a chain-native transaction builder is implemented.",
+            ticker, network
+        )),
+        PayoutRoute::Waves => Err(format!(
+            "Waves payout broadcasting for {}/{} is disabled until a chain-native transaction builder is implemented.",
+            ticker, network
+        )),
+        PayoutRoute::Stacks => Err(format!(
+            "Stacks payout broadcasting for {}/{} is disabled until a chain-native transaction builder is implemented.",
+            ticker, network
+        )),
+        PayoutRoute::Ton => Err(format!(
+            "TON payout broadcasting for {}/{} is disabled until a chain-native transaction builder is implemented.",
+            ticker, network
+        )),
+    }
 }
 
 pub struct WalletManager {
@@ -1128,7 +1601,7 @@ impl WalletManager {
         info: &crate::modules::wallet::model::SwapAddressInfo,
         swap_id: &str,
         service_fee: f64,
-        chain_id: u32,
+        chain_id: u64,
     ) -> Result<PayoutResponse, String> {
         let actual_balance = self
             .provider
@@ -1200,7 +1673,7 @@ impl WalletManager {
         swap_id: &str,
         service_fee: f64,
         token_asset: &ResolvedTokenPayout,
-        chain_id: u32,
+        chain_id: u64,
     ) -> Result<PayoutResponse, String> {
         let gas_balance = self
             .provider
@@ -1476,10 +1949,103 @@ impl WalletManager {
     async fn process_cosmos_payout(
         &self,
         info: &crate::modules::wallet::model::SwapAddressInfo,
-        _swap_id: &str,
-        _service_fee: f64,
+        swap_id: &str,
+        service_fee: f64,
     ) -> Result<PayoutResponse, String> {
-        Err(Self::chain_native_builder_required_message("Cosmos", info))
+        use crate::services::wallet::tx_builders::cosmos::CosmosSendTransaction;
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        let route = resolve_supported_cosmos_route(&info.payout_ticker, &info.payout_network)
+            .ok_or_else(|| Self::chain_native_builder_required_message("Cosmos", info))?;
+
+        let actual_balance = self
+            .provider
+            .get_balance(&info.our_address)
+            .await
+            .map_err(|e| format!("Failed to get Cosmos balance: {}", e))?;
+
+        let fee_amount_base_units = route.config.fee_amount_base_units();
+        let network_fee = route.config.network_fee_native();
+        let payout_amount =
+            Self::calculate_payout_amount(actual_balance, 0.0, service_fee, network_fee)?;
+
+        let payout_decimal = Self::decimal_from_f64(payout_amount, "Cosmos payout")?;
+        let send_amount_base =
+            to_base_units(payout_decimal, route.config.decimals).map_err(|e| e.to_string())?;
+
+        let private_key_hex = derivation::derive_exact_key(
+            &self.master_seed,
+            &info.payout_ticker,
+            &info.payout_network,
+            info.address_index,
+        )
+        .await?;
+
+        let account_state = self
+            .provider
+            .cosmos_get_account_state(&info.our_address)
+            .await
+            .map_err(|e| format!("Failed to get Cosmos account state: {}", e))?;
+
+        let private_key_bytes = hex::decode(private_key_hex.trim_start_matches("0x"))
+            .map_err(|e| format!("Invalid Cosmos private key: {}", e))?;
+        let secret_key = SecretKey::from_slice(&private_key_bytes)
+            .map_err(|e| format!("Invalid Cosmos private key: {}", e))?;
+        let public_key = PublicKey::from_secret_key(&Secp256k1::new(), &secret_key);
+        let compressed_public_key = public_key.serialize();
+
+        let memo = normalize_supported_recipient_extra_id(
+            &info.payout_ticker,
+            &info.payout_network,
+            info.recipient_extra_id.as_deref(),
+        )?;
+
+        let tx = CosmosSendTransaction::new(
+            info.our_address.clone(),
+            info.recipient_address.clone(),
+            send_amount_base.to_string(),
+            route.config.denom.to_string(),
+            fee_amount_base_units.to_string(),
+            route.config.denom.to_string(),
+            route.config.gas_limit,
+            account_state.chain_id,
+            account_state.account_number,
+            account_state.sequence,
+            memo,
+        );
+
+        let sign_doc_hex = hex::encode(tx.sign_doc_bytes(&compressed_public_key));
+        let signature_hex =
+            SigningService::sign_cosmos_transaction(&private_key_hex, &sign_doc_hex)
+                .map_err(|e| format!("Failed to sign Cosmos tx: {}", e))?;
+        let signature =
+            hex::decode(signature_hex).map_err(|e| format!("Invalid Cosmos signature: {}", e))?;
+
+        let tx_hex = format!(
+            "0x{}",
+            hex::encode(tx.signed_tx_bytes(&compressed_public_key, &signature))
+        );
+        let tx_hash = self
+            .provider
+            .send_raw_transaction(&tx_hex)
+            .await
+            .map_err(|e| format!("Failed to broadcast Cosmos tx: {}", e))?;
+
+        self.record_completed_payout(
+            swap_id,
+            &tx_hash,
+            actual_balance,
+            payout_amount,
+            service_fee,
+            network_fee,
+        )
+        .await?;
+
+        Ok(PayoutResponse {
+            tx_hash,
+            amount: payout_amount,
+            status: crate::modules::wallet::model::PayoutStatus::Success,
+        })
     }
 
     /// Process Substrate chain payout
@@ -1629,8 +2195,13 @@ fn resolve_token_payout(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_payout_route, resolve_token_payout, PayoutRoute, TokenPayoutRoute};
+    use super::{
+        ensure_local_payout_capability, resolve_evm_chain_config_by_key, resolve_payout_route,
+        resolve_token_payout, PayoutRoute, TokenPayoutRoute,
+    };
     use crate::modules::wallet::model::PayoutAssetMetadata;
+    use crate::services::rpc::build_default_rpc_configs;
+    use crate::services::wallet::cosmos_rpc::supported_cosmos_chain;
 
     #[test]
     fn ethereum_mainnet_uses_native_evm_route() {
@@ -1645,6 +2216,48 @@ mod tests {
         assert_eq!(
             resolve_payout_route("ETH", "base").unwrap(),
             PayoutRoute::EvmNative { chain_id: 8_453 }
+        );
+    }
+
+    #[test]
+    fn metis_mainnet_uses_exact_chain_id() {
+        assert_eq!(
+            resolve_payout_route("METIS", "Mainnet").unwrap(),
+            PayoutRoute::EvmNative { chain_id: 1_088 }
+        );
+    }
+
+    #[test]
+    fn scroll_eth_route_uses_exact_chain_id() {
+        assert_eq!(
+            resolve_payout_route("ETH", "SCROLL").unwrap(),
+            PayoutRoute::EvmNative { chain_id: 534_352 }
+        );
+    }
+
+    #[test]
+    fn syscoin_mainnet_uses_exact_chain_id() {
+        assert_eq!(
+            resolve_payout_route("SYS", "Mainnet").unwrap(),
+            PayoutRoute::EvmNative { chain_id: 57 }
+        );
+    }
+
+    #[test]
+    fn bouncebit_mainnet_uses_exact_chain_id() {
+        assert_eq!(
+            resolve_payout_route("BB", "Mainnet").unwrap(),
+            PayoutRoute::EvmNative { chain_id: 6_001 }
+        );
+    }
+
+    #[test]
+    fn supra_mainnet_uses_exact_chain_id() {
+        assert_eq!(
+            resolve_payout_route("SUPRA", "Mainnet").unwrap(),
+            PayoutRoute::EvmNative {
+                chain_id: 523_994_005_626
+            }
         );
     }
 
@@ -1686,5 +2299,88 @@ mod tests {
 
         let resolved = resolve_token_payout(&metadata, "BEP20").unwrap().unwrap();
         assert_eq!(resolved.route, TokenPayoutRoute::Evm { chain_id: 56 });
+    }
+
+    #[test]
+    fn local_payout_capability_accepts_supported_cosmos_routes() {
+        ensure_local_payout_capability("ATOM", "Mainnet", None)
+            .expect("cosmos hub should now be locally executable");
+        ensure_local_payout_capability("AKT", "Mainnet", None)
+            .expect("akash should now be locally executable");
+        ensure_local_payout_capability("AXEL", "Mainnet", None)
+            .expect("axelar should now be locally executable");
+        ensure_local_payout_capability("CHEQ", "MAINNET", None)
+            .expect("cheqd should now be locally executable");
+        ensure_local_payout_capability("COREUM", "MAINNET", None)
+            .expect("coreum should now be locally executable");
+        ensure_local_payout_capability("DYDX", "MAINNET", None)
+            .expect("dydx should now be locally executable");
+        ensure_local_payout_capability("DYM", "MAINNET", None)
+            .expect("dymension should now be locally executable");
+        ensure_local_payout_capability("FET", "Mainnet", None)
+            .expect("fetch should now be locally executable");
+        ensure_local_payout_capability("INIT", "MAINNET", None)
+            .expect("initia should now be locally executable");
+        ensure_local_payout_capability("KYVE", "MAINNET", None)
+            .expect("kyve should now be locally executable");
+        ensure_local_payout_capability("NTRN", "MAINNET", None)
+            .expect("neutron should now be locally executable");
+        ensure_local_payout_capability("REGEN", "Mainnet", None)
+            .expect("regen should now be locally executable");
+    }
+
+    #[test]
+    fn local_payout_capability_rejects_unsupported_cosmos_routes() {
+        let err = ensure_local_payout_capability("INJ", "MAINNET", None)
+            .expect_err("unsupported cosmos variants should still be rejected");
+        assert!(err.contains("not implemented for this exact chain"));
+    }
+
+    #[test]
+    fn local_payout_capability_accepts_native_evm_routes() {
+        ensure_local_payout_capability("ETH", "ERC20", None)
+            .expect("ethereum native payouts should be locally executable");
+        ensure_local_payout_capability("METIS", "Mainnet", None)
+            .expect("metis mainnet payouts should now be locally executable");
+        ensure_local_payout_capability("ETH", "SCROLL", None)
+            .expect("scroll native eth payouts should now be locally executable");
+        ensure_local_payout_capability("SYS", "Mainnet", None)
+            .expect("syscoin nevm mainnet payouts should now be locally executable");
+        ensure_local_payout_capability("SUPRA", "Mainnet", None)
+            .expect("supra mainnet payouts should now be locally executable");
+    }
+
+    #[test]
+    fn local_payout_capability_rejects_spl_tokens() {
+        let metadata = PayoutAssetMetadata {
+            symbol: "USDC".to_string(),
+            network: "solana".to_string(),
+            contract_address: Some("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()),
+            decimals: 6,
+            gas_multiplier: 1.0,
+        };
+
+        let err = ensure_local_payout_capability("USDC", "SPL", Some(&metadata))
+            .expect_err("spl token payouts should remain disabled");
+        assert!(err.contains("SPL token payout broadcasting"));
+    }
+
+    #[test]
+    fn configured_rpc_catalog_reports_current_direct_local_send_coverage() {
+        let configs = build_default_rpc_configs();
+
+        let direct_local = configs
+            .keys()
+            .filter(|chain_key| {
+                matches!(
+                    chain_key.as_str(),
+                    "bitcoin" | "solana" | "tron" | "algorand"
+                ) || resolve_evm_chain_config_by_key(chain_key).is_some()
+                    || supported_cosmos_chain(chain_key).is_some()
+            })
+            .count();
+
+        assert_eq!(configs.len(), 223);
+        assert_eq!(direct_local, 106);
     }
 }

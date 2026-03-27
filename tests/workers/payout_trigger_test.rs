@@ -112,7 +112,7 @@ async fn create_test_swap_with_provider(
             id, provider_id, provider_swap_id, from_currency, from_network, to_currency, to_network,
             amount, estimated_receive, rate, deposit_address, recipient_address, status
         )
-        VALUES (?, 'changenow', ?, 'BTC', 'bitcoin', 'ETH', 'ethereum', 0.1, 1.5, 15.0, 'dep_addr', '0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12', ?)
+        VALUES (?, 'changenow', ?, 'BTC', 'bitcoin', 'ETH', 'ethereum', 0.1, 1.5, 15.0, 'dep_addr', '0x742d35Cc6634C0532925a3b844Bc454e4438f44e', ?)
         "#
     )
     .bind(swap_id)

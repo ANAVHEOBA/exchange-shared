@@ -75,14 +75,24 @@ fn push_candidate(candidates: &mut Vec<String>, value: impl Into<String>) {
 
 fn network_alias_chain_key(network_key: &str) -> Option<&'static str> {
     match network_key {
+        "aleo" => Some("aleo"),
         "arb" => Some("arbitrum_one"),
+        "ae" => Some("aeternity"),
+        "alph" => Some("alephium"),
+        "area" => Some("arena_z"),
+        "dag" => Some("constellation_dag"),
         "eth" | "erc20" => Some("ethereum"),
         "btc" | "lightning" | "omni" | "brc20" => Some("bitcoin"),
         "bsc" | "smartchain" | "bep20" => Some("bnb_smart_chain"),
+        "bb" => Some("bouncebit"),
         "bep2" => Some("binance_chain"),
         "bera" => Some("berachain"),
+        "etn" => Some("electroneum"),
+        "ethw" => Some("ethereumpow"),
         "trx" | "trc20" => Some("tron"),
         "sol" | "spl" => Some("solana"),
+        "hmnd" => Some("humanode"),
+        "htr" => Some("hathor"),
         "matic" => Some("polygon"),
         "arbitrum" => Some("arbitrum_one"),
         "avaxc" => Some("avalanche_c_chain"),
@@ -100,21 +110,29 @@ fn network_alias_chain_key(network_key: &str) -> Option<&'static str> {
         "fct" => Some("factom"),
         "fil" => Some("filecoin"),
         "filevm" => Some("filecoin"),
+        "fio" => Some("fio"),
         "fitfi" => Some("step_network"),
         "flr" => Some("flare"),
         "ftm" => Some("fantom"),
         "freeton" => Some("everscale"),
+        "glq" => Some("graphlinq"),
+        "gmmt" => Some("gmmt"),
         "hbar" => Some("hedera"),
         "hyperevm" => Some("hyper_evm"),
         "islmevm" => Some("haqq"),
+        "joc" => Some("japan_open_chain"),
         "kai" => Some("kaichain"),
         "kava" => Some("kava_evm"),
         "kip7" | "klay" => Some("kaia_legacy"),
         "kaia" => Some("kaia"),
+        "kda" => Some("kadena"),
         "klc" => Some("kalychain"),
         "manta" => Some("manta_pacific"),
+        "mapo" => Some("map_protocol"),
+        "meter" => Some("meter"),
         "metall2" => Some("metal_l2"),
         "mnt" => Some("mantle"),
+        "nrg" => Some("energi"),
         "n2" | "n3" | "neo" | "neo3" => Some("neo_n3"),
         "nim" => Some("nimiq"),
         "oas" => Some("oasys"),
@@ -122,25 +140,36 @@ fn network_alias_chain_key(network_key: &str) -> Option<&'static str> {
         "ont" => Some("ontology"),
         "pokt" => Some("pocket"),
         "pulse" => Some("pulsechain"),
+        "reef" => Some("reef"),
         "rei" => Some("rei_network"),
         "rsk" => Some("rootstock"),
         "scr" => Some("scroll"),
         "seievm" => Some("sei"),
+        "sgb" => Some("songbird"),
         "shielded" => Some("zcash"),
+        "soph" => Some("sophon"),
+        "supra" => Some("supra"),
         "stark" | "strk" => Some("starknet"),
         "strax" => Some("stratis_evm"),
+        "steem" => Some("steem"),
         "stx" => Some("stacks"),
         "sys" => Some("syscoin_nevm"),
         "sysnevm" => Some("syscoin_nevm"),
         "tlos" => Some("telos"),
         "tlosevm" => Some("telos"),
+        "vanry" => Some("vanar"),
         "vet" => Some("vechain"),
+        "venom" => Some("venom"),
+        "vic" => Some("viction"),
         "wan" => Some("wanchain"),
         "xlm" => Some("stellar"),
+        "xno" => Some("nano"),
         "xrp" => Some("xrp"),
+        "xrd" => Some("radix"),
         "xtz" => Some("tezos"),
         "zel" => Some("flux"),
         "zeta" => Some("zetachain"),
+        "zklink" => Some("zklink"),
         "zksync" => Some("zksync_era"),
         _ => None,
     }
@@ -245,24 +274,60 @@ fn resolve_mainnet_chain_key(ticker_key: &str) -> String {
 
 fn evm_mainnet_chain_key(ticker_key: &str) -> Option<&'static str> {
     match ticker_key {
+        "aleo" => Some("aleo"),
+        "ae" => Some("aeternity"),
         "arb" => Some("arbitrum_one"),
+        "abey" => Some("abeychain"),
+        "bb" => Some("bouncebit"),
+        "alph" => Some("alephium"),
+        "area" => Some("arena_z"),
+        "ark" => Some("ark"),
         "bera" => Some("berachain"),
         "brise" => Some("bitgert"),
         "core" => Some("core_dao"),
+        "canto" => Some("canto"),
+        "coti" => Some("coti"),
+        "dag" => Some("constellation_dag"),
+        "deso" => Some("deso"),
+        "dero" => Some("dero"),
+        "dione" => Some("dione"),
+        "elf" => Some("aelf"),
         "eth" => Some("ethereum"),
+        "etn" => Some("electroneum"),
+        "etc" => Some("ethereum_classic"),
+        "ethw" => Some("ethereumpow"),
+        "ergo" => Some("ergo"),
         "fil" => Some("filecoin"),
+        "firo" => Some("firo"),
+        "glq" => Some("graphlinq"),
+        "gmmt" => Some("gmmt"),
         "bnb" => Some("bnb_smart_chain"),
+        "fra" => Some("findora"),
         "matic" | "pol" => Some("polygon"),
         "avax" => Some("avalanche_c_chain"),
         "ftm" => Some("fantom"),
+        "ewt" => Some("energy_web"),
+        "hmnd" => Some("humanode"),
+        "htr" => Some("hathor"),
+        "iost" => Some("iost"),
+        "joc" => Some("japan_open_chain"),
         "klay" => Some("kaia_legacy"),
+        "kda" => Some("kadena"),
+        "lsk" => Some("lisk"),
+        "lyx" => Some("lukso"),
+        "mapo" => Some("map_protocol"),
         "manta" => Some("manta_pacific"),
         "mnt" => Some("mantle"),
+        "mtrg" => Some("meter"),
+        "nrg" => Some("energi"),
         "oas" => Some("oasys"),
         "op" => Some("optimism"),
+        "pivx" => Some("pivx"),
+        "reef" => Some("reef"),
         "rei" => Some("rei_network"),
         "s" => Some("sonic"),
         "scr" => Some("scroll"),
+        "sgb" => Some("songbird"),
         "celo" => Some("celo"),
         "glmr" => Some("moonbeam"),
         "movr" => Some("moonriver"),
@@ -277,10 +342,22 @@ fn evm_mainnet_chain_key(ticker_key: &str) -> Option<&'static str> {
         "flr" => Some("flare"),
         "rbtc" => Some("rootstock"),
         "pls" => Some("pulsechain"),
+        "quai" => Some("quai"),
         "rose" => Some("oasis_sapphire"),
+        "soph" => Some("sophon"),
+        "steem" => Some("steem"),
+        "supra" => Some("supra"),
         "sys" => Some("syscoin_nevm"),
         "tlos" => Some("telos"),
+        "u2u" => Some("u2u"),
+        "vanry" => Some("vanar"),
+        "venom" => Some("venom"),
+        "vic" => Some("viction"),
         "wan" => Some("wanchain"),
+        "xno" => Some("nano"),
+        "xrd" => Some("radix"),
+        "zk" => Some("zksync_era"),
+        "zetrix" => Some("zetrix"),
         "zeta" => Some("zetachain"),
         _ => None,
     }
@@ -342,6 +419,31 @@ mod tests {
             chain_key_candidates("BTC", "Lightning"),
             vec!["bitcoin", "lightning"]
         );
+        assert_eq!(chain_key_candidates("mtrg", "MAINNET"), vec!["meter"]);
+        assert_eq!(
+            chain_key_candidates("dag", "MAINNET"),
+            vec!["constellation_dag"]
+        );
+        assert_eq!(chain_key_candidates("aleo", "MAINNET"), vec!["aleo"]);
+        assert_eq!(chain_key_candidates("steem", "MAINNET"), vec!["steem"]);
+        assert_eq!(chain_key_candidates("venom", "MAINNET"), vec!["venom"]);
+        assert_eq!(chain_key_candidates("xno", "MAINNET"), vec!["nano"]);
+        assert_eq!(chain_key_candidates("sgb", "MAINNET"), vec!["songbird"]);
+        assert_eq!(chain_key_candidates("bb", "MAINNET"), vec!["bouncebit"]);
+        assert_eq!(chain_key_candidates("caps", "MAINNET"), vec!["ternoa"]);
+        assert_eq!(chain_key_candidates("soph", "MAINNET"), vec!["sophon"]);
+        assert_eq!(chain_key_candidates("supra", "MAINNET"), vec!["supra"]);
+        assert_eq!(chain_key_candidates("quai", "MAINNET"), vec!["quai"]);
+        assert_eq!(chain_key_candidates("vic", "MAINNET"), vec!["viction"]);
+        assert_eq!(chain_key_candidates("vanry", "MAINNET"), vec!["vanar"]);
+        assert_eq!(chain_key_candidates("area", "MAINNET"), vec!["arena_z"]);
+        assert_eq!(
+            chain_key_candidates("joc", "MAINNET"),
+            vec!["japan_open_chain"]
+        );
+        assert_eq!(chain_key_candidates("nrg", "MAINNET"), vec!["energi"]);
+        assert_eq!(chain_key_candidates("glq", "MAINNET"), vec!["graphlinq"]);
+        assert_eq!(chain_key_candidates("eth", "KATANA"), vec!["katana"]);
         assert_eq!(
             chain_key_candidates("MBX", "KIP7"),
             vec!["kaia_legacy", "kip7"]

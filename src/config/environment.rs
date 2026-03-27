@@ -1,10 +1,13 @@
 use std::env;
 
+use crate::services::payout_policy::PayoutPolicyConfig;
+
 /// Environment configuration
 /// Loads and validates environment variables
 pub struct Config {
     pub database_url: String,
     pub redis_url: String,
+    pub port: u16,
     pub jwt_secret: String,
     pub trocador_api_key: String,
     pub wallet_mnemonic: String,
@@ -24,6 +27,7 @@ pub struct Config {
     pub rpc_cache_enabled: bool,
     pub rpc_cache_ttl_seconds: u64,
     pub rpc_log_enabled: bool,
+    pub payout_policy: PayoutPolicyConfig,
 }
 
 impl Config {
@@ -34,6 +38,11 @@ impl Config {
             env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
 
         let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+
+        let port = env::var("PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
 
         let jwt_secret =
             env::var("JWT_SECRET").map_err(|_| "JWT_SECRET must be set".to_string())?;
@@ -86,6 +95,7 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(false);
+        let payout_policy = PayoutPolicyConfig::from_env();
 
         // Log RPC configuration status
         if alchemy_api_key.is_some() {
@@ -105,9 +115,16 @@ impl Config {
             tracing::info!("✅ dRPC API key detected - available as fallback");
         }
 
+        tracing::info!(
+            "🧭 Payout policy loaded: local_certified={} trocador_only_overrides={}",
+            payout_policy.local_certified_chain_keys().join(","),
+            payout_policy.trocador_only_chain_keys().join(",")
+        );
+
         Ok(Self {
             database_url,
             redis_url,
+            port,
             jwt_secret,
             trocador_api_key,
             wallet_mnemonic,
@@ -123,6 +140,7 @@ impl Config {
             rpc_cache_enabled,
             rpc_cache_ttl_seconds,
             rpc_log_enabled,
+            payout_policy,
         })
     }
 

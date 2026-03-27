@@ -160,7 +160,9 @@ impl TrocadorClient {
         network_to: &str,
         amount: f64,
         address: &str,
+        address_memo: Option<&str>,
         refund: Option<&str>,
+        refund_memo: Option<&str>,
         provider: &str,
         fixed: bool,
         payment: bool,
@@ -186,6 +188,14 @@ impl TrocadorClient {
 
         if let Some(r) = refund {
             params.push(("refund", r.to_string()));
+        }
+
+        if let Some(memo) = address_memo {
+            params.push(("address_memo", memo.to_string()));
+        }
+
+        if let Some(memo) = refund_memo {
+            params.push(("refund_memo", memo.to_string()));
         }
 
         if let Some(rating) = min_kycrating {
@@ -274,10 +284,26 @@ impl TrocadorClient {
             )));
         }
 
-        let trade_response: TrocadorTradeResponse = response
-            .json()
+        let response_text = response
+            .text()
             .await
-            .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
+            .map_err(|e| TrocadorError::ParseError(format!("Failed to read response: {}", e)))?;
+
+        tracing::info!("🔵 Trocador trade raw response: {}", response_text);
+
+        let response_json: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| TrocadorError::ParseError(format!("Failed to parse response: {}", e)))?;
+        let trade_value = match response_json {
+            serde_json::Value::Array(mut items) => items.drain(..).next().ok_or_else(|| {
+                TrocadorError::ParseError("Trade response array was empty".to_string())
+            })?,
+            other => other,
+        };
+
+        let trade_response: TrocadorTradeResponse =
+            serde_json::from_value(trade_value).map_err(|e| {
+                TrocadorError::ParseError(format!("Failed to decode trade payload: {}", e))
+            })?;
 
         Ok(trade_response)
     }

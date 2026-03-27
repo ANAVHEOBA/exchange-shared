@@ -162,5 +162,5 @@ async fn sign_evm_transaction(seed: &str, tx: &EvmTransaction) -> String {
 }
 
 struct EvmTransaction {
-    chain_id: u32,
+    chain_id: u64,
 }

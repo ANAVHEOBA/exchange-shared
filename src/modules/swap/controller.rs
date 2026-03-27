@@ -8,12 +8,13 @@ use std::sync::Arc;
 
 use super::crud::{CurrenciesResult, SwapCrud};
 use super::schema::{
-    CreateSwapRequest, CreateSwapResponse, CurrenciesQuery, HistoryQuery, HistoryResponse,
-    ProvidersQuery, SwapErrorResponse, SwapStatusResponse, ValidateAddressRequest,
+    ClientHistoryResponse, CreateSwapRequest, CreateSwapResponse, CurrenciesQuery, HistoryQuery,
+    HistoryResponse, ProvidersQuery, SwapErrorResponse, SwapStatusResponse, ValidateAddressRequest,
     ValidateAddressResponse,
 };
 use super::service::SwapService;
-use crate::modules::auth::interface::{OptionalUser, User};
+use crate::middleware::client_identity::AnonymousClientId;
+use crate::middleware::user::{OptionalUser, User};
 use crate::AppState;
 
 fn swap_crud(state: &Arc<AppState>) -> SwapCrud {
@@ -21,6 +22,8 @@ fn swap_crud(state: &Arc<AppState>) -> SwapCrud {
         state.db.clone(),
         Some(state.redis.clone()),
         Some(state.wallet_mnemonic.clone()),
+        state.rpc_manager.clone(),
+        state.payout_policy.clone(),
     )
 }
 
@@ -29,6 +32,8 @@ fn swap_service(state: &Arc<AppState>) -> SwapService {
         state.db.clone(),
         Some(state.redis.clone()),
         Some(state.wallet_mnemonic.clone()),
+        state.rpc_manager.clone(),
+        state.payout_policy.clone(),
     )
 }
 
@@ -38,15 +43,33 @@ fn swap_service(state: &Arc<AppState>) -> SwapService {
 // POST /swap/create - Create a new swap
 // =============================================================================
 
+#[utoipa::path(
+    post,
+    path = "/swap/create",
+    tag = "Swap",
+    request_body = CreateSwapRequest,
+    responses(
+        (status = 201, description = "Swap created successfully", body = CreateSwapResponse),
+        (status = 400, description = "Invalid swap request", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
 pub async fn create_swap(
     State(state): State<Arc<AppState>>,
     user: OptionalUser,
+    client_id: AnonymousClientId,
     Json(payload): Json<CreateSwapRequest>,
 ) -> Result<(StatusCode, Json<CreateSwapResponse>), (StatusCode, Json<SwapErrorResponse>)> {
     let service = swap_service(&state);
+    let user_id = user.0.map(|u| u.id);
+    let anonymous_client_id = if user_id.is_none() {
+        Some(client_id.0)
+    } else {
+        None
+    };
 
     let response = service
-        .create_swap(&payload, user.0.map(|u| u.id))
+        .create_swap(&payload, user_id, anonymous_client_id)
         .await
         .map_err(|e| {
             let status = match e {
@@ -61,6 +84,16 @@ pub async fn create_swap(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/swap/currencies",
+    tag = "Swap",
+    params(CurrenciesQuery),
+    responses(
+        (status = 200, description = "List of supported currencies", body = [super::schema::CurrencyResponse]),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
 pub async fn get_currencies(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CurrenciesQuery>,
@@ -100,6 +133,16 @@ pub async fn get_currencies(
 // GET /swap/providers - List all exchange providers
 // =============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/swap/providers",
+    tag = "Swap",
+    params(ProvidersQuery),
+    responses(
+        (status = 200, description = "List of exchange providers", body = [super::schema::ProviderResponse]),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
 pub async fn get_providers(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProvidersQuery>,
@@ -139,6 +182,16 @@ pub async fn get_providers(
 // GET /swap/rates - Get live rates from all providers
 // =============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/swap/rates",
+    tag = "Swap",
+    params(super::schema::RatesQuery),
+    responses(
+        (status = 200, description = "Current swap rates", body = super::schema::RatesResponse),
+        (status = 502, description = "Upstream provider error", body = super::schema::SwapErrorResponse)
+    )
+)]
 pub async fn get_rates(
     State(state): State<Arc<AppState>>,
     Query(query): Query<super::schema::RatesQuery>,
@@ -160,6 +213,20 @@ pub async fn get_rates(
 // GET /swap/:id - Get swap status by ID
 // =============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/swap/{id}",
+    tag = "Swap",
+    params(
+        ("id" = String, Path, description = "Internal swap id")
+    ),
+    responses(
+        (status = 200, description = "Swap status", body = SwapStatusResponse),
+        (status = 404, description = "Swap not found", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Upstream provider error", body = SwapErrorResponse)
+    )
+)]
 pub async fn get_swap_status(
     State(state): State<Arc<AppState>>,
     Path(swap_id): Path<String>,
@@ -183,6 +250,18 @@ pub async fn get_swap_status(
 // POST /swap/validate-address - Validate cryptocurrency address
 // =============================================================================
 
+#[utoipa::path(
+    post,
+    path = "/swap/validate-address",
+    tag = "Swap",
+    request_body = ValidateAddressRequest,
+    responses(
+        (status = 200, description = "Address validation result", body = ValidateAddressResponse),
+        (status = 400, description = "Invalid address input", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Upstream provider error", body = SwapErrorResponse)
+    )
+)]
 pub async fn validate_address(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ValidateAddressRequest>,
@@ -206,6 +285,21 @@ pub async fn validate_address(
 // GET /swap/history - Get authenticated user's swap history
 // =============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/swap/history",
+    tag = "Swap",
+    params(HistoryQuery),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Authenticated user's swap history", body = HistoryResponse),
+        (status = 400, description = "Invalid history query", body = SwapErrorResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = String),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
 pub async fn get_swap_history(
     State(state): State<Arc<AppState>>,
     user: User, // Requires authentication
@@ -229,9 +323,69 @@ pub async fn get_swap_history(
 }
 
 // =============================================================================
+// GET /swap/history/client - Get anonymous client's swap history
+// =============================================================================
+
+#[utoipa::path(
+    get,
+    path = "/swap/history/client",
+    tag = "Swap",
+    params(HistoryQuery),
+    responses(
+        (
+            status = 200,
+            description = "Anonymous client's swap history",
+            body = ClientHistoryResponse,
+            headers(
+                ("x-client-id" = String, description = "Stable anonymous client identifier returned in both the response header and body")
+            )
+        ),
+        (status = 400, description = "Invalid history query", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_client_swap_history(
+    State(state): State<Arc<AppState>>,
+    client_id: AnonymousClientId,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<ClientHistoryResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = swap_crud(&state);
+
+    let response = crud
+        .get_swap_history_for_client(client_id.as_str(), query)
+        .await
+        .map_err(|e| {
+            let status = match e {
+                super::crud::SwapError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
+                super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (status, Json(SwapErrorResponse::new(e.to_string())))
+        })?;
+
+    Ok(Json(ClientHistoryResponse {
+        client_id: client_id.0,
+        swaps: response.swaps,
+        pagination: response.pagination,
+        filters_applied: response.filters_applied,
+    }))
+}
+
+// =============================================================================
 // GET /swap/pairs - List available trading pairs
 // =============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/swap/pairs",
+    tag = "Swap",
+    params(super::schema::PairsQuery),
+    responses(
+        (status = 200, description = "Available trading pairs", body = super::schema::PairsResponse),
+        (status = 400, description = "Invalid pairs query", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
 pub async fn get_pairs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<super::schema::PairsQuery>,
@@ -253,6 +407,19 @@ pub async fn get_pairs(
 // GET /swap/estimate - Quick rate preview without creating swap
 // =============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/swap/estimate",
+    tag = "Swap",
+    params(super::schema::EstimateQuery),
+    responses(
+        (status = 200, description = "Estimated swap result", body = super::schema::EstimateResponse),
+        (status = 400, description = "Invalid estimate query", body = SwapErrorResponse),
+        (status = 404, description = "Trading pair not available", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Upstream provider error", body = SwapErrorResponse)
+    )
+)]
 pub async fn get_estimate(
     State(state): State<Arc<AppState>>,
     Query(query): Query<super::schema::EstimateQuery>,

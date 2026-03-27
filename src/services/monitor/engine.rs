@@ -4,7 +4,7 @@ use crate::modules::swap::status::SwapStatus;
 use crate::services::redis_cache::RedisService;
 use crate::services::rpc::{build_provider_for_asset, RpcManager};
 use crate::services::settlement::{SettlementOutcome, SettlementService};
-use crate::services::trocador::TrocadorGateway;
+use crate::services::trocador::{TrocadorError, TrocadorGateway};
 use crate::services::wallet::rpc::BlockchainProvider;
 use sqlx::{MySql, Pool};
 use std::sync::Arc;
@@ -19,6 +19,7 @@ struct SwapRuntimeInfo {
     created_at: chrono::DateTime<chrono::Utc>,
     to_currency: String,
     to_network: String,
+    recipient_address: String,
 }
 
 pub struct MonitorEngine {
@@ -28,6 +29,9 @@ pub struct MonitorEngine {
     strategy: PollingStrategy,
     rpc_manager: Arc<RpcManager>,
 }
+
+const TERMINAL_PROVIDER_LOOKUP_RETRY_SECS: u64 = 60 * 60 * 24 * 365 * 10;
+const PROVIDER_TRADE_MISSING_STATUS: &str = "provider_trade_missing";
 
 impl MonitorEngine {
     pub fn new(
@@ -75,7 +79,7 @@ impl MonitorEngine {
 
         // 2. Fetch Swap Details
         let swap: SwapRuntimeInfo = sqlx::query_as(
-            "SELECT provider_swap_id, status, created_at, to_currency, to_network FROM swaps WHERE id = ?",
+            "SELECT provider_swap_id, status, created_at, to_currency, to_network, recipient_address FROM swaps WHERE id = ?",
         )
         .bind(&state.swap_id)
         .fetch_optional(&self.db)
@@ -180,6 +184,22 @@ impl MonitorEngine {
         let trocador_trade = match trocador_gateway.fetch_trade_status(&provider_swap_id).await {
             Ok(trade) => trade,
             Err(e) => {
+                if Self::is_terminal_provider_lookup_error(&e) {
+                    tracing::warn!(
+                        "Provider trade lookup is permanently invalid for swap {} (provider_swap_id={}). Retiring monitor polling: {}",
+                        state.swap_id,
+                        provider_swap_id,
+                        e
+                    );
+                    self.update_poll_result(
+                        &state.swap_id,
+                        PROVIDER_TRADE_MISSING_STATUS,
+                        TERMINAL_PROVIDER_LOOKUP_RETRY_SECS,
+                    )
+                    .await;
+                    return Ok(());
+                }
+
                 tracing::warn!(
                     "Failed to fetch provider status for swap {}. Retrying later: {}",
                     state.swap_id,
@@ -206,9 +226,53 @@ impl MonitorEngine {
             let address_info = match wallet_crud.get_address_info(&state.swap_id).await {
                 Ok(Some(info)) => info,
                 Ok(None) => {
-                    tracing::error!("No address info found for swap {}", state.swap_id);
-                    final_status = "error".to_string();
-                    next_poll_secs = 300;
+                    let provider_managed_payout = trocador_trade.address_user
+                        == swap.recipient_address
+                        || trocador_trade
+                            .address_user
+                            .eq_ignore_ascii_case(&swap.recipient_address);
+
+                    if provider_managed_payout {
+                        tracing::info!(
+                            "✅ Swap {} finished with provider-managed payout to {}. Marking completed without local settlement.",
+                            state.swap_id,
+                            swap.recipient_address
+                        );
+
+                        match sqlx::query(
+                            "UPDATE swaps SET status = ?, actual_receive = ?, completed_at = NOW(), updated_at = NOW() WHERE id = ?",
+                        )
+                        .bind(SwapStatus::Completed.as_str())
+                        .bind(trocador_trade.amount_to)
+                        .bind(&state.swap_id)
+                        .execute(&self.db)
+                        .await
+                        {
+                            Ok(_) => {
+                                final_status = SwapStatus::Completed.as_str().to_string();
+                                next_poll_secs = 86400;
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to mark provider-managed swap {} as completed: {}",
+                                    state.swap_id,
+                                    e
+                                );
+                                final_status = "error".to_string();
+                                next_poll_secs = 300;
+                            }
+                        }
+                    } else {
+                        tracing::error!(
+                            "No address info found for swap {}, and provider recipient {} does not match stored recipient {}",
+                            state.swap_id,
+                            trocador_trade.address_user,
+                            swap.recipient_address
+                        );
+                        final_status = "error".to_string();
+                        next_poll_secs = 300;
+                    }
+
                     self.update_poll_result(&state.swap_id, &final_status, next_poll_secs)
                         .await;
                     return Ok(());
@@ -354,5 +418,39 @@ impl MonitorEngine {
                 e
             );
         }
+    }
+
+    fn is_terminal_provider_lookup_error(error: &TrocadorError) -> bool {
+        match error {
+            TrocadorError::ApiError(message) => {
+                let normalized = message.to_ascii_lowercase();
+                normalized.contains("trade not found")
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MonitorEngine;
+    use crate::services::trocador::TrocadorError;
+
+    #[test]
+    fn trade_not_found_is_treated_as_terminal_monitor_error() {
+        assert!(MonitorEngine::is_terminal_provider_lookup_error(
+            &TrocadorError::ApiError(
+                "API returned error: {\"error\": \"trade not found\"}".to_string()
+            )
+        ));
+    }
+
+    #[test]
+    fn rate_limit_is_not_treated_as_terminal_monitor_error() {
+        assert!(!MonitorEngine::is_terminal_provider_lookup_error(
+            &TrocadorError::ApiError(
+                "API returned error: {\"error\":\"Rate limit exceeded\"}".to_string()
+            )
+        ));
     }
 }

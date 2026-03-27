@@ -9,12 +9,25 @@ use crate::modules::auth::{
     model::User,
     schema,
     schema::{
-        ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, UserResponse,
+        ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse,
+        UserResponse, VerifyEmailQuery,
     },
 };
 use crate::services::hashing;
 use crate::AppState;
 
+#[utoipa::path(
+    post,
+    path = "/auth/register",
+    tag = "Auth",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "User registered successfully", body = RegisterResponse),
+        (status = 400, description = "Validation error", body = ErrorResponse),
+        (status = 409, description = "Email or username already exists", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
@@ -167,6 +180,18 @@ pub async fn register(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "Auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login succeeded", body = LoginResponse),
+        (status = 401, description = "Invalid credentials", body = ErrorResponse),
+        (status = 403, description = "Email not verified", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
@@ -201,18 +226,24 @@ pub async fn login(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/auth/verify-email",
+    tag = "Auth",
+    params(VerifyEmailQuery),
+    responses(
+        (status = 200, description = "Email verified", body = schema::VerifyEmailResponse),
+        (status = 400, description = "Missing or invalid token", body = ErrorResponse),
+        (status = 500, description = "Server error", body = ErrorResponse)
+    )
+)]
 pub async fn verify_email(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(params): axum::extract::Query<VerifyEmailQuery>,
 ) -> Result<(StatusCode, Json<schema::VerifyEmailResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let token = params.get("token").ok_or((
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("Missing token parameter")),
-    ))?;
-
     let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
 
-    crud.verify_email_token(token).await.map_err(|e| {
+    crud.verify_email_token(&params.token).await.map_err(|e| {
         let status = match e {
             AuthError::TokenError(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,

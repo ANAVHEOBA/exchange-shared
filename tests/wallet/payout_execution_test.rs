@@ -17,11 +17,12 @@ use common::TestContext;
 use exchange_shared::modules::wallet::crud::WalletCrud;
 use exchange_shared::modules::wallet::model::PayoutStatus;
 use exchange_shared::modules::wallet::schema::{GenerateAddressRequest, PayoutRequest};
+use exchange_shared::services::wallet::cosmos_rpc::supported_cosmos_chain;
 use exchange_shared::services::wallet::derivation;
 use exchange_shared::services::wallet::manager::WalletManager;
 use exchange_shared::services::wallet::rpc::{
-    BlockchainProvider, RpcError, TronContractCallResponse, TronContractTriggerResult,
-    TronPreparedTransaction,
+    BlockchainProvider, CosmosAccountState, RpcError, TronContractCallResponse,
+    TronContractTriggerResult, TronPreparedTransaction,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,6 +47,8 @@ struct MockProvider {
     tron_trigger_calls: Arc<Mutex<Vec<(String, String, String, String, u64)>>>,
     tron_broadcasts: Arc<Mutex<Vec<TronPreparedTransaction>>>,
     tron_token_balance_hex: String,
+    cosmos_account_state: CosmosAccountState,
+    cosmos_account_requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockProvider {
@@ -62,6 +65,12 @@ impl MockProvider {
             tron_trigger_calls: Arc::new(Mutex::new(Vec::new())),
             tron_broadcasts: Arc::new(Mutex::new(Vec::new())),
             tron_token_balance_hex: "0".to_string(),
+            cosmos_account_state: CosmosAccountState {
+                account_number: 7,
+                sequence: 11,
+                chain_id: "neutron-1".to_string(),
+            },
+            cosmos_account_requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -77,6 +86,20 @@ impl MockProvider {
 
     fn with_tron_token_balance_hex(mut self, tron_token_balance_hex: &str) -> Self {
         self.tron_token_balance_hex = tron_token_balance_hex.to_string();
+        self
+    }
+
+    fn with_cosmos_account_state(
+        mut self,
+        account_number: u64,
+        sequence: u64,
+        chain_id: &str,
+    ) -> Self {
+        self.cosmos_account_state = CosmosAccountState {
+            account_number,
+            sequence,
+            chain_id: chain_id.to_string(),
+        };
         self
     }
 }
@@ -209,6 +232,17 @@ impl BlockchainProvider for MockProvider {
             .push(transaction.clone());
         Ok(self.broadcast_hash.clone())
     }
+
+    async fn cosmos_get_account_state(
+        &self,
+        address: &str,
+    ) -> Result<CosmosAccountState, RpcError> {
+        self.cosmos_account_requests
+            .lock()
+            .unwrap()
+            .push(address.to_string());
+        Ok(self.cosmos_account_state.clone())
+    }
 }
 
 #[derive(Clone)]
@@ -335,6 +369,191 @@ async fn insert_token_metadata(
     .expect("Failed to insert token metadata");
 }
 
+async fn assert_native_evm_payout_route(ticker: &str, network: &str, expected_chain_id: u64) {
+    let ctx = TestContext::new().await;
+    let seed_phrase = common::test_wallet_mnemonic();
+
+    let crud = WalletCrud::new(ctx.db.clone());
+    let mock_provider = Arc::new(MockProvider::new());
+    let manager = WalletManager::new(crud, seed_phrase.to_string(), mock_provider.clone());
+
+    let swap_id = Uuid::new_v4().to_string();
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
+    create_payout_ready_swap_for_route(&ctx.db, &swap_id, recipient, 1.0, ticker, network).await;
+
+    manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: ticker.to_string(),
+            network: network.to_string(),
+            user_recipient_address: recipient.to_string(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
+    let response = manager
+        .process_payout(PayoutRequest {
+            swap_id: swap_id.clone(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, PayoutStatus::Success);
+
+    let broadcasted = mock_provider.broadcasted_txs.lock().unwrap().clone();
+    assert_eq!(
+        broadcasted.len(),
+        1,
+        "Expected one broadcasted native EVM tx"
+    );
+
+    let raw_tx = hex::decode(broadcasted[0].trim_start_matches("0x")).unwrap();
+    let envelope = TxEnvelope::decode_2718(&mut raw_tx.as_slice()).unwrap();
+    let signed = envelope.as_legacy().expect("Expected legacy EVM envelope");
+
+    assert_eq!(signed.tx().chain_id, Some(expected_chain_id));
+    assert!(
+        matches!(signed.tx().to, TxKind::Call(address) if address == recipient.parse::<AlloyAddress>().unwrap()),
+        "Expected native transfer recipient to match user address"
+    );
+
+    let expected_network_fee: f64 = 21_000.0 * 20_000_000_000.0 / 1_000_000_000_000_000_000.0;
+    let expected_payout: f64 = 1.0 - 0.01 - expected_network_fee;
+    let expected_value =
+        U256::from((expected_payout * 1_000_000_000_000_000_000.0f64).round() as u128);
+    assert_eq!(signed.tx().value, expected_value);
+
+    let info = WalletCrud::new(ctx.db.clone())
+        .get_address_info(&swap_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.status, "success");
+    assert_eq!(info.payout_tx_hash, Some("0xrealhash123".to_string()));
+    assert_eq!(info.actual_received, Some(1.0));
+    assert_eq!(info.commission_taken, Some(0.01));
+    assert_eq!(info.network_fee_paid, Some(0.00042));
+
+    ctx.cleanup().await;
+}
+
+async fn assert_native_cosmos_payout_route(
+    ticker: &str,
+    network: &str,
+    chain_key: &str,
+    chain_id: &str,
+) {
+    assert_native_cosmos_payout_route_with_balance(ticker, network, chain_key, chain_id, 1.0).await;
+}
+
+async fn assert_native_cosmos_payout_route_with_balance(
+    ticker: &str,
+    network: &str,
+    chain_key: &str,
+    chain_id: &str,
+    actual_balance: f64,
+) {
+    let ctx = TestContext::new().await;
+    let seed_phrase = common::test_wallet_mnemonic();
+
+    let crud = WalletCrud::new(ctx.db.clone());
+    let mock_provider = Arc::new(
+        MockProvider::new()
+            .with_native_balance(actual_balance)
+            .with_cosmos_account_state(7, 11, chain_id),
+    );
+    let manager = WalletManager::new(crud, seed_phrase.to_string(), mock_provider.clone());
+
+    let swap_id = Uuid::new_v4().to_string();
+    let recipient = derivation::derive_address(&seed_phrase, ticker, network, 77)
+        .await
+        .expect("valid cosmos recipient");
+
+    create_payout_ready_swap_for_route(
+        &ctx.db,
+        &swap_id,
+        &recipient,
+        actual_balance,
+        ticker,
+        network,
+    )
+    .await;
+
+    manager
+        .get_or_generate_address(GenerateAddressRequest {
+            swap_id: swap_id.clone(),
+            ticker: ticker.to_string(),
+            network: network.to_string(),
+            user_recipient_address: recipient.clone(),
+            user_recipient_extra_id: None,
+        })
+        .await
+        .unwrap();
+
+    let our_address = WalletCrud::new(ctx.db.clone())
+        .get_address_info(&swap_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .our_address;
+
+    let response = manager
+        .process_payout(PayoutRequest {
+            swap_id: swap_id.clone(),
+        })
+        .await
+        .unwrap();
+
+    let route = supported_cosmos_chain(chain_key).expect("cosmos route config");
+    let expected_network_fee = route.network_fee_native();
+    let expected_payout = actual_balance - 0.01 - expected_network_fee;
+
+    assert_eq!(response.status, PayoutStatus::Success);
+    assert!(
+        (response.amount - expected_payout).abs() < 0.0000001,
+        "Expected {} payout, got {}",
+        expected_payout,
+        response.amount
+    );
+
+    let cosmos_requests = mock_provider
+        .cosmos_account_requests
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(cosmos_requests, vec![our_address.clone()]);
+
+    let broadcasted = mock_provider.broadcasted_txs.lock().unwrap().clone();
+    assert_eq!(broadcasted.len(), 1, "Expected one broadcasted Cosmos tx");
+    assert!(
+        broadcasted[0].starts_with("0x"),
+        "Expected hex-encoded Cosmos tx bytes"
+    );
+    let raw_tx = hex::decode(broadcasted[0].trim_start_matches("0x")).unwrap();
+    assert!(
+        raw_tx.len() > 100,
+        "Expected a non-trivial signed Cosmos tx payload"
+    );
+
+    let info = WalletCrud::new(ctx.db.clone())
+        .get_address_info(&swap_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.status, "success");
+    assert_eq!(info.payout_tx_hash, Some("0xrealhash123".to_string()));
+    assert_eq!(info.actual_received, Some(actual_balance));
+    assert_eq!(info.commission_taken, Some(0.01));
+    assert_eq!(info.network_fee_paid, Some(expected_network_fee));
+    assert!(
+        (info.payout_amount.expect("payout amount recorded") - expected_payout).abs() < 0.0000001
+    );
+
+    ctx.cleanup().await;
+}
+
 // =============================================================================
 // TEST 1: Payout Deduction During Payout
 // The wallet payout flow should subtract both the quoted service fee and the network fee.
@@ -350,7 +569,7 @@ async fn test_commission_deduction_on_payout() {
     let manager = WalletManager::new(crud, seed_phrase.to_string(), mock_provider.clone());
 
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
     let amount_from_trocador = 1.0;
 
     create_payout_ready_swap(&ctx.db, &swap_id, recipient, amount_from_trocador).await;
@@ -408,7 +627,7 @@ async fn test_payout_audit_trail() {
     let manager = WalletManager::new(crud, seed_phrase.to_string(), mock_provider);
 
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
     create_payout_ready_swap(&ctx.db, &swap_id, recipient, 0.5).await;
 
     manager
@@ -454,7 +673,7 @@ async fn test_concurrent_payout_attempts_use_processing_lock() {
 
     let provider = Arc::new(BlockingBroadcastProvider::new());
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
     create_payout_ready_swap(&ctx.db, &swap_id, recipient, 1.0).await;
 
@@ -541,7 +760,7 @@ async fn test_erc20_token_payout_uses_contract_transfer() {
     let manager = WalletManager::new(crud, seed_phrase.to_string(), mock_provider.clone());
 
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
     let token_contract = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 
     create_payout_ready_swap_for_route(&ctx.db, &swap_id, recipient, 1.0, "USDT", "ERC20").await;
@@ -609,6 +828,46 @@ async fn test_erc20_token_payout_uses_contract_transfer() {
     assert!(info.network_fee_paid.unwrap_or_default() > 0.0);
 
     ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_metis_mainnet_native_payout_uses_standard_evm_architecture() {
+    assert_native_evm_payout_route("METIS", "Mainnet", 1_088).await;
+}
+
+#[tokio::test]
+async fn test_scroll_native_eth_payout_uses_standard_evm_architecture() {
+    assert_native_evm_payout_route("ETH", "SCROLL", 534_352).await;
+}
+
+#[tokio::test]
+async fn test_supra_mainnet_native_payout_uses_standard_evm_architecture() {
+    assert_native_evm_payout_route("SUPRA", "Mainnet", 523_994_005_626).await;
+}
+
+#[tokio::test]
+async fn test_neutron_mainnet_native_payout_uses_standard_cosmos_architecture() {
+    assert_native_cosmos_payout_route("NTRN", "MAINNET", "neutron", "neutron-1").await;
+}
+
+#[tokio::test]
+async fn test_dymension_mainnet_native_payout_uses_standard_cosmos_architecture() {
+    assert_native_cosmos_payout_route("DYM", "MAINNET", "dymension", "dymension_1100-1").await;
+}
+
+#[tokio::test]
+async fn test_coreum_mainnet_native_payout_uses_standard_cosmos_architecture() {
+    assert_native_cosmos_payout_route("COREUM", "MAINNET", "coreum", "coreum-mainnet-1").await;
+}
+
+#[tokio::test]
+async fn test_initia_mainnet_native_payout_uses_standard_cosmos_architecture() {
+    assert_native_cosmos_payout_route("INIT", "MAINNET", "initia", "interwoven-1").await;
+}
+
+#[tokio::test]
+async fn test_kyve_mainnet_native_payout_uses_standard_cosmos_architecture() {
+    assert_native_cosmos_payout_route_with_balance("KYVE", "MAINNET", "kyve", "kyve-1", 20.0).await;
 }
 
 #[tokio::test]

@@ -1,5 +1,7 @@
+use crate::services::wallet::validation::default_extra_id_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 pub use super::status::SwapStatus;
 
@@ -8,7 +10,8 @@ pub use super::status::SwapStatus;
 // =============================================================================
 
 // Request query parameters for /swap/providers
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct ProvidersQuery {
     pub rating: Option<String>,       // Filter by KYC rating (A, B, C, D)
     pub markup_enabled: Option<bool>, // Filter by markup support
@@ -16,7 +19,7 @@ pub struct ProvidersQuery {
 }
 
 // Response DTO matching Trocador's /exchanges format EXACTLY
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProviderResponse {
     pub name: String,
     pub rating: String,       // Maps from kyc_rating (A/B/C/D)
@@ -53,7 +56,8 @@ impl From<crate::modules::swap::model::Provider> for ProviderResponse {
 // =============================================================================
 
 // Request query parameters for /swap/currencies
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct CurrenciesQuery {
     pub ticker: Option<String>,  // Filter by ticker (e.g., "btc")
     pub network: Option<String>, // Filter by network (e.g., "Mainnet")
@@ -63,12 +67,13 @@ pub struct CurrenciesQuery {
 }
 
 // Response DTO matching Trocador's /coins format EXACTLY
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct CurrencyResponse {
     pub name: String,
     pub ticker: String, // Maps from symbol
     pub network: String,
-    pub memo: bool,    // Maps from requires_extra_id
+    pub memo: bool, // Maps from requires_extra_id
+    pub extra_id_name: Option<String>,
     pub image: String, // Maps from logo_url
     pub minimum: f64,  // Maps from min_amount
     pub maximum: f64,  // Maps from max_amount
@@ -90,9 +95,12 @@ impl From<crate::modules::swap::model::Currency> for CurrencyResponse {
     fn from(c: crate::modules::swap::model::Currency) -> Self {
         Self {
             name: c.name,
-            ticker: c.symbol,
-            network: c.network,
+            ticker: c.symbol.clone(),
+            network: c.network.clone(),
             memo: c.requires_extra_id,
+            extra_id_name: c
+                .extra_id_name
+                .or_else(|| default_extra_id_name(&c.symbol, &c.network, c.requires_extra_id)),
             image: c.logo_url.unwrap_or_else(|| String::from("")),
             minimum: c.min_amount.unwrap_or(0.0),
             maximum: c.max_amount.unwrap_or(0.0),
@@ -104,7 +112,8 @@ impl From<crate::modules::swap::model::Currency> for CurrencyResponse {
 // PAIRS
 // =============================================================================
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct PairsQuery {
     // Filtering
     pub base_currency: Option<String>,
@@ -133,7 +142,7 @@ fn default_pairs_size() -> u32 {
     20
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PairResponse {
     pub name: String, // e.g., "BTC/USDT"
     pub base_currency: String,
@@ -146,13 +155,13 @@ pub struct PairResponse {
     pub last_updated: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PairsResponse {
     pub pairs: Vec<PairResponse>,
     pub pagination: PairsPaginationInfo,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PairsPaginationInfo {
     pub page: u32,
     pub size: u32,
@@ -166,7 +175,8 @@ pub struct PairsPaginationInfo {
 // RATES
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct RatesQuery {
     pub from: String,
     pub network_from: String,
@@ -179,7 +189,7 @@ pub struct RatesQuery {
     pub min_kycrating: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, sqlx::Type, ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
 pub enum RateType {
@@ -193,7 +203,16 @@ impl Default for RateType {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl RateType {
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Floating => "floating",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RateResponse {
     pub provider: String,
     pub provider_name: String,
@@ -229,7 +248,7 @@ pub struct RateResponse {
     pub eta_minutes: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RatesResponse {
     pub trade_id: String, // Trocador trade ID
     pub from: String,
@@ -322,7 +341,8 @@ pub struct TrocadorRatesResponse {
 
 use validator::Validate;
 
-#[derive(Debug, Deserialize, Validate, Clone)]
+#[derive(Debug, Deserialize, Validate, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct EstimateQuery {
     #[validate(length(min = 1, max = 20))]
     pub from: String,
@@ -340,7 +360,7 @@ pub struct EstimateQuery {
     pub network_to: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct EstimateResponse {
     // Request echo
     pub from: String,
@@ -408,7 +428,7 @@ pub struct EstimateCacheEntry {
 // CREATE SWAP
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSwapRequest {
     pub trade_id: Option<String>, // ID from new_rate
     pub from: String,
@@ -436,7 +456,7 @@ pub struct CreateSwapRequest {
     pub min_kycrating: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CreateSwapResponse {
     pub swap_id: String,
     pub provider: String,
@@ -486,7 +506,7 @@ pub struct TrocadorTradeResponse {
     pub payment: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SwapStatusResponse {
     pub swap_id: String,
     pub provider: String,
@@ -527,7 +547,8 @@ pub struct SwapStatusResponse {
 // SWAP HISTORY (Keyset Pagination)
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct HistoryQuery {
     // Keyset pagination
     pub cursor: Option<String>,
@@ -562,7 +583,7 @@ pub struct HistoryCursor {
     pub to_currency: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SwapSummary {
     pub id: String,
     pub status: SwapStatus,
@@ -587,14 +608,22 @@ pub struct SwapSummary {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HistoryResponse {
     pub swaps: Vec<SwapSummary>,
     pub pagination: PaginationInfo,
     pub filters_applied: FiltersApplied,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClientHistoryResponse {
+    pub client_id: String,
+    pub swaps: Vec<SwapSummary>,
+    pub pagination: PaginationInfo,
+    pub filters_applied: FiltersApplied,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PaginationInfo {
     pub limit: u32,
     pub has_more: bool,
@@ -602,7 +631,7 @@ pub struct PaginationInfo {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct FiltersApplied {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -622,14 +651,14 @@ pub struct FiltersApplied {
 // ADDRESS VALIDATION
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ValidateAddressRequest {
     pub ticker: String,
     pub network: String,
     pub address: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ValidateAddressResponse {
     pub valid: bool,
     pub ticker: String,
@@ -641,7 +670,7 @@ pub struct ValidateAddressResponse {
 // ERROR RESPONSE
 // =============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SwapErrorResponse {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]

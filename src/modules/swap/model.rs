@@ -82,6 +82,7 @@ pub struct TradingPairView {
 pub struct Swap {
     pub id: String,
     pub user_id: Option<String>,
+    pub client_id: Option<String>,
     pub provider_id: String,
     pub provider_swap_id: Option<String>, // This stores Trocador's trade_id
 

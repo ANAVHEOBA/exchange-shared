@@ -99,7 +99,7 @@ async fn create_swap_for_payout(db: &sqlx::Pool<sqlx::MySql>, swap_id: &str, rec
 async fn test_payout_fails_without_retry() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
 
@@ -153,7 +153,7 @@ async fn test_payout_fails_without_retry() {
 async fn test_payout_succeeds_after_retry() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
 
@@ -216,7 +216,7 @@ async fn test_payout_succeeds_after_retry() {
 async fn test_payout_fails_after_max_retries() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
 
@@ -278,7 +278,7 @@ async fn test_payout_fails_after_max_retries() {
 async fn test_exponential_backoff() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
 
@@ -341,7 +341,7 @@ async fn test_exponential_backoff() {
 async fn test_error_logging() {
     let ctx = TestContext::new().await;
     let swap_id = Uuid::new_v4().to_string();
-    let recipient = "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12";
+    let recipient = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
     create_swap_for_payout(&ctx.db, &swap_id, recipient).await;
 

@@ -1,5 +1,37 @@
 [
   {
+    "name": "AbeyChain",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.abeychain.com"
+  },
+  {
+    "name": "Acala",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://eth-rpc-acala.aca-api.network"
+  },
+  {
+    "name": "Aelf",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://aelf-public-node.aelf.io/chain"
+  },
+  {
+    "name": "Aeternity",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://mainnet.aeternity.io/v3/status"
+  },
+  {
     "name": "Agoric",
     "family": "special",
     "ankr_slug": "",
@@ -16,12 +48,28 @@
     "public_rpc": "https://akash-rpc.publicnode.com"
   },
   {
+    "name": "Aleo",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.explorer.aleo.org/v1/mainnet/latest/block"
+  },
+  {
     "name": "Aleph Zero",
     "family": "special",
     "ankr_slug": "",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "wss://ws.azero.dev"
+  },
+  {
+    "name": "Alephium",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://node.mainnet.alephium.org/infos/self-clique"
   },
   {
     "name": "Algorand",
@@ -54,6 +102,22 @@
     "alchemy_slug": "arb-mainnet",
     "infura_slug": "arbitrum-mainnet",
     "public_rpc": "https://arb1.arbitrum.io/rpc"
+  },
+  {
+    "name": "Arena-Z",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.arena-z.gg"
+  },
+  {
+    "name": "Ark",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.ark.io/api/node/status"
   },
   {
     "name": "Astar",
@@ -96,6 +160,14 @@
     "public_rpc": "https://api.avax.network/ext/bc/X"
   },
   {
+    "name": "Axelar",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://axelar-rpc.publicnode.com/status"
+  },
+  {
     "name": "B2 Network",
     "family": "evm",
     "ankr_slug": "",
@@ -112,12 +184,28 @@
     "public_rpc": "https://rpc1.bahamut.io"
   },
   {
+    "name": "Band",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://laozi1.bandchain.org/api/cosmos/base/tendermint/v1beta1/blocks/latest"
+  },
+  {
     "name": "Base",
     "family": "evm",
     "ankr_slug": "base",
     "alchemy_slug": "base-mainnet",
     "infura_slug": "base-mainnet",
     "public_rpc": "https://mainnet.base.org"
+  },
+  {
+    "name": "Beam",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://build.onbeam.com/rpc"
   },
   {
     "name": "BeraChain",
@@ -200,6 +288,22 @@
     "public_rpc": "https://rpc.botanixlabs.com"
   },
   {
+    "name": "BounceBit",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://fullnode-mainnet.bouncebitapi.com"
+  },
+  {
+    "name": "Canto",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://canto.gravitychain.io"
+  },
+  {
     "name": "Cardano",
     "family": "cardano",
     "ankr_slug": "cardano",
@@ -248,6 +352,14 @@
     "public_rpc": "https://chiliz.publicnode.com"
   },
   {
+    "name": "CKB",
+    "family": "ckb",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://mainnet.ckbapp.dev"
+  },
+  {
     "name": "Conflux",
     "family": "evm",
     "ankr_slug": "",
@@ -272,6 +384,14 @@
     "public_rpc": "https://evm.confluxrpc.com"
   },
   {
+    "name": "Constellation DAG",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://l1-lb-mainnet.constellationnetwork.io/cluster/info"
+  },
+  {
     "name": "Core DAO",
     "family": "evm",
     "ankr_slug": "core",
@@ -288,12 +408,28 @@
     "public_rpc": "https://cosmos-rest.publicnode.com"
   },
   {
+    "name": "COTI",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://mainnet.coti.io/rpc"
+  },
+  {
     "name": "Cronos",
     "family": "evm",
     "ankr_slug": "",
     "alchemy_slug": "cronos-mainnet",
     "infura_slug": "",
     "public_rpc": "https://evm.cronos.org"
+  },
+  {
+    "name": "Coreum",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://coreum-rest.publicnode.com"
   },
   {
     "name": "Cyber",
@@ -320,12 +456,36 @@
     "public_rpc": "https://ocean.defichain.com/v0/mainnet/stats"
   },
   {
+    "name": "Dero",
+    "family": "dero",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://dero-node.mysrv.cloud/json_rpc"
+  },
+  {
+    "name": "DeSo",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://node.deso.org/api/v0/get-exchange-rate"
+  },
+  {
     "name": "DigiByte",
     "family": "special",
     "ankr_slug": "digibyte",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://digiexplorer.info/api/status"
+  },
+  {
+    "name": "Dione",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://node.dioneprotocol.com/ext/bc/D/rpc"
   },
   {
     "name": "Dock",
@@ -357,7 +517,15 @@
     "ankr_slug": "",
     "alchemy_slug": "",
     "infura_slug": "",
-    "public_rpc": "https://dymension-rpc.publicnode.com"
+    "public_rpc": "https://dymension-rest.publicnode.com"
+  },
+  {
+    "name": "Electroneum",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.electroneum.com"
   },
   {
     "name": "Endurance",
@@ -368,6 +536,22 @@
     "public_rpc": "https://rpc-endurance.fusionist.io"
   },
   {
+    "name": "Energi",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://nodeapi.energi.network"
+  },
+  {
+    "name": "Energy Web",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.energyweb.org"
+  },
+  {
     "name": "EOS",
     "family": "special",
     "ankr_slug": "eos",
@@ -376,12 +560,44 @@
     "public_rpc": "https://eos.greymass.com"
   },
   {
+    "name": "Ergo",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.ergoplatform.com/api/v1/networkState"
+  },
+  {
     "name": "Ethereum",
     "family": "evm",
     "ankr_slug": "eth",
     "alchemy_slug": "eth-mainnet",
     "infura_slug": "mainnet",
     "public_rpc": "https://eth.llamarpc.com"
+  },
+  {
+    "name": "Ethereum Classic",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://etc.rivet.link"
+  },
+  {
+    "name": "EthereumPoW",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://mainnet.ethereumpow.org"
+  },
+  {
+    "name": "Everscale",
+    "family": "everscale",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://jrpc.everwallet.net"
   },
   {
     "name": "Evmos",
@@ -432,6 +648,30 @@
     "public_rpc": "https://rpc.ankr.com/filecoin"
   },
   {
+    "name": "Findora",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc-mainnet.findora.org"
+  },
+  {
+    "name": "FIO",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://fio.greymass.com/v1/chain/get_info"
+  },
+  {
+    "name": "Firo",
+    "family": "bitcoin_rpc",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://firo-rpc.publicnode.com"
+  },
+  {
     "name": "Flare",
     "family": "evm",
     "ankr_slug": "flare",
@@ -472,12 +712,28 @@
     "public_rpc": "https://rpc.fuse.io"
   },
   {
+    "name": "GMMT",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc-asia.gmmtchain.io"
+  },
+  {
     "name": "Gnosis",
     "family": "evm",
     "ankr_slug": "gnosis",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://gnosischain-rpc.gateway.pokt.network"
+  },
+  {
+    "name": "GraphLinq",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://glq-dataseed.graphlinq.io"
   },
   {
     "name": "Gravity",
@@ -504,12 +760,28 @@
     "public_rpc": "https://api.harmony.one"
   },
   {
+    "name": "Hathor",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://node1.mainnet.hathor.network/v1a/health"
+  },
+  {
     "name": "Hedera",
     "family": "special",
     "ankr_slug": "hedera",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://mainnet.mirrornode.hedera.com/api/v1/network/nodes"
+  },
+  {
+    "name": "Humanode",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://explorer-rpc-http.mainnet.stages.humanode.io"
   },
   {
     "name": "HyperEVM",
@@ -528,12 +800,28 @@
     "public_rpc": "https://ctz.solidwallet.io/api/v3"
   },
   {
+    "name": "Initia",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rest.initia.xyz"
+  },
+  {
     "name": "Injective",
     "family": "special",
     "ankr_slug": "",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://sentry.tm.injective.network:443"
+  },
+  {
+    "name": "IOST",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://l2-mainnet.iost.io"
   },
   {
     "name": "IOTA EVM",
@@ -552,12 +840,28 @@
     "public_rpc": "https://babel-api.mainnet.iotex.io"
   },
   {
+    "name": "Japan Open Chain",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc-1.japanopenchain.org:8545"
+  },
+  {
     "name": "Juno",
     "family": "special",
     "ankr_slug": "",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://juno-rpc.publicnode.com"
+  },
+  {
+    "name": "Kadena",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.chainweb.com/chainweb/0.0/mainnet01/cut"
   },
   {
     "name": "Kaia",
@@ -584,12 +888,36 @@
     "public_rpc": "https://rpc.kai.now"
   },
   {
+    "name": "Karura",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://eth-rpc-karura.aca-api.network"
+  },
+  {
+    "name": "Katana",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.katana.network"
+  },
+  {
     "name": "Kava EVM",
     "family": "evm",
     "ankr_slug": "",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://evm.kava.io"
+  },
+  {
+    "name": "KYVE",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.kyve.network"
   },
   {
     "name": "KCC",
@@ -624,12 +952,28 @@
     "public_rpc": "https://rpc.linea.build"
   },
   {
+    "name": "Lisk",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.api.lisk.com"
+  },
+  {
     "name": "Litecoin",
     "family": "utxo",
     "ankr_slug": "litecoin",
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://api.blockcypher.com/v1/ltc/main"
+  },
+  {
+    "name": "LUKSO",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.mainnet.lukso.network"
   },
   {
     "name": "Manta Pacific",
@@ -648,6 +992,14 @@
     "public_rpc": "https://rpc.mantle.xyz"
   },
   {
+    "name": "MAP Protocol",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.maplabs.io"
+  },
+  {
     "name": "Merlin",
     "family": "evm",
     "ankr_slug": "",
@@ -662,6 +1014,14 @@
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://rpc.metall2.com"
+  },
+  {
+    "name": "Meter",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.meter.io"
   },
   {
     "name": "Metis",
@@ -744,6 +1104,14 @@
     "public_rpc": "https://gateway.multiversx.com/network/config"
   },
   {
+    "name": "Nano",
+    "family": "nano",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.nano.to"
+  },
+  {
     "name": "NEAR",
     "family": "special",
     "ankr_slug": "near",
@@ -760,6 +1128,14 @@
     "public_rpc": "https://mainnet1.neo.coz.io:443"
   },
   {
+    "name": "Neon",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://neon-proxy-mainnet.solana.p2p.org"
+  },
+  {
     "name": "Neutron",
     "family": "special",
     "ankr_slug": "",
@@ -774,6 +1150,14 @@
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://rpc.nimiqwatch.com"
+  },
+  {
+    "name": "Oasis Emerald",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://emerald.oasis.dev"
   },
   {
     "name": "Oasis Sapphire",
@@ -856,6 +1240,14 @@
     "public_rpc": "https://persistence-rpc.publicnode.com"
   },
   {
+    "name": "PIVX",
+    "family": "bitcoin_rpc",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://pivx.publicnode.com"
+  },
+  {
     "name": "Pocket",
     "family": "evm",
     "ankr_slug": "",
@@ -888,6 +1280,30 @@
     "public_rpc": "https://rpc.pulsechain.com"
   },
   {
+    "name": "Quai",
+    "family": "quai",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.quai.network/cyprus1"
+  },
+  {
+    "name": "Qubic",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.qubic.li/v1/status"
+  },
+  {
+    "name": "Radix",
+    "family": "radix",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://mainnet.radixdlt.com"
+  },
+  {
     "name": "Ravencoin",
     "family": "utxo",
     "ankr_slug": "",
@@ -902,6 +1318,14 @@
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://governors.mainnet.redbelly.network"
+  },
+  {
+    "name": "Reef",
+    "family": "substrate",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.reefscan.com"
   },
   {
     "name": "REI Network",
@@ -976,12 +1400,28 @@
     "public_rpc": "https://api.mainnet-beta.solana.com"
   },
   {
+    "name": "Songbird",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.ftso.au/songbird"
+  },
+  {
     "name": "Sonic",
     "family": "evm",
     "ankr_slug": "sonic",
     "alchemy_slug": "sonic-mainnet",
     "infura_slug": "",
     "public_rpc": "https://rpc.soniclabs.com"
+  },
+  {
+    "name": "Sophon",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.sophon.xyz"
   },
   {
     "name": "Stacks",
@@ -992,12 +1432,28 @@
     "public_rpc": "https://api.mainnet.hiro.so/v2/info"
   },
   {
+    "name": "Stargaze",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://stargaze-rpc.polkachu.com/status"
+  },
+  {
     "name": "Starknet",
     "family": "special",
     "ankr_slug": "starknet",
     "alchemy_slug": "starknet-mainnet",
     "infura_slug": "starknet-mainnet",
     "public_rpc": "https://starknet-mainnet.public.blastapi.io"
+  },
+  {
+    "name": "Steem",
+    "family": "steem",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://api.steemit.com"
   },
   {
     "name": "Stellar",
@@ -1032,6 +1488,14 @@
     "public_rpc": "https://fullnode.mainnet.sui.io"
   },
   {
+    "name": "Supra",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc-multivm.supra.com/rpc/v1/eth"
+  },
+  {
     "name": "Syscoin NEVM",
     "family": "evm",
     "ankr_slug": "syscoin",
@@ -1054,6 +1518,14 @@
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://rpc.telos.net"
+  },
+  {
+    "name": "Ternoa",
+    "family": "substrate",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://mainnet.ternoa.network"
   },
   {
     "name": "Ternoa zkEVM",
@@ -1096,6 +1568,14 @@
     "public_rpc": "https://theta-bridge-rpc.thetatoken.org/rpc"
   },
   {
+    "name": "THORChain",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://thornode.ninerealms.com/thorchain/inbound_addresses"
+  },
+  {
     "name": "ThunderCore",
     "family": "evm",
     "ankr_slug": "",
@@ -1128,6 +1608,22 @@
     "public_rpc": "https://api.trongrid.io"
   },
   {
+    "name": "U2U",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc-mainnet.u2u.xyz"
+  },
+  {
+    "name": "Vanar",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.vanarchain.com"
+  },
+  {
     "name": "VeChain",
     "family": "special",
     "ankr_slug": "vechain",
@@ -1142,6 +1638,22 @@
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://evmexplorer.velas.com/rpc"
+  },
+  {
+    "name": "Venom",
+    "family": "everscale",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://jrpc.venom.foundation"
+  },
+  {
+    "name": "Viction",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.viction.xyz"
   },
   {
     "name": "Wanchain",
@@ -1224,6 +1736,14 @@
     "public_rpc": "https://zetachain-evm.blockpi.network/v1/rpc/public"
   },
   {
+    "name": "Zetrix",
+    "family": "special",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://node.zetrix.com/getLedger"
+  },
+  {
     "name": "Zilliqa",
     "family": "special",
     "ankr_slug": "zilliqa",
@@ -1238,6 +1758,14 @@
     "alchemy_slug": "",
     "infura_slug": "",
     "public_rpc": "https://rpc.zkfair.io"
+  },
+  {
+    "name": "zkLink",
+    "family": "evm",
+    "ankr_slug": "",
+    "alchemy_slug": "",
+    "infura_slug": "",
+    "public_rpc": "https://rpc.zklink.io"
   },
   {
     "name": "zkSync Era",

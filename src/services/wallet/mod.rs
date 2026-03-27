@@ -1,6 +1,8 @@
+pub mod algorand_rpc;
 pub mod bitcoin_rpc;
 pub mod blockchains;
 pub mod catalog;
+pub mod cosmos_rpc;
 pub mod derivation;
 pub mod manager;
 pub mod rest_rpc;

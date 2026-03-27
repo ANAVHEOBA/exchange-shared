@@ -1,5 +1,7 @@
 use super::{normalize_chain_key, resolve_configured_chain_key, RpcManager, RpcManagerAdapter};
+use crate::services::wallet::algorand_rpc::AlgorandRpcClient;
 use crate::services::wallet::bitcoin_rpc::BitcoinRpcClient;
+use crate::services::wallet::cosmos_rpc::{is_supported_cosmos_chain, CosmosRpcClient};
 use crate::services::wallet::rest_rpc::RestRpcClient;
 use crate::services::wallet::rpc::BlockchainProvider;
 use crate::services::wallet::solana_rpc::SolanaRpcClient;
@@ -46,6 +48,13 @@ pub async fn build_provider_for_network(
     build_provider_for_chain_key(manager, chain_key, network, &family).await
 }
 
+pub fn supports_direct_provider_chain(chain_key: &str, family: &str) -> bool {
+    chain_key == "tron"
+        || chain_key == "algorand"
+        || is_supported_cosmos_chain(chain_key)
+        || matches!(family, "evm" | "solana" | "btc" | "utxo")
+}
+
 async fn build_provider_for_chain_key(
     manager: Arc<RpcManager>,
     chain_key: String,
@@ -54,6 +63,32 @@ async fn build_provider_for_chain_key(
 ) -> Result<Arc<dyn BlockchainProvider>, String> {
     if chain_key == "tron" {
         return Ok(Arc::new(RpcManagerAdapter::new(manager, chain_key)));
+    }
+
+    if chain_key == "algorand" {
+        let endpoint = manager.select_endpoint(&chain_key).await.map_err(|e| {
+            format!(
+                "Failed to select Algorand RPC endpoint for {}: {}",
+                requested_label, e
+            )
+        })?;
+        return Ok(Arc::new(AlgorandRpcClient::new(endpoint)));
+    }
+
+    if is_supported_cosmos_chain(&chain_key) {
+        let endpoint = manager.select_endpoint(&chain_key).await.map_err(|e| {
+            format!(
+                "Failed to select Cosmos RPC endpoint for {}: {}",
+                requested_label, e
+            )
+        })?;
+        let provider = CosmosRpcClient::new(endpoint, &chain_key).map_err(|error| {
+            format!(
+                "Failed to build Cosmos wallet provider for {}: {}",
+                requested_label, error
+            )
+        })?;
+        return Ok(Arc::new(provider));
     }
 
     match family {
@@ -99,9 +134,11 @@ fn is_rest_explorer_url(url: &str) -> bool {
 mod tests {
     use super::{
         build_provider_for_asset, build_provider_for_network, resolve_configured_send_chain_key,
+        supports_direct_provider_chain,
     };
     use crate::services::rpc::{
-        CircuitBreakerConfig, LoadBalancingStrategy, RpcConfig, RpcEndpoint, RpcManager,
+        build_default_rpc_configs, CircuitBreakerConfig, LoadBalancingStrategy, RpcConfig,
+        RpcEndpoint, RpcManager,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -145,6 +182,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supports_algorand_networks() {
+        let provider =
+            build_provider_for_network(rpc_manager_for("algorand", "special"), "algorand").await;
+        assert!(provider.is_ok());
+    }
+
+    #[tokio::test]
+    async fn supports_curated_cosmos_networks() {
+        let provider =
+            build_provider_for_network(rpc_manager_for("cosmos_hub", "special"), "cosmos_hub")
+                .await;
+        assert!(provider.is_ok());
+
+        let provider =
+            build_provider_for_network(rpc_manager_for("neutron", "special"), "neutron").await;
+        assert!(provider.is_ok());
+    }
+
+    #[tokio::test]
     async fn rejects_special_family_without_real_wallet_provider() {
         let err = match build_provider_for_network(rpc_manager_for("cardano", "cardano"), "cardano")
             .await
@@ -168,5 +224,28 @@ mod tests {
         let provider =
             build_provider_for_asset(rpc_manager_for("ethereum", "evm"), "ETH", "ERC20").await;
         assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn direct_support_helper_matches_provider_factory() {
+        assert!(supports_direct_provider_chain("tron", "special"));
+        assert!(supports_direct_provider_chain("algorand", "special"));
+        assert!(supports_direct_provider_chain("cosmos_hub", "special"));
+        assert!(supports_direct_provider_chain("neutron", "special"));
+        assert!(supports_direct_provider_chain("ethereum", "evm"));
+        assert!(!supports_direct_provider_chain("cardano", "cardano"));
+    }
+
+    #[test]
+    fn configured_rpc_catalog_reports_current_direct_provider_family_coverage() {
+        let configs = build_default_rpc_configs();
+
+        let direct_provider = configs
+            .iter()
+            .filter(|(chain_key, config)| supports_direct_provider_chain(chain_key, &config.family))
+            .count();
+
+        assert_eq!(configs.len(), 223);
+        assert_eq!(direct_provider, 155);
     }
 }

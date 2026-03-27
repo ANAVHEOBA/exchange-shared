@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use axum_test::TestServer;
+use exchange_shared::services::payout_policy::PayoutPolicyConfig;
 use exchange_shared::services::redis_cache::RedisService;
 use exchange_shared::services::rpc::{build_default_rpc_configs, RpcManager};
 use exchange_shared::services::wallet::rpc::{BlockchainProvider, RpcError};
@@ -46,6 +47,7 @@ impl TestContext {
 
         let wallet_mnemonic = test_wallet_mnemonic();
         let rpc_manager = Arc::new(RpcManager::new(build_default_rpc_configs()));
+        let payout_policy = PayoutPolicyConfig::from_env();
 
         let app = exchange_shared::create_app(
             db.clone(),
@@ -53,6 +55,7 @@ impl TestContext {
             jwt_service,
             wallet_mnemonic,
             rpc_manager,
+            payout_policy,
         )
         .await;
         let server = TestServer::new(app).expect("Failed to create test server");
@@ -213,8 +216,17 @@ pub async fn setup_test_app() -> axum::Router {
 
     let wallet_mnemonic = test_wallet_mnemonic();
     let rpc_manager = Arc::new(RpcManager::new(build_default_rpc_configs()));
+    let payout_policy = PayoutPolicyConfig::from_env();
 
-    exchange_shared::create_app(db, redis_service, jwt_service, wallet_mnemonic, rpc_manager).await
+    exchange_shared::create_app(
+        db,
+        redis_service,
+        jwt_service,
+        wallet_mnemonic,
+        rpc_manager,
+        payout_policy,
+    )
+    .await
 }
 
 #[allow(dead_code)]

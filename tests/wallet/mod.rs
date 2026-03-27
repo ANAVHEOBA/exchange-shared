@@ -15,6 +15,7 @@ pub mod tier2_phase1_test;
 pub mod tier2_phase2_test;
 pub mod tier3_phase1_test;
 pub mod trocador_live_current_support_test;
+pub mod trocador_live_latency_matrix_test;
 pub mod trocador_live_validation_test;
 
 // Comprehensive blockchain coverage (129 blockchains)

@@ -1,5 +1,6 @@
 use chrono::Utc;
 use sqlx::{MySql, Pool};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::model::{Currency, Provider};
@@ -10,9 +11,14 @@ use super::schema::{
 };
 use super::service::SwapService;
 use crate::services::gas::GasEstimator;
+use crate::services::payout_policy::PayoutPolicyConfig;
 use crate::services::pricing::{PricedRates, QuoteService};
 use crate::services::redis_cache::RedisService;
+use crate::services::rpc::RpcManager;
 use crate::services::trocador::{TrocadorError, TrocadorGateway};
+use crate::services::wallet::validation::{
+    default_extra_id_name, validate_address_by_network_family, AddressValidation,
+};
 
 pub enum CurrenciesResult {
     RawJson(String),
@@ -81,6 +87,8 @@ pub struct SwapCrud {
     redis_service: Option<RedisService>, // Changed to RedisService
     wallet_mnemonic: Option<String>,
     gas_estimator: GasEstimator,
+    rpc_manager: Arc<RpcManager>,
+    payout_policy: PayoutPolicyConfig,
 }
 
 impl SwapCrud {
@@ -88,6 +96,8 @@ impl SwapCrud {
         pool: Pool<MySql>,
         redis_service: Option<RedisService>,
         wallet_mnemonic: Option<String>,
+        rpc_manager: Arc<RpcManager>,
+        payout_policy: PayoutPolicyConfig,
     ) -> Self {
         let gas_estimator = GasEstimator::new(redis_service.clone());
         Self {
@@ -96,6 +106,8 @@ impl SwapCrud {
             redis_service,
             wallet_mnemonic,
             gas_estimator,
+            rpc_manager,
+            payout_policy,
         }
     }
 
@@ -104,6 +116,8 @@ impl SwapCrud {
             self.pool.clone(),
             self.redis_service.clone(),
             self.wallet_mnemonic.clone(),
+            self.rpc_manager.clone(),
+            self.payout_policy.clone(),
         )
     }
 
@@ -357,9 +371,10 @@ impl SwapCrud {
             })
             .map(|c| CurrencyResponse {
                 name: c.name,
-                ticker: c.ticker,
-                network: c.network,
+                ticker: c.ticker.clone(),
+                network: c.network.clone(),
                 memo: c.memo,
+                extra_id_name: default_extra_id_name(&c.ticker, &c.network, c.memo),
                 image: c.image,
                 minimum: c.minimum,
                 maximum: c.maximum,
@@ -763,8 +778,11 @@ impl SwapCrud {
         &self,
         request: &super::schema::CreateSwapRequest,
         user_id: Option<String>,
+        client_id: Option<String>,
     ) -> Result<super::schema::CreateSwapResponse, SwapError> {
-        self.swap_service().create_swap(request, user_id).await
+        self.swap_service()
+            .create_swap(request, user_id, client_id)
+            .await
     }
 
     // =========================================================================
@@ -804,6 +822,22 @@ impl SwapCrud {
 
         if request.address.trim().is_empty() {
             return Err(SwapError::InvalidAddress);
+        }
+
+        match validate_address_by_network_family(
+            &request.ticker,
+            &request.network,
+            &request.address,
+        ) {
+            AddressValidation::Valid { .. } => {}
+            AddressValidation::Invalid { .. } | AddressValidation::Unsupported { .. } => {
+                return Ok(super::schema::ValidateAddressResponse {
+                    valid: false,
+                    ticker: request.ticker.clone(),
+                    network: request.network.clone(),
+                    address: request.address.clone(),
+                });
+            }
         }
 
         // 2. Get API key
@@ -906,6 +940,16 @@ impl SwapCrud {
         self.repository.get_swap_history(user_id, query).await
     }
 
+    pub async fn get_swap_history_for_client(
+        &self,
+        client_id: &str,
+        query: super::schema::HistoryQuery,
+    ) -> Result<super::schema::HistoryResponse, SwapError> {
+        self.repository
+            .get_swap_history_for_client(client_id, query)
+            .await
+    }
+
     // =============================================================================
     // ESTIMATE ENDPOINT - Quick rate preview without creating swap
     // =============================================================================
@@ -962,9 +1006,17 @@ impl SwapCrud {
                     let pool_clone = self.pool.clone();
                     let redis_clone = self.redis_service.clone();
                     let wallet_clone = self.wallet_mnemonic.clone();
+                    let rpc_manager = self.rpc_manager.clone();
+                    let payout_policy = self.payout_policy.clone();
 
                     tokio::spawn(async move {
-                        let crud = SwapCrud::new(pool_clone, redis_clone, wallet_clone);
+                        let crud = SwapCrud::new(
+                            pool_clone,
+                            redis_clone,
+                            wallet_clone,
+                            rpc_manager,
+                            payout_policy,
+                        );
                         let _ = crud.fetch_estimate_from_api(&query_clone).await;
                     });
 

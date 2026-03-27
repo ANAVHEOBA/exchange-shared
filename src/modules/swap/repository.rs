@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
-use sqlx::{MySql, Pool};
+use sqlx::{MySql, Pool, Row};
 
 use super::crud::SwapError;
 use super::model::Provider;
@@ -9,6 +9,7 @@ use super::schema::{
     PairsPaginationInfo, PairsQuery, PairsResponse, ProvidersQuery, RateType, SwapStatus,
     SwapSummary, TrocadorCurrency, TrocadorProvider,
 };
+use crate::services::wallet::validation::default_extra_id_name;
 
 pub struct SwapRepository {
     pool: Pool<MySql>,
@@ -17,6 +18,7 @@ pub struct SwapRepository {
 pub struct NewSwapRecord<'a> {
     pub id: &'a str,
     pub user_id: Option<&'a str>,
+    pub client_id: Option<&'a str>,
     pub provider_id: &'a str,
     pub provider_swap_id: &'a str,
     pub from_currency: &'a str,
@@ -44,6 +46,7 @@ pub struct NewSwapRecord<'a> {
 pub struct SwapStatusRecord {
     pub id: String,
     pub user_id: Option<String>,
+    pub client_id: Option<String>,
     pub provider_id: String,
     pub provider_swap_id: Option<String>,
     pub from_currency: String,
@@ -118,17 +121,20 @@ impl SwapRepository {
         let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO currencies (
                 symbol, name, network, is_active, logo_url,
-                requires_extra_id, min_amount, max_amount, last_synced_at
+                requires_extra_id, extra_id_name, min_amount, max_amount, last_synced_at
             ) ",
         );
 
         query_builder.push_values(currencies, |mut b, currency| {
+            let extra_id_name =
+                default_extra_id_name(&currency.ticker, &currency.network, currency.memo);
             b.push_bind(&currency.ticker)
                 .push_bind(&currency.name)
                 .push_bind(&currency.network)
                 .push("TRUE")
                 .push_bind(&currency.image)
                 .push_bind(currency.memo)
+                .push_bind(extra_id_name)
                 .push_bind(currency.minimum)
                 .push_bind(currency.maximum)
                 .push("NOW()");
@@ -138,6 +144,8 @@ impl SwapRepository {
             " ON DUPLICATE KEY UPDATE
                 name = VALUES(name),
                 logo_url = VALUES(logo_url),
+                requires_extra_id = VALUES(requires_extra_id),
+                extra_id_name = VALUES(extra_id_name),
                 min_amount = VALUES(min_amount),
                 max_amount = VALUES(max_amount),
                 last_synced_at = VALUES(last_synced_at)",
@@ -431,10 +439,10 @@ impl SwapRepository {
     }
 
     pub async fn insert_swap(&self, record: NewSwapRecord<'_>) -> Result<(), SwapError> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO swaps (
-                id, user_id, provider_id, provider_swap_id,
+                id, user_id, client_id, provider_id, provider_swap_id,
                 from_currency, from_network, to_currency, to_network,
                 amount, estimated_receive, rate, network_fee,
                 deposit_address, deposit_extra_id,
@@ -444,33 +452,34 @@ impl SwapRepository {
                 status, rate_type, is_sandbox, is_payment,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             "#,
-            record.id,
-            record.user_id,
-            record.provider_id,
-            record.provider_swap_id,
-            record.from_currency,
-            record.from_network,
-            record.to_currency,
-            record.to_network,
-            record.amount,
-            record.estimated_receive,
-            record.rate,
-            record.network_fee,
-            record.deposit_address,
-            record.deposit_extra_id,
-            record.recipient_address,
-            record.recipient_extra_id,
-            record.refund_address,
-            record.refund_extra_id,
-            record.platform_fee,
-            record.total_fee,
-            record.status,
-            record.rate_type,
-            record.is_sandbox,
-            record.is_payment
         )
+        .bind(record.id)
+        .bind(record.user_id)
+        .bind(record.client_id)
+        .bind(record.provider_id)
+        .bind(record.provider_swap_id)
+        .bind(record.from_currency)
+        .bind(record.from_network)
+        .bind(record.to_currency)
+        .bind(record.to_network)
+        .bind(record.amount)
+        .bind(record.estimated_receive)
+        .bind(record.rate)
+        .bind(record.network_fee)
+        .bind(record.deposit_address)
+        .bind(record.deposit_extra_id)
+        .bind(record.recipient_address)
+        .bind(record.recipient_extra_id)
+        .bind(record.refund_address)
+        .bind(record.refund_extra_id)
+        .bind(record.platform_fee)
+        .bind(record.total_fee)
+        .bind(record.status.as_str())
+        .bind(record.rate_type.as_db_str())
+        .bind(record.is_sandbox)
+        .bind(record.is_payment)
         .execute(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
@@ -482,68 +491,74 @@ impl SwapRepository {
         &self,
         swap_id: &str,
     ) -> Result<Option<SwapStatusRecord>, SwapError> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT id, user_id, provider_id, provider_swap_id,
+                   client_id,
                    from_currency, from_network, to_currency, to_network,
-                   CAST(amount AS DOUBLE) as "amount!: f64",
-                   CAST(estimated_receive AS DOUBLE) as "estimated_receive!: f64",
-                   CAST(actual_receive AS DOUBLE) as "actual_receive: f64",
-                   CAST(rate AS DOUBLE) as "rate!: f64",
-                   CAST(network_fee AS DOUBLE) as "network_fee!: f64",
-                   CAST(provider_fee AS DOUBLE) as "provider_fee!: f64",
-                   CAST(platform_fee AS DOUBLE) as "platform_fee!: f64",
-                   CAST(total_fee AS DOUBLE) as "total_fee!: f64",
+                   CAST(amount AS DOUBLE) AS amount,
+                   CAST(estimated_receive AS DOUBLE) AS estimated_receive,
+                   CAST(actual_receive AS DOUBLE) AS actual_receive,
+                   CAST(rate AS DOUBLE) AS rate,
+                   CAST(network_fee AS DOUBLE) AS network_fee,
+                   CAST(COALESCE(provider_fee, 0) AS DOUBLE) AS provider_fee,
+                   CAST(platform_fee AS DOUBLE) AS platform_fee,
+                   CAST(total_fee AS DOUBLE) AS total_fee,
                    deposit_address, deposit_extra_id,
                    recipient_address, recipient_extra_id,
                    refund_address, refund_extra_id,
                    tx_hash_in, tx_hash_out,
-                   status as "status!: super::schema::SwapStatus",
-                   rate_type as "rate_type!: super::schema::RateType",
+                   status,
+                   rate_type,
                    is_sandbox, error,
                    expires_at, completed_at, created_at, updated_at
             FROM swaps
             WHERE id = ?
             "#,
-            swap_id
         )
+        .bind(swap_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
         Ok(row.map(|swap| SwapStatusRecord {
-            id: swap.id,
-            user_id: swap.user_id,
-            provider_id: swap.provider_id,
-            provider_swap_id: swap.provider_swap_id,
-            from_currency: swap.from_currency,
-            from_network: swap.from_network,
-            to_currency: swap.to_currency,
-            to_network: swap.to_network,
-            amount: swap.amount,
-            estimated_receive: swap.estimated_receive,
-            actual_receive: swap.actual_receive,
-            rate: swap.rate,
-            network_fee: swap.network_fee,
-            provider_fee: swap.provider_fee,
-            platform_fee: swap.platform_fee,
-            total_fee: swap.total_fee,
-            deposit_address: swap.deposit_address,
-            deposit_extra_id: swap.deposit_extra_id,
-            recipient_address: swap.recipient_address,
-            recipient_extra_id: swap.recipient_extra_id,
-            refund_address: swap.refund_address,
-            refund_extra_id: swap.refund_extra_id,
-            tx_hash_in: swap.tx_hash_in,
-            tx_hash_out: swap.tx_hash_out,
-            status: swap.status,
-            rate_type: swap.rate_type,
-            is_sandbox: swap.is_sandbox,
-            error: swap.error,
-            expires_at: swap.expires_at,
-            completed_at: swap.completed_at,
-            created_at: swap.created_at,
-            updated_at: swap.updated_at,
+            id: swap.get("id"),
+            user_id: swap.get("user_id"),
+            client_id: swap.get("client_id"),
+            provider_id: swap.get("provider_id"),
+            provider_swap_id: swap.get("provider_swap_id"),
+            from_currency: swap.get("from_currency"),
+            from_network: swap.get("from_network"),
+            to_currency: swap.get("to_currency"),
+            to_network: swap.get("to_network"),
+            amount: swap.get("amount"),
+            estimated_receive: swap.get("estimated_receive"),
+            actual_receive: swap.try_get("actual_receive").ok(),
+            rate: swap.get("rate"),
+            network_fee: swap.get("network_fee"),
+            provider_fee: swap.get("provider_fee"),
+            platform_fee: swap.get("platform_fee"),
+            total_fee: swap.get("total_fee"),
+            deposit_address: swap.get("deposit_address"),
+            deposit_extra_id: swap.get("deposit_extra_id"),
+            recipient_address: swap.get("recipient_address"),
+            recipient_extra_id: swap.get("recipient_extra_id"),
+            refund_address: swap.get("refund_address"),
+            refund_extra_id: swap.get("refund_extra_id"),
+            tx_hash_in: swap.get("tx_hash_in"),
+            tx_hash_out: swap.get("tx_hash_out"),
+            status: SwapStatus::from_persisted(&swap.get::<String, _>("status"))
+                .unwrap_or(SwapStatus::Waiting),
+            rate_type: match swap.get::<String, _>("rate_type").as_str() {
+                "fixed" => RateType::Fixed,
+                _ => RateType::Floating,
+            },
+            is_sandbox: swap.get("is_sandbox"),
+            error: swap.get("error"),
+            expires_at: swap.get("expires_at"),
+            completed_at: swap.get("completed_at"),
+            created_at: swap.get("created_at"),
+            updated_at: swap.get("updated_at"),
         }))
     }
 
@@ -613,6 +628,25 @@ impl SwapRepository {
         user_id: &str,
         query: HistoryQuery,
     ) -> Result<HistoryResponse, SwapError> {
+        self.get_swap_history_for_scope("user_id = ?", user_id, query)
+            .await
+    }
+
+    pub async fn get_swap_history_for_client(
+        &self,
+        client_id: &str,
+        query: HistoryQuery,
+    ) -> Result<HistoryResponse, SwapError> {
+        self.get_swap_history_for_scope("client_id = ? AND user_id IS NULL", client_id, query)
+            .await
+    }
+
+    async fn get_swap_history_for_scope(
+        &self,
+        scope_clause: &str,
+        scope_value: &str,
+        query: HistoryQuery,
+    ) -> Result<HistoryResponse, SwapError> {
         let cursor = if let Some(cursor_str) = &query.cursor {
             let bytes = URL_SAFE_NO_PAD
                 .decode(cursor_str)
@@ -658,7 +692,9 @@ impl SwapRepository {
             WHERE user_id = ?",
         );
 
-        let mut bind_values: Vec<String> = vec![user_id.to_string()];
+        sql = sql.replace("WHERE user_id = ?", &format!("WHERE {}", scope_clause));
+
+        let mut bind_values: Vec<String> = vec![scope_value.to_string()];
 
         if let Some(ref cursor) = cursor {
             sql.push_str(" AND (created_at, id) < (?, ?)");

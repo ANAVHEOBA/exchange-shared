@@ -99,7 +99,7 @@ async fn attach_internal_address(
             swap_id: swap_id.to_string(),
             ticker: "ETH".to_string(),
             network: "ethereum".to_string(),
-            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12".to_string(),
+            user_recipient_address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e".to_string(),
             user_recipient_extra_id: None,
         })
         .await
@@ -116,7 +116,7 @@ async fn test_settlement_service_completes_payout() {
     create_swap_for_settlement(
         &ctx.db,
         &swap_id,
-        "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+        "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "sending",
     )
     .await;
@@ -166,7 +166,7 @@ async fn test_settlement_service_keeps_failed_payout_retryable() {
     create_swap_for_settlement(
         &ctx.db,
         &swap_id,
-        "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+        "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "sending",
     )
     .await;
@@ -213,7 +213,7 @@ async fn test_settlement_service_treats_processing_payout_as_in_progress() {
     create_swap_for_settlement(
         &ctx.db,
         &swap_id,
-        "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+        "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
         "sending",
     )
     .await;

@@ -124,7 +124,14 @@ async fn test_network_currency_metadata_complete() {
     let currencies: Vec<Value> = response.json();
 
     let required_fields = vec![
-        "name", "ticker", "network", "memo", "image", "minimum", "maximum",
+        "name",
+        "ticker",
+        "network",
+        "memo",
+        "extra_id_name",
+        "image",
+        "minimum",
+        "maximum",
     ];
 
     let mut missing_count = 0;
@@ -150,6 +157,9 @@ async fn test_network_currency_metadata_complete() {
             invalid_count += 1;
         }
         if !currency["memo"].is_boolean() {
+            invalid_count += 1;
+        }
+        if !(currency["extra_id_name"].is_null() || currency["extra_id_name"].is_string()) {
             invalid_count += 1;
         }
         if !currency["minimum"].is_number() {
@@ -295,7 +305,7 @@ async fn test_address_validation_diverse_networks() {
         (
             "ETH",
             "Ethereum",
-            "0x742d35Cc6634C0532925a3b844Bc9e7595f5bE12",
+            "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
             "Ethereum EVM",
         ),
         (
