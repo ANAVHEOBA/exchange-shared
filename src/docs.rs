@@ -4,7 +4,7 @@ use utoipa::{
 };
 
 use crate::{
-    __path_health_check, __path_root,
+    __path_health_check, __path_ping, __path_root,
     modules::{
         admin::{
             controller::{
@@ -47,6 +47,7 @@ use crate::{
 #[openapi(
     paths(
         root,
+        ping,
         health_check,
         admin_login,
         admin_export_swaps_csv,
@@ -150,6 +151,7 @@ mod tests {
         let paths = &document.paths.paths;
 
         assert!(paths.contains_key("/health"));
+        assert!(paths.contains_key("/ping"));
         assert!(paths.contains_key("/admin/swaps/export"));
         assert!(paths.contains_key("/auth/login"));
         assert!(paths.contains_key("/swap/create"));

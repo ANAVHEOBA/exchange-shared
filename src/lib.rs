@@ -76,6 +76,7 @@ pub async fn create_app(
 
     let app = Router::new()
         .route("/", get(root))
+        .route("/ping", get(ping))
         .route("/health", get(health_check))
         .nest("/admin", admin_routes())
         .nest("/auth", auth_routes(state.clone()))
@@ -106,6 +107,18 @@ pub async fn create_app(
 )]
 async fn root() -> &'static str {
     "Exchange Platform API"
+}
+
+#[utoipa::path(
+    get,
+    path = "/ping",
+    tag = "System",
+    responses(
+        (status = 200, description = "Lightweight keep-alive endpoint", body = String, example = "pong")
+    )
+)]
+async fn ping() -> &'static str {
+    "pong"
 }
 
 #[derive(Serialize, ToSchema)]
