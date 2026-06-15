@@ -444,6 +444,7 @@ pub async fn get_providers(
     params(super::schema::RatesQuery),
     responses(
         (status = 200, description = "Current swap rates", body = super::schema::RatesResponse),
+        (status = 404, description = "Trading pair not available", body = super::schema::SwapErrorResponse),
         (status = 502, description = "Upstream provider error", body = super::schema::SwapErrorResponse)
     )
 )]
@@ -455,8 +456,14 @@ pub async fn get_rates(
     let crud = swap_crud(&state);
 
     let response = crud.get_rates_optimized(&query).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::PairNotAvailable => StatusCode::NOT_FOUND,
+            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+
         (
-            StatusCode::BAD_GATEWAY,
+            status,
             Json(super::schema::SwapErrorResponse::new(e.to_string())),
         )
     })?;
