@@ -262,6 +262,49 @@ impl SwapCrud {
         )
     }
 
+    fn preferred_currency_network_rank(currency: &CurrencyResponse) -> usize {
+        let ticker = currency.ticker.to_lowercase();
+        let network = currency.network.to_lowercase();
+
+        let preferred = match ticker.as_str() {
+            "btc" => ["mainnet", "lightning"].as_slice(),
+            "xmr" => ["mainnet"].as_slice(),
+            "eth" => ["erc20", "mainnet", "arbitrum", "optimism", "base", "bep20"].as_slice(),
+            "bnb" => ["bep20", "mainnet"].as_slice(),
+            "ada" => ["mainnet"].as_slice(),
+            "ltc" => ["mainnet", "lightning"].as_slice(),
+            "xrp" => ["mainnet"].as_slice(),
+            "sol" => ["mainnet", "sol"].as_slice(),
+            "trx" => ["trc20", "mainnet"].as_slice(),
+            "usdt" => ["erc20", "trc20", "bep20", "polygon", "sol"].as_slice(),
+            "usdc" => ["erc20", "base", "optimism", "polygon", "bsc", "sol"].as_slice(),
+            _ => ["mainnet"].as_slice(),
+        };
+
+        preferred
+            .iter()
+            .position(|candidate| network == *candidate)
+            .unwrap_or(preferred.len() + 10)
+    }
+
+    fn sort_currencies_for_display(currencies: &mut [CurrencyResponse]) {
+        currencies.sort_by(|left, right| {
+            left.ticker
+                .to_lowercase()
+                .cmp(&right.ticker.to_lowercase())
+                .then_with(|| {
+                    Self::preferred_currency_network_rank(left)
+                        .cmp(&Self::preferred_currency_network_rank(right))
+                })
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| {
+                    left.network
+                        .to_lowercase()
+                        .cmp(&right.network.to_lowercase())
+                })
+        });
+    }
+
     /// Internal helper to estimate gas cost for payout on the target network
     /// Get the amount Trocador should have sent to our address
     pub async fn get_expected_trocador_amount(&self, swap_id: &str) -> Result<f64, SwapError> {
@@ -533,6 +576,8 @@ impl SwapCrud {
                 maximum: c.maximum,
             })
             .collect();
+
+        Self::sort_currencies_for_display(&mut responses);
 
         // Apply pagination
         if let (Some(page), Some(limit)) = (query.page, query.limit) {
