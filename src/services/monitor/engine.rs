@@ -24,7 +24,7 @@ struct SwapRuntimeInfo {
 
 pub struct MonitorEngine {
     db: Pool<MySql>,
-    redis: RedisService,
+    redis: Option<RedisService>,
     master_seed: Option<String>,
     strategy: PollingStrategy,
     rpc_manager: Arc<RpcManager>,
@@ -36,7 +36,7 @@ const PROVIDER_TRADE_MISSING_STATUS: &str = "provider_trade_missing";
 impl MonitorEngine {
     pub fn new(
         db: Pool<MySql>,
-        redis: RedisService,
+        redis: Option<RedisService>,
         master_seed: Option<String>,
         rpc_manager: Arc<RpcManager>,
     ) -> Self {
@@ -72,9 +72,11 @@ impl MonitorEngine {
     /// Process a single swap poll
     pub async fn process_poll(&self, state: PollingState) -> Result<(), String> {
         // 1. Distributed Lock to prevent concurrency
-        let lock_key = format!("lock:monitor:{}", state.swap_id);
-        if !self.redis.try_lock(&lock_key, 30).await.unwrap_or(false) {
-            return Ok(());
+        if let Some(redis) = &self.redis {
+            let lock_key = format!("lock:monitor:{}", state.swap_id);
+            if !redis.try_lock(&lock_key, 30).await.unwrap_or(false) {
+                return Ok(());
+            }
         }
 
         // 2. Fetch Swap Details

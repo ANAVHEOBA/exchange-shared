@@ -8,7 +8,7 @@ use crate::services::trocador::HostedSwapRecipientConfig;
 /// Loads and validates environment variables
 pub struct Config {
     pub database_url: String,
-    pub redis_url: String,
+    pub redis_url: Option<String>,
     pub port: u16,
     pub jwt_secret: String,
     pub trocador_api_key: String,
@@ -39,7 +39,10 @@ impl Config {
         let database_url =
             env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
 
-        let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        let redis_url = match env::var("REDIS_URL") {
+            Ok(value) if !value.trim().is_empty() => Some(value),
+            _ => None,
+        };
 
         let port = env::var("PORT")
             .ok()

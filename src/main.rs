@@ -27,9 +27,13 @@ async fn main() {
     let db = init_db().await;
     tracing::info!("Connected to MySQL");
 
-    // Initialize Redis Service
-    let redis_service = RedisService::new(&config.redis_url);
-    tracing::info!("Connected to Redis");
+    // Initialize Redis Service when configured.
+    let redis_service = config.redis_url.as_deref().map(RedisService::new);
+    if redis_service.is_some() {
+        tracing::info!("Redis configured");
+    } else {
+        tracing::info!("Redis disabled");
+    }
 
     let jwt_service = JwtService::new(config.jwt_secret);
 

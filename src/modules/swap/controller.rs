@@ -25,7 +25,7 @@ use crate::AppState;
 fn swap_crud(state: &Arc<AppState>) -> SwapCrud {
     SwapCrud::new(
         state.db.clone(),
-        Some(state.redis.clone()),
+        None,
         state.wallet_mnemonic.clone(),
         state.rpc_manager.clone(),
         state.payout_policy.clone(),
@@ -35,7 +35,7 @@ fn swap_crud(state: &Arc<AppState>) -> SwapCrud {
 fn swap_service(state: &Arc<AppState>) -> SwapService {
     SwapService::new(
         state.db.clone(),
-        Some(state.redis.clone()),
+        None,
         state.wallet_mnemonic.clone(),
         state.rpc_manager.clone(),
         state.payout_policy.clone(),

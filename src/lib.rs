@@ -32,7 +32,7 @@ use services::trocador::TrocadorGateway;
 
 pub struct AppState {
     pub db: DbPool,
-    pub redis: RedisService, // Changed from redis::Client
+    pub redis: Option<RedisService>,
     pub http_client: reqwest::Client,
     pub jwt_service: JwtService,
     pub wallet_mnemonic: Option<String>,
@@ -43,7 +43,7 @@ pub struct AppState {
 
 pub async fn create_app(
     db: DbPool,
-    redis: RedisService,
+    redis: Option<RedisService>,
     jwt_service: JwtService,
     wallet_mnemonic: Option<String>,
     rpc_manager: Arc<RpcManager>,
@@ -248,10 +248,17 @@ async fn check_database(state: &AppState) -> DependencyHealth {
 }
 
 async fn check_redis(state: &AppState) -> DependencyHealth {
+    let Some(redis) = &state.redis else {
+        return DependencyHealth {
+            status: "disabled".to_string(),
+            latency_ms: 0,
+            details: Some("Redis is not configured".to_string()),
+        };
+    };
+
     let start = tokio::time::Instant::now();
     let result = tokio::time::timeout(HEALTH_CHECK_TIMEOUT, async {
-        let mut conn = state
-            .redis
+        let mut conn = redis
             .get_client()
             .get_multiplexed_async_connection()
             .await
@@ -362,10 +369,12 @@ fn rpc_health_state(overview: &RpcHealthOverview) -> HealthState {
 }
 
 fn overall_health_status(database: &str, redis: &str, trocador: &str, rpc: &str) -> HealthState {
-    let states = [database, redis, trocador, rpc];
+    let states = [database, trocador, rpc];
     if states.contains(&HealthState::Unhealthy.as_str()) {
         HealthState::Unhealthy
-    } else if states.contains(&HealthState::Degraded.as_str()) {
+    } else if states.contains(&HealthState::Degraded.as_str())
+        || redis == HealthState::Degraded.as_str()
+    {
         HealthState::Degraded
     } else {
         HealthState::Healthy

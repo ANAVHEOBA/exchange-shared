@@ -213,7 +213,7 @@ impl RateType {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct RateResponse {
     pub provider: String,
     pub provider_name: String,
@@ -249,7 +249,7 @@ pub struct RateResponse {
     pub eta_minutes: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct RatesResponse {
     pub trade_id: String, // Trocador trade ID
     pub from: String,

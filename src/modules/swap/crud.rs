@@ -1,13 +1,14 @@
 use chrono::Utc;
 use sqlx::{MySql, Pool};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use super::model::{Currency, Provider};
 use super::repository::SwapRepository;
 use super::schema::{
-    CurrenciesQuery, CurrencyResponse, ProviderResponse, ProvidersQuery, TrocadorCurrency,
-    TrocadorProvider,
+    CurrenciesQuery, CurrencyResponse, EstimateCacheEntry, EstimateResponse, ProviderResponse,
+    ProvidersQuery, RatesResponse, TrocadorCurrency, TrocadorProvider,
 };
 use super::service::SwapService;
 use crate::services::gas::GasEstimator;
@@ -19,6 +20,139 @@ use crate::services::trocador::{swap_markup_from_env, TrocadorError, TrocadorGat
 use crate::services::wallet::validation::{
     default_extra_id_name, validate_address_by_network_family, AddressValidation,
 };
+
+const RATES_MEMORY_CACHE_TTL: Duration = Duration::from_secs(15);
+const RATES_MEMORY_CACHE_MAX_ENTRIES: usize = 256;
+const ESTIMATE_EXACT_MEMORY_CACHE_TTL: Duration = Duration::from_secs(10);
+const ESTIMATE_BUCKET_MEMORY_CACHE_TTL: Duration = Duration::from_secs(60);
+const ESTIMATE_MEMORY_CACHE_MAX_ENTRIES: usize = 512;
+
+#[derive(Debug, Clone)]
+struct CachedRatesResponse {
+    cached_at: Instant,
+    value: RatesResponse,
+}
+
+#[derive(Debug, Clone)]
+struct CachedEstimateEntry {
+    cached_at: Instant,
+    ttl: Duration,
+    value: EstimateCacheEntry,
+}
+
+fn rates_memory_cache() -> &'static RwLock<HashMap<String, CachedRatesResponse>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, CachedRatesResponse>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn estimate_memory_cache() -> &'static RwLock<HashMap<String, CachedEstimateEntry>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, CachedEstimateEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn read_cached_rates_response(cache_key: &str) -> Option<RatesResponse> {
+    let cache = rates_memory_cache().read().ok()?;
+    let cached = cache.get(cache_key)?;
+
+    if cached.cached_at.elapsed() > RATES_MEMORY_CACHE_TTL {
+        return None;
+    }
+
+    Some(cached.value.clone())
+}
+
+fn write_cached_rates_response(cache_key: String, value: RatesResponse) {
+    let Ok(mut cache) = rates_memory_cache().write() else {
+        return;
+    };
+
+    cache.retain(|_, cached| cached.cached_at.elapsed() <= RATES_MEMORY_CACHE_TTL);
+    if cache.len() >= RATES_MEMORY_CACHE_MAX_ENTRIES {
+        let overflow = cache
+            .len()
+            .saturating_add(1)
+            .saturating_sub(RATES_MEMORY_CACHE_MAX_ENTRIES);
+        let mut oldest_entries = cache
+            .iter()
+            .map(|(cached_key, cached)| (cached_key.clone(), cached.cached_at))
+            .collect::<Vec<_>>();
+        oldest_entries.sort_by_key(|(_, cached_at)| *cached_at);
+
+        for (cached_key, _) in oldest_entries.into_iter().take(overflow.max(1)) {
+            cache.remove(&cached_key);
+        }
+    }
+
+    cache.insert(
+        cache_key,
+        CachedRatesResponse {
+            cached_at: Instant::now(),
+            value,
+        },
+    );
+}
+
+fn read_cached_estimate_entry(cache_key: &str) -> Option<EstimateCacheEntry> {
+    let cache = estimate_memory_cache().read().ok()?;
+    let cached = cache.get(cache_key)?;
+
+    if cached.cached_at.elapsed() > cached.ttl {
+        return None;
+    }
+
+    Some(cached.value.clone())
+}
+
+fn write_cached_estimate_entry(cache_key: String, ttl: Duration, value: EstimateCacheEntry) {
+    let Ok(mut cache) = estimate_memory_cache().write() else {
+        return;
+    };
+
+    cache.retain(|_, cached| cached.cached_at.elapsed() <= cached.ttl);
+    if cache.len() >= ESTIMATE_MEMORY_CACHE_MAX_ENTRIES {
+        let overflow = cache
+            .len()
+            .saturating_add(1)
+            .saturating_sub(ESTIMATE_MEMORY_CACHE_MAX_ENTRIES);
+        let mut oldest_entries = cache
+            .iter()
+            .map(|(cached_key, cached)| (cached_key.clone(), cached.cached_at))
+            .collect::<Vec<_>>();
+        oldest_entries.sort_by_key(|(_, cached_at)| *cached_at);
+
+        for (cached_key, _) in oldest_entries.into_iter().take(overflow.max(1)) {
+            cache.remove(&cached_key);
+        }
+    }
+
+    cache.insert(
+        cache_key,
+        CachedEstimateEntry {
+            cached_at: Instant::now(),
+            ttl,
+            value,
+        },
+    );
+}
+
+fn estimate_response_from_cache_entry(entry: &EstimateCacheEntry) -> EstimateResponse {
+    let now = Utc::now().timestamp_millis();
+    let cache_age = ((now - entry.created_at) / 1000) as i64;
+    let expires_in = ((entry.expires_at - now) / 1000).max(0) as i64;
+
+    let mut response = entry.response.clone();
+    response.cached = true;
+    response.cache_age_seconds = cache_age;
+    response.expires_in_seconds = expires_in;
+    response
+}
+
+fn upstream_error_indicates_missing_quote(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("no resulting quote")
+        || lowered.contains("no available quote")
+        || lowered.contains("pair not available")
+}
 
 pub enum CurrenciesResult {
     RawJson(String),
@@ -73,7 +207,14 @@ impl std::fmt::Display for SwapError {
 
 impl From<TrocadorError> for SwapError {
     fn from(err: TrocadorError) -> Self {
-        SwapError::ExternalApiError(err.to_string())
+        match err {
+            TrocadorError::ApiError(message)
+                if upstream_error_indicates_missing_quote(&message) =>
+            {
+                SwapError::PairNotAvailable
+            }
+            other => SwapError::ExternalApiError(other.to_string()),
+        }
     }
 }
 
@@ -691,17 +832,23 @@ impl SwapCrud {
 
         let lock_key = format!("lock:{}", cache_key);
 
-        // 1. Try Cache First (Fast Path)
+        // 1. Try process-local cache first for instant repeat lookups.
+        if let Some(cached) = read_cached_rates_response(&cache_key) {
+            return Ok(cached);
+        }
+
+        // 2. Try Redis cache if it is enabled for this flow.
         if let Some(service) = &self.redis_service {
             if let Ok(Some(cached)) = service
                 .get_json::<super::schema::RatesResponse>(&cache_key)
                 .await
             {
+                write_cached_rates_response(cache_key.clone(), cached.clone());
                 return Ok(cached);
             }
         }
 
-        // 2. Singleflight Logic (Coalescing)
+        // 3. Distributed singleflight only when Redis is enabled.
         if let Some(service) = &self.redis_service {
             // Try to acquire lock for 15 seconds (cover long API calls)
             // If try_lock returns true, we are the LEADER.
@@ -722,12 +869,14 @@ impl SwapCrud {
             }
         }
 
-        // 3. Fetch from API (Leader Execution)
+        // 4. Fetch from API (leader execution or direct fetch when Redis is disabled)
         let result = self
             .fetch_rates_from_api(query, force_provider_managed)
             .await?;
 
-        // 4. Cache Result (Short TTL: 15s for volatility)
+        // 5. Cache result locally and optionally in Redis.
+        write_cached_rates_response(cache_key.clone(), result.clone());
+
         if let Some(service) = &self.redis_service {
             let _ = service.set_json(&cache_key, &result, 15).await;
             // Lock will auto-expire, letting it sit ensures we don't spam if API is slow
@@ -1018,8 +1167,6 @@ impl SwapCrud {
         &self,
         query: &super::schema::EstimateQuery,
     ) -> Result<super::schema::EstimateResponse, SwapError> {
-        use chrono::Utc;
-
         // 1. Generate cache keys (exact + bucketed)
         let exact_key = format!(
             "estimate:v2:{}:{}:{}:{}:{:.8}",
@@ -1040,25 +1187,30 @@ impl SwapCrud {
             bucketed_amount
         );
 
-        // 2. Try exact cache first (10s TTL for repeated requests)
+        // 2. Try in-process exact cache first (10s TTL for repeated requests).
+        if let Some(cached) = read_cached_estimate_entry(&exact_key) {
+            return Ok(estimate_response_from_cache_entry(&cached));
+        }
+
+        // 3. Try in-process bucketed cache next (60s TTL for nearby amounts).
+        if let Some(cached) = read_cached_estimate_entry(&bucketed_key) {
+            return Ok(estimate_response_from_cache_entry(&cached));
+        }
+
+        // 4. Try Redis exact cache if it is enabled.
         if let Some(service) = &self.redis_service {
             if let Ok(Some(cached)) = service
                 .get_json::<super::schema::EstimateCacheEntry>(&exact_key)
                 .await
             {
+                write_cached_estimate_entry(
+                    exact_key.clone(),
+                    ESTIMATE_EXACT_MEMORY_CACHE_TTL,
+                    cached.clone(),
+                );
                 // Check if we should trigger early refresh (PER algorithm)
                 if !Self::should_early_refresh(&cached) {
-                    // Return cached response with updated metadata
-                    let now = Utc::now().timestamp_millis();
-                    let cache_age = ((now - cached.created_at) / 1000) as i64;
-                    let expires_in = ((cached.expires_at - now) / 1000).max(0) as i64;
-
-                    let mut response = cached.response.clone();
-                    response.cached = true;
-                    response.cache_age_seconds = cache_age;
-                    response.expires_in_seconds = expires_in;
-
-                    return Ok(response);
+                    return Ok(estimate_response_from_cache_entry(&cached));
                 } else {
                     // Trigger async refresh but return stale data
                     let query_clone = query.clone();
@@ -1079,39 +1231,27 @@ impl SwapCrud {
                         let _ = crud.fetch_estimate_from_api(&query_clone).await;
                     });
 
-                    // Return stale data immediately
-                    let now = Utc::now().timestamp_millis();
-                    let cache_age = ((now - cached.created_at) / 1000) as i64;
-                    let mut response = cached.response.clone();
-                    response.cached = true;
-                    response.cache_age_seconds = cache_age;
-                    response.expires_in_seconds = 0;
-
-                    return Ok(response);
+                    return Ok(estimate_response_from_cache_entry(&cached));
                 }
             }
 
-            // 3. Try bucketed cache (60s TTL for similar amounts)
+            // 5. Try Redis bucketed cache for similar amounts.
             if let Ok(Some(cached)) = service
                 .get_json::<super::schema::EstimateCacheEntry>(&bucketed_key)
                 .await
             {
+                write_cached_estimate_entry(
+                    bucketed_key.clone(),
+                    ESTIMATE_BUCKET_MEMORY_CACHE_TTL,
+                    cached.clone(),
+                );
                 if !Self::should_early_refresh(&cached) {
-                    let now = Utc::now().timestamp_millis();
-                    let cache_age = ((now - cached.created_at) / 1000) as i64;
-                    let expires_in = ((cached.expires_at - now) / 1000).max(0) as i64;
-
-                    let mut response = cached.response.clone();
-                    response.cached = true;
-                    response.cache_age_seconds = cache_age;
-                    response.expires_in_seconds = expires_in;
-
-                    return Ok(response);
+                    return Ok(estimate_response_from_cache_entry(&cached));
                 }
             }
         }
 
-        // 4. Cache miss - fetch from API
+        // 6. Cache miss - fetch from API.
         self.fetch_estimate_from_api(query).await
     }
 
@@ -1163,43 +1303,52 @@ impl SwapCrud {
             60,    // expires in 60s
         );
 
-        // 5. Cache the result
+        // 5. Cache the result in-process, and in Redis if enabled.
+        let now = Utc::now().timestamp_millis();
+
+        let exact_key = format!(
+            "estimate:v2:{}:{}:{}:{}:{:.8}",
+            query.from.to_lowercase(),
+            query.to.to_lowercase(),
+            query.network_from,
+            query.network_to,
+            query.amount
+        );
+        let exact_entry = super::schema::EstimateCacheEntry {
+            response: response.clone(),
+            created_at: now,
+            expires_at: now + 10_000, // 10 seconds
+            compute_time_ms,
+        };
+        write_cached_estimate_entry(
+            exact_key.clone(),
+            ESTIMATE_EXACT_MEMORY_CACHE_TTL,
+            exact_entry.clone(),
+        );
+
+        let bucketed_amount = Self::bucket_amount(query.amount);
+        let bucketed_key = format!(
+            "estimate:v2:{}:{}:{}:{}:{:.8}:bucket",
+            query.from.to_lowercase(),
+            query.to.to_lowercase(),
+            query.network_from,
+            query.network_to,
+            bucketed_amount
+        );
+        let bucketed_entry = super::schema::EstimateCacheEntry {
+            response: response.clone(),
+            created_at: now,
+            expires_at: now + 60_000, // 60 seconds
+            compute_time_ms,
+        };
+        write_cached_estimate_entry(
+            bucketed_key.clone(),
+            ESTIMATE_BUCKET_MEMORY_CACHE_TTL,
+            bucketed_entry.clone(),
+        );
+
         if let Some(service) = &self.redis_service {
-            let now = Utc::now().timestamp_millis();
-
-            // Exact key cache (10s TTL)
-            let exact_key = format!(
-                "estimate:v2:{}:{}:{}:{}:{:.8}",
-                query.from.to_lowercase(),
-                query.to.to_lowercase(),
-                query.network_from,
-                query.network_to,
-                query.amount
-            );
-            let exact_entry = super::schema::EstimateCacheEntry {
-                response: response.clone(),
-                created_at: now,
-                expires_at: now + 10_000, // 10 seconds
-                compute_time_ms,
-            };
             let _ = service.set_json(&exact_key, &exact_entry, 10).await;
-
-            // Bucketed key cache (60s TTL)
-            let bucketed_amount = Self::bucket_amount(query.amount);
-            let bucketed_key = format!(
-                "estimate:v2:{}:{}:{}:{}:{:.8}:bucket",
-                query.from.to_lowercase(),
-                query.to.to_lowercase(),
-                query.network_from,
-                query.network_to,
-                bucketed_amount
-            );
-            let bucketed_entry = super::schema::EstimateCacheEntry {
-                response: response.clone(),
-                created_at: now,
-                expires_at: now + 60_000, // 60 seconds
-                compute_time_ms,
-            };
             let _ = service.set_json(&bucketed_key, &bucketed_entry, 60).await;
         }
 
