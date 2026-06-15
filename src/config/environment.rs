@@ -1,6 +1,8 @@
 use std::env;
 
 use crate::services::payout_policy::PayoutPolicyConfig;
+use crate::services::trocador::swap_markup_from_env;
+use crate::services::trocador::HostedSwapRecipientConfig;
 
 /// Environment configuration
 /// Loads and validates environment variables
@@ -10,7 +12,7 @@ pub struct Config {
     pub port: u16,
     pub jwt_secret: String,
     pub trocador_api_key: String,
-    pub wallet_mnemonic: String,
+    pub wallet_mnemonic: Option<String>,
 
     // RPC Configuration
     pub alchemy_api_key: Option<String>,
@@ -49,9 +51,18 @@ impl Config {
 
         let trocador_api_key =
             env::var("TROCADOR_API_KEY").map_err(|_| "TROCADOR_API_KEY must be set".to_string())?;
-
-        let wallet_mnemonic =
-            env::var("WALLET_MNEMONIC").map_err(|_| "WALLET_MNEMONIC must be set".to_string())?;
+        let trocador_swap_markup = swap_markup_from_env()?;
+        let hosted_donation_target = HostedSwapRecipientConfig::from_env()?;
+        let payout_policy = PayoutPolicyConfig::from_env();
+        let wallet_mnemonic = match env::var("WALLET_MNEMONIC") {
+            Ok(value) if !value.trim().is_empty() => Some(value),
+            _ if payout_policy.has_local_certified_chains() => {
+                return Err(
+                    "WALLET_MNEMONIC must be set when local settlement is enabled".to_string(),
+                );
+            }
+            _ => None,
+        };
 
         // RPC API Keys (all optional)
         let alchemy_api_key = env::var("ALCHEMY_API_KEY").ok();
@@ -95,7 +106,6 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(false);
-        let payout_policy = PayoutPolicyConfig::from_env();
 
         // Log RPC configuration status
         if alchemy_api_key.is_some() {
@@ -120,6 +130,20 @@ impl Config {
             payout_policy.local_certified_chain_keys().join(","),
             payout_policy.trocador_only_chain_keys().join(",")
         );
+        if wallet_mnemonic.is_none() {
+            tracing::info!("Wallet mnemonic not configured; Trocador-managed payouts only");
+        }
+        if let Some(markup) = trocador_swap_markup.as_deref() {
+            tracing::info!("Trocador swap markup enabled at {}%", markup);
+        }
+        if let Some(target) = hosted_donation_target.as_ref() {
+            tracing::info!(
+                "Hosted donation target configured: {}/{} -> {}",
+                target.to,
+                target.network_to,
+                target.recipient_address
+            );
+        }
 
         Ok(Self {
             database_url,

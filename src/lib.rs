@@ -35,7 +35,7 @@ pub struct AppState {
     pub redis: RedisService, // Changed from redis::Client
     pub http_client: reqwest::Client,
     pub jwt_service: JwtService,
-    pub wallet_mnemonic: String,
+    pub wallet_mnemonic: Option<String>,
     pub email_service: Option<services::email::EmailService>,
     pub rpc_manager: Arc<RpcManager>,
     pub payout_policy: PayoutPolicyConfig,
@@ -45,7 +45,7 @@ pub async fn create_app(
     db: DbPool,
     redis: RedisService,
     jwt_service: JwtService,
-    wallet_mnemonic: String,
+    wallet_mnemonic: Option<String>,
     rpc_manager: Arc<RpcManager>,
     payout_policy: PayoutPolicyConfig,
 ) -> Router {

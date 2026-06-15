@@ -1,3 +1,4 @@
+use crate::services::trocador::HostedSwapRecipientConfig;
 use crate::services::wallet::validation::default_extra_id_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -268,6 +269,100 @@ pub struct RatesResponse {
     pub kyc_list: Option<Vec<String>>,
     pub logpolicy_list: Option<Vec<String>>,
     pub rates: Vec<RateResponse>,
+}
+
+// =============================================================================
+// HOSTED DONATION FLOW
+// =============================================================================
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DonationTargetResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub to: String,
+    pub network_to: String,
+    pub recipient_address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_extra_id: Option<String>,
+}
+
+impl DonationTargetResponse {
+    pub fn from_config(config: &HostedSwapRecipientConfig) -> Self {
+        Self {
+            label: config.label.clone(),
+            to: config.to.clone(),
+            network_to: config.network_to.clone(),
+            recipient_address: config.recipient_address.clone(),
+            recipient_extra_id: config.recipient_extra_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct DonationRatesQuery {
+    pub from: String,
+    pub network_from: String,
+    pub amount: f64,
+    pub rate_type: Option<RateType>,
+    pub provider: Option<String>,
+    pub min_kycrating: Option<String>,
+}
+
+impl DonationRatesQuery {
+    pub fn into_rates_query(self, target: &HostedSwapRecipientConfig) -> RatesQuery {
+        RatesQuery {
+            from: self.from,
+            network_from: self.network_from,
+            to: target.to.clone(),
+            network_to: target.network_to.clone(),
+            amount: self.amount,
+            rate_type: self.rate_type,
+            provider: self.provider,
+            min_kycrating: self.min_kycrating,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateDonationSwapRequest {
+    pub trade_id: Option<String>,
+    pub from: String,
+    pub network_from: String,
+    pub amount: f64,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_extra_id: Option<String>,
+    #[serde(default)]
+    pub rate_type: RateType,
+    #[serde(default)]
+    pub sandbox: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_kycrating: Option<String>,
+}
+
+impl CreateDonationSwapRequest {
+    pub fn into_create_swap_request(self, target: &HostedSwapRecipientConfig) -> CreateSwapRequest {
+        CreateSwapRequest {
+            trade_id: self.trade_id,
+            from: self.from,
+            network_from: self.network_from,
+            to: target.to.clone(),
+            network_to: target.network_to.clone(),
+            amount: self.amount,
+            provider: self.provider,
+            recipient_address: target.recipient_address.clone(),
+            recipient_extra_id: target.recipient_extra_id.clone(),
+            refund_address: self.refund_address,
+            refund_extra_id: self.refund_extra_id,
+            rate_type: self.rate_type,
+            sandbox: self.sandbox,
+            payment: false,
+            min_kycrating: self.min_kycrating,
+        }
+    }
 }
 
 // Trocador's internal rate response

@@ -4,6 +4,8 @@ use crate::modules::swap::schema::{
 
 use super::{TrocadorClient, TrocadorError};
 
+const ALLOWED_SWAP_MARKUPS: &[&str] = &["0", "1", "1.65", "3"];
+
 /// Application-facing boundary for Trocador operations.
 /// Keeps swap orchestration off the raw HTTP client type.
 pub struct TrocadorGateway {
@@ -37,6 +39,7 @@ impl TrocadorGateway {
         network_to: &str,
         amount: f64,
         min_kycrating: Option<&str>,
+        markup: Option<&str>,
     ) -> Result<TrocadorRatesResponse, TrocadorError> {
         self.client
             .get_rates(
@@ -46,6 +49,7 @@ impl TrocadorGateway {
                 network_to,
                 amount,
                 min_kycrating,
+                markup,
             )
             .await
     }
@@ -68,6 +72,7 @@ impl TrocadorGateway {
         min_kycrating: Option<&str>,
         webhook: Option<&str>,
         webhook_key: Option<&str>,
+        markup: Option<&str>,
     ) -> Result<TrocadorTradeResponse, TrocadorError> {
         self.client
             .create_trade(
@@ -87,6 +92,7 @@ impl TrocadorGateway {
                 min_kycrating,
                 webhook,
                 webhook_key,
+                markup,
             )
             .await
     }
@@ -105,5 +111,68 @@ impl TrocadorGateway {
         address: &str,
     ) -> Result<bool, TrocadorError> {
         self.client.validate_address(ticker, network, address).await
+    }
+}
+
+pub fn swap_markup_from_env() -> Result<Option<String>, String> {
+    normalize_swap_markup(std::env::var("TROCADOR_SWAP_MARKUP").ok().as_deref())
+}
+
+fn normalize_swap_markup(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    if ALLOWED_SWAP_MARKUPS.contains(&trimmed) {
+        return Ok(Some(trimmed.to_string()));
+    }
+
+    Err(format!(
+        "Invalid TROCADOR_SWAP_MARKUP '{}'. Allowed values: {}",
+        trimmed,
+        ALLOWED_SWAP_MARKUPS.join(", ")
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_swap_markup;
+
+    #[test]
+    fn empty_markup_is_disabled() {
+        assert_eq!(normalize_swap_markup(None).unwrap(), None);
+        assert_eq!(normalize_swap_markup(Some("")).unwrap(), None);
+        assert_eq!(normalize_swap_markup(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn documented_markup_values_are_accepted() {
+        assert_eq!(
+            normalize_swap_markup(Some("0")).unwrap().as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            normalize_swap_markup(Some("1")).unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            normalize_swap_markup(Some("1.65")).unwrap().as_deref(),
+            Some("1.65")
+        );
+        assert_eq!(
+            normalize_swap_markup(Some("3")).unwrap().as_deref(),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn invalid_markup_is_rejected() {
+        let err = normalize_swap_markup(Some("2")).expect_err("2 is not documented by Trocador");
+        assert!(err.contains("TROCADOR_SWAP_MARKUP"));
     }
 }

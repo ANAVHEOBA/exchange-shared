@@ -42,7 +42,12 @@ async fn test_worker_lock_prevents_concurrency() {
     let rpc_configs = build_default_rpc_configs();
     let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
 
-    let engine = MonitorEngine::new(ctx.db.clone(), ctx.redis.clone(), master_seed, rpc_manager);
+    let engine = MonitorEngine::new(
+        ctx.db.clone(),
+        ctx.redis.clone(),
+        Some(master_seed),
+        rpc_manager,
+    );
     let state = PollingState {
         swap_id: swap_id.clone(),
         last_polled_at: None,

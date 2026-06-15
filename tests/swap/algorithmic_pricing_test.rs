@@ -186,3 +186,37 @@ async fn test_trocador_quote_metadata_is_preserved_in_rate_response() {
     assert_eq!(rate.spread_percentage, Some(-0.4));
     assert_eq!(rate.usd_total_cost_percentage, Some(-0.39));
 }
+
+#[serial]
+#[tokio::test]
+async fn test_provider_managed_routes_skip_local_platform_fee() {
+    let engine = PricingEngine::new();
+
+    let quotes = vec![TrocadorQuote {
+        provider: "provider_managed".to_string(),
+        amount_to: "10.0".to_string(),
+        min_amount: Some(0.01),
+        max_amount: Some(100.0),
+        kycrating: Some("A".to_string()),
+        waste: Some("0.0".to_string()),
+        fixed: Some("False".to_string()),
+        insurance: None,
+        logpolicy: None,
+        amount_to_usd: Some("1000.0".to_string()),
+        provider_logo: None,
+        rate_id: None,
+        amount_from_usd: Some("1000.0".to_string()),
+        unadjusted_amount_to: Some(10.0),
+        usd_total_cost_percentage: Some("0.0".to_string()),
+        eta: Some(10.0),
+    }];
+
+    let results =
+        engine.apply_optimal_markup_with_mode(&quotes, 1.0, 1000.0, "btc", 0.0, 0.0, false);
+    let rate = &results[0];
+
+    assert_eq!(rate.platform_fee, 0.0);
+    assert_eq!(rate.network_fee, 0.0);
+    assert_eq!(rate.estimated_amount, 10.0);
+    assert_eq!(rate.amount_to, 10.0);
+}

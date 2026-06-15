@@ -129,7 +129,8 @@ async fn logout_with_expired_token_returns_unauthorized() {
     let ctx = TestContext::new().await;
 
     // Using a properly formatted but expired JWT
-    let expired_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxfQ.invalid";
+    let expired_token =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxfQ.invalid";
 
     let response = ctx
         .server

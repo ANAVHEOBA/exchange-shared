@@ -6,7 +6,10 @@ use serde::Serialize;
 const BREVO_API_BASE_URL: &str = "https://api.brevo.com/v3";
 
 enum EmailProvider {
-    Brevo { api_key: String, client: Client },
+    Brevo {
+        api_key: String,
+        client: Client,
+    },
     Smtp {
         host: String,
         port: u16,
@@ -163,7 +166,11 @@ impl EmailService {
         username: &str,
         token: &str,
     ) -> Result<(), EmailError> {
-        let reset_link = format!("{}/reset-password/{}", self.app_url.trim_end_matches('/'), token);
+        let reset_link = format!(
+            "{}/reset-password/{}",
+            self.app_url.trim_end_matches('/'),
+            token
+        );
         let subject = "Reset your password";
         let html_body = format!(
             r#"

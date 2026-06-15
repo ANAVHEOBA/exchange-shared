@@ -39,7 +39,7 @@ async fn create_user_and_get_reset_token(ctx: &TestContext) -> (String, String) 
          JOIN users u ON pr.user_id = u.id
          WHERE u.email = ?
          ORDER BY pr.created_at DESC
-         LIMIT 1"
+         LIMIT 1",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -158,11 +158,13 @@ async fn reset_password_with_expired_token_returns_bad_request() {
     let (_, token) = create_user_and_get_reset_token(&ctx).await;
 
     // Manually expire the token
-    sqlx::query("UPDATE password_resets SET expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) WHERE token = ?")
-        .bind(&token)
-        .execute(&ctx.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE password_resets SET expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) WHERE token = ?",
+    )
+    .bind(&token)
+    .execute(&ctx.db)
+    .await
+    .unwrap();
 
     let response = ctx
         .server

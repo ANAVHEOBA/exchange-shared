@@ -49,9 +49,30 @@ impl PricingEngine {
         quotes: &[TrocadorQuote],
         amount_from: f64,
         amount_usd: f64,
+        ticker_from: &str,
+        gas_cost_native: f64,
+        provider_spread: f64,
+    ) -> Vec<RateResponse> {
+        self.apply_optimal_markup_with_mode(
+            quotes,
+            amount_from,
+            amount_usd,
+            ticker_from,
+            gas_cost_native,
+            provider_spread,
+            true,
+        )
+    }
+
+    pub fn apply_optimal_markup_with_mode(
+        &self,
+        quotes: &[TrocadorQuote],
+        amount_from: f64,
+        amount_usd: f64,
         _ticker_from: &str,
         gas_cost_native: f64,
         provider_spread: f64,
+        apply_platform_fee: bool,
     ) -> Vec<RateResponse> {
         if quotes.is_empty() {
             return vec![];
@@ -78,7 +99,17 @@ impl PricingEngine {
                     provider_spread,
                 );
                 let network_fee = gas_cost_native.max(0.0);
-                let estimated_amount = (commission.user_receive - network_fee).max(0.0);
+                // Keep the local fee engine intact for direct-settlement routes only.
+                let platform_fee = if apply_platform_fee {
+                    commission.platform_fee
+                } else {
+                    0.0
+                };
+                let estimated_amount = if apply_platform_fee {
+                    (commission.user_receive - network_fee).max(0.0)
+                } else {
+                    (amount_to - network_fee).max(0.0)
+                };
                 let amount_to_usd = Self::parse_optional_f64(quote.amount_to_usd.as_deref());
                 let estimated_amount_usd = amount_to_usd.and_then(|quoted_usd| {
                     if amount_to > 0.0 {
@@ -103,8 +134,8 @@ impl PricingEngine {
                     max_amount: quote.max_amount.unwrap_or(0.0),
                     network_fee,
                     provider_fee,
-                    platform_fee: commission.platform_fee,
-                    total_fee: provider_fee + commission.platform_fee + network_fee,
+                    platform_fee,
+                    total_fee: provider_fee + platform_fee + network_fee,
                     spread_percentage,
                     rate_type: rate_type.clone(),
                     fixed: rate_type == RateType::Fixed,

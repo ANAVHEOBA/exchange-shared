@@ -15,7 +15,7 @@ use crate::services::payout_policy::PayoutPolicyConfig;
 use crate::services::pricing::{PricedRates, QuoteService};
 use crate::services::redis_cache::RedisService;
 use crate::services::rpc::RpcManager;
-use crate::services::trocador::{TrocadorError, TrocadorGateway};
+use crate::services::trocador::{swap_markup_from_env, TrocadorError, TrocadorGateway};
 use crate::services::wallet::validation::{
     default_extra_id_name, validate_address_by_network_family, AddressValidation,
 };
@@ -132,6 +132,18 @@ impl SwapCrud {
         ticker: &str,
         network: &str,
     ) -> Result<f64, SwapError> {
+        if !self.payout_policy.has_local_certified_chains() {
+            return Ok(0.0);
+        }
+
+        if !self
+            .swap_service()
+            .direct_settlement_available(ticker, network)
+            .await
+        {
+            return Ok(0.0);
+        }
+
         // Normalize API-facing network labels (for example ERC20 -> ethereum)
         // and fall back to conservative defaults when live RPC estimation fails.
         let normalized_network = GasEstimator::normalize_payout_network(ticker, network);
@@ -651,9 +663,30 @@ impl SwapCrud {
         &self,
         query: &super::schema::RatesQuery,
     ) -> Result<super::schema::RatesResponse, SwapError> {
+        self.get_rates_optimized_with_payout_mode(query, false)
+            .await
+    }
+
+    pub async fn get_provider_managed_rates(
+        &self,
+        query: &super::schema::RatesQuery,
+    ) -> Result<super::schema::RatesResponse, SwapError> {
+        self.get_rates_optimized_with_payout_mode(query, true).await
+    }
+
+    async fn get_rates_optimized_with_payout_mode(
+        &self,
+        query: &super::schema::RatesQuery,
+        force_provider_managed: bool,
+    ) -> Result<super::schema::RatesResponse, SwapError> {
+        let payout_mode = if force_provider_managed {
+            "provider-managed"
+        } else {
+            "auto"
+        };
         let cache_key = format!(
-            "rates:{}:{}:{}:{}:{}",
-            query.from, query.to, query.network_from, query.network_to, query.amount
+            "rates:{}:{}:{}:{}:{}:{}",
+            query.from, query.to, query.network_from, query.network_to, query.amount, payout_mode
         );
 
         let lock_key = format!("lock:{}", cache_key);
@@ -690,7 +723,9 @@ impl SwapCrud {
         }
 
         // 3. Fetch from API (Leader Execution)
-        let result = self.fetch_rates_from_api(query).await?;
+        let result = self
+            .fetch_rates_from_api(query, force_provider_managed)
+            .await?;
 
         // 4. Cache Result (Short TTL: 15s for volatility)
         if let Some(service) = &self.redis_service {
@@ -705,13 +740,18 @@ impl SwapCrud {
     async fn fetch_rates_from_api(
         &self,
         query: &super::schema::RatesQuery,
+        force_provider_managed: bool,
     ) -> Result<super::schema::RatesResponse, SwapError> {
-        Ok(self.fetch_priced_rates_from_api(query).await?.response)
+        Ok(self
+            .fetch_priced_rates_from_api(query, force_provider_managed)
+            .await?
+            .response)
     }
 
     async fn fetch_priced_rates_from_api(
         &self,
         query: &super::schema::RatesQuery,
+        force_provider_managed: bool,
     ) -> Result<PricedRates, SwapError> {
         // Validate: Cannot swap same currency on same network
         if query.from.eq_ignore_ascii_case(&query.to)
@@ -731,6 +771,7 @@ impl SwapCrud {
 
         let trocador_res = self
             .call_trocador_with_retry(|| async {
+                let markup = swap_markup_from_env().map_err(TrocadorError::ApiError)?;
                 trocador_gateway
                     .fetch_rates(
                         &query.from,
@@ -739,17 +780,34 @@ impl SwapCrud {
                         &query.network_to,
                         query.amount,
                         query.min_kycrating.as_deref(),
+                        markup.as_deref(),
                     )
                     .await
             })
             .await?;
 
-        let gas_cost = self
-            .get_gas_cost_for_network(&query.to, &query.network_to)
-            .await?;
+        let direct_settlement = if force_provider_managed {
+            false
+        } else {
+            self.swap_service()
+                .direct_settlement_available(&query.to, &query.network_to)
+                .await
+        };
+        let gas_cost = if direct_settlement {
+            self.get_gas_cost_for_network(&query.to, &query.network_to)
+                .await?
+        } else {
+            0.0
+        };
         let quote_service = QuoteService::new();
         let priced_rates = quote_service
-            .price_rates(query, &trocador_gateway, trocador_res, gas_cost)
+            .price_rates(
+                query,
+                &trocador_gateway,
+                trocador_res,
+                gas_cost,
+                direct_settlement,
+            )
             .await
             .map_err(|e| {
                 SwapError::ExternalApiError(format!(
@@ -830,7 +888,7 @@ impl SwapCrud {
             &request.address,
         ) {
             AddressValidation::Valid { .. } => {}
-            AddressValidation::Invalid { .. } | AddressValidation::Unsupported { .. } => {
+            AddressValidation::Invalid { .. } => {
                 return Ok(super::schema::ValidateAddressResponse {
                     valid: false,
                     ticker: request.ticker.clone(),
@@ -838,6 +896,7 @@ impl SwapCrud {
                     address: request.address.clone(),
                 });
             }
+            AddressValidation::Unsupported { .. } => {}
         }
 
         // 2. Get API key
@@ -1078,7 +1137,9 @@ impl SwapCrud {
             min_kycrating: None,
         };
 
-        let priced_rates = self.fetch_priced_rates_from_api(&rates_query).await?;
+        let priced_rates = self
+            .fetch_priced_rates_from_api(&rates_query, false)
+            .await?;
         let provider_spread = priced_rates.provider_spread;
         let amount_usd = priced_rates.amount_usd;
         let rates_response = priced_rates.response;

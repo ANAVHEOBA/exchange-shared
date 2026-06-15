@@ -14,7 +14,7 @@ use crate::services::redis_cache::RedisService;
 use crate::services::rpc::{
     resolve_configured_send_chain_key, supports_direct_provider_chain, RpcManager,
 };
-use crate::services::trocador::{TrocadorError, TrocadorGateway};
+use crate::services::trocador::{swap_markup_from_env, TrocadorError, TrocadorGateway};
 use crate::services::wallet::manager::{
     canonical_payout_asset_network, ensure_local_payout_capability,
 };
@@ -66,6 +66,27 @@ impl SwapService {
         request: &CreateSwapRequest,
         user_id: Option<String>,
         client_id: Option<String>,
+    ) -> Result<CreateSwapResponse, SwapError> {
+        self.create_swap_internal(request, user_id, client_id, false)
+            .await
+    }
+
+    pub async fn create_provider_managed_swap(
+        &self,
+        request: &CreateSwapRequest,
+        user_id: Option<String>,
+        client_id: Option<String>,
+    ) -> Result<CreateSwapResponse, SwapError> {
+        self.create_swap_internal(request, user_id, client_id, true)
+            .await
+    }
+
+    async fn create_swap_internal(
+        &self,
+        request: &CreateSwapRequest,
+        user_id: Option<String>,
+        client_id: Option<String>,
+        force_provider_managed: bool,
     ) -> Result<CreateSwapResponse, SwapError> {
         let trocador_gateway = TrocadorGateway::from_env()
             .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
@@ -119,13 +140,21 @@ impl SwapService {
         )
         .await?;
 
-        let initial_payout_route = self
-            .resolve_payout_route(
+        let initial_payout_route = if force_provider_managed {
+            tracing::info!(
+                "🟢 Hosted swap forcing provider-managed payout for {}/{}",
+                request.to,
+                request.network_to
+            );
+            PayoutRoute::ProviderManaged
+        } else {
+            self.resolve_payout_route(
                 &request.to,
                 &request.network_to,
                 recipient_extra_id.as_deref(),
             )
-            .await?;
+            .await?
+        };
         let destination_requires_extra_id = self
             .currency_requires_extra_id(&trocador_gateway, &request.to, &request.network_to)
             .await?;
@@ -258,8 +287,10 @@ impl SwapService {
 
         let fixed = matches!(request.rate_type, super::schema::RateType::Fixed);
         let trocador_webhook = Self::resolve_trocador_webhook_config();
+        let swap_markup = swap_markup_from_env().map_err(SwapError::ExternalApiError)?;
         let trocador_res = self
             .call_trocador_with_retry(|| async {
+                let swap_markup = swap_markup.clone();
                 let res = trocador_gateway
                     .create_trade(
                         request.trade_id.as_deref(),
@@ -278,6 +309,7 @@ impl SwapService {
                         request.min_kycrating.as_deref(),
                         trocador_webhook.as_ref().map(|(url, _)| url.as_str()),
                         trocador_webhook.as_ref().map(|(_, key)| key.as_str()),
+                        swap_markup.as_deref(),
                     )
                     .await;
 
@@ -322,11 +354,16 @@ impl SwapService {
         } else {
             0.0
         };
-        let platform_fee = commission.platform_fee;
+        // Keep local fee deductions active for direct-settlement only.
+        let platform_fee = if direct_settlement {
+            commission.platform_fee
+        } else {
+            0.0
+        };
         let estimated_user_receive = if direct_settlement {
             (commission.user_receive - network_fee).max(0.0)
         } else {
-            commission.user_receive.max(0.0)
+            trocador_res.amount_to.max(0.0)
         };
 
         let status = Self::map_created_trade_status(&trocador_res.status);
@@ -607,6 +644,7 @@ impl SwapService {
 
         let live_rates = self
             .call_trocador_with_retry(|| async {
+                let markup = swap_markup_from_env().map_err(TrocadorError::ApiError)?;
                 trocador_gateway
                     .fetch_rates(
                         &request.from,
@@ -615,6 +653,7 @@ impl SwapService {
                         &request.network_to,
                         request.amount,
                         request.min_kycrating.as_deref(),
+                        markup.as_deref(),
                     )
                     .await
             })
@@ -653,7 +692,16 @@ impl SwapService {
             .map_err(SwapError::ValidationError)
     }
 
-    async fn direct_settlement_available(&self, ticker: &str, network: &str) -> bool {
+    pub(crate) async fn direct_settlement_available(&self, ticker: &str, network: &str) -> bool {
+        if !self.payout_policy.has_local_certified_chains() {
+            tracing::info!(
+                "No local certified payout chains configured; using provider-managed payout for {}/{}",
+                ticker,
+                network
+            );
+            return false;
+        }
+
         if self.wallet_mnemonic.is_none() {
             tracing::warn!(
                 "Wallet mnemonic not configured; falling back to provider-managed payout for {}/{}",

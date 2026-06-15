@@ -11,20 +11,22 @@ use std::sync::Arc;
 
 use super::crud::{CurrenciesResult, SwapCrud};
 use super::schema::{
-    ClientHistoryResponse, CreateSwapRequest, CreateSwapResponse, CurrenciesQuery, HistoryQuery,
-    HistoryResponse, ProvidersQuery, SwapErrorResponse, SwapStatusResponse, ValidateAddressRequest,
+    ClientHistoryResponse, CreateDonationSwapRequest, CreateSwapRequest, CreateSwapResponse,
+    CurrenciesQuery, DonationRatesQuery, DonationTargetResponse, HistoryQuery, HistoryResponse,
+    ProvidersQuery, SwapErrorResponse, SwapStatusResponse, ValidateAddressRequest,
     ValidateAddressResponse,
 };
 use super::service::SwapService;
 use crate::middleware::client_identity::AnonymousClientId;
 use crate::middleware::user::{OptionalUser, User};
+use crate::services::trocador::HostedSwapRecipientConfig;
 use crate::AppState;
 
 fn swap_crud(state: &Arc<AppState>) -> SwapCrud {
     SwapCrud::new(
         state.db.clone(),
         Some(state.redis.clone()),
-        Some(state.wallet_mnemonic.clone()),
+        state.wallet_mnemonic.clone(),
         state.rpc_manager.clone(),
         state.payout_policy.clone(),
     )
@@ -34,10 +36,27 @@ fn swap_service(state: &Arc<AppState>) -> SwapService {
     SwapService::new(
         state.db.clone(),
         Some(state.redis.clone()),
-        Some(state.wallet_mnemonic.clone()),
+        state.wallet_mnemonic.clone(),
         state.rpc_manager.clone(),
         state.payout_policy.clone(),
     )
+}
+
+fn load_donation_target() -> Result<HostedSwapRecipientConfig, (StatusCode, Json<SwapErrorResponse>)>
+{
+    match HostedSwapRecipientConfig::from_env() {
+        Ok(Some(config)) => Ok(config),
+        Ok(None) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SwapErrorResponse::new(
+                "Hosted donation flow is not configured".to_string(),
+            )),
+        )),
+        Err(error) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(SwapErrorResponse::new(error)),
+        )),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +187,97 @@ pub async fn create_swap(
 
     let response = service
         .create_swap(&payload, user_id, anonymous_client_id)
+        .await
+        .map_err(|e| {
+            let status = match e {
+                super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
+                super::crud::SwapError::InvalidAddress => StatusCode::BAD_REQUEST,
+                super::crud::SwapError::ValidationError(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(SwapErrorResponse::new(e.to_string())))
+        })?;
+
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/swap/donation/target",
+    tag = "Swap",
+    responses(
+        (status = 200, description = "Server-controlled donation target metadata", body = DonationTargetResponse),
+        (status = 503, description = "Donation flow is not configured", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_donation_target(
+) -> Result<Json<DonationTargetResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let config = load_donation_target()?;
+    Ok(Json(DonationTargetResponse::from_config(&config)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/swap/donation/rates",
+    tag = "Swap",
+    params(DonationRatesQuery),
+    responses(
+        (status = 200, description = "Rates for the configured donation target", body = super::schema::RatesResponse),
+        (status = 502, description = "Upstream provider error", body = SwapErrorResponse),
+        (status = 503, description = "Donation flow is not configured", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_donation_rates(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<DonationRatesQuery>,
+) -> Result<Json<super::schema::RatesResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let config = load_donation_target()?;
+    let rates_query = query.into_rates_query(&config);
+    let crud = swap_crud(&state);
+
+    let response = crud
+        .get_provider_managed_rates(&rates_query)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(SwapErrorResponse::new(e.to_string())),
+            )
+        })?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/swap/donation/create",
+    tag = "Swap",
+    request_body = CreateDonationSwapRequest,
+    responses(
+        (status = 201, description = "Donation swap created successfully", body = CreateSwapResponse),
+        (status = 400, description = "Invalid donation swap request", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 503, description = "Donation flow is not configured", body = SwapErrorResponse)
+    )
+)]
+pub async fn create_donation_swap(
+    State(state): State<Arc<AppState>>,
+    user: OptionalUser,
+    client_id: AnonymousClientId,
+    Json(payload): Json<CreateDonationSwapRequest>,
+) -> Result<(StatusCode, Json<CreateSwapResponse>), (StatusCode, Json<SwapErrorResponse>)> {
+    let config = load_donation_target()?;
+    let request = payload.into_create_swap_request(&config);
+    let service = swap_service(&state);
+    let user_id = user.0.map(|u| u.id);
+    let anonymous_client_id = if user_id.is_none() {
+        Some(client_id.0)
+    } else {
+        None
+    };
+
+    let response = service
+        .create_provider_managed_swap(&request, user_id, anonymous_client_id)
         .await
         .map_err(|e| {
             let status = match e {

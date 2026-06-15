@@ -29,6 +29,7 @@ impl QuoteService {
         trocador_gateway: &TrocadorGateway,
         trocador_response: TrocadorRatesResponse,
         gas_cost_native: f64,
+        apply_platform_fee: bool,
     ) -> Result<PricedRates, TrocadorError> {
         let filtered_quotes = trocador_response
             .quotes
@@ -65,13 +66,14 @@ impl QuoteService {
             )
             .await?;
 
-        let rates = self.pricing_engine.apply_optimal_markup_with_spread(
+        let rates = self.pricing_engine.apply_optimal_markup_with_mode(
             &filtered_quotes,
             query.amount,
             amount_usd,
             &query.from,
             gas_cost_native,
             provider_spread,
+            apply_platform_fee,
         );
         let best_rate = rates.first();
 

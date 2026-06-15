@@ -25,7 +25,7 @@ struct SwapRuntimeInfo {
 pub struct MonitorEngine {
     db: Pool<MySql>,
     redis: RedisService,
-    master_seed: String,
+    master_seed: Option<String>,
     strategy: PollingStrategy,
     rpc_manager: Arc<RpcManager>,
 }
@@ -37,7 +37,7 @@ impl MonitorEngine {
     pub fn new(
         db: Pool<MySql>,
         redis: RedisService,
-        master_seed: String,
+        master_seed: Option<String>,
         rpc_manager: Arc<RpcManager>,
     ) -> Self {
         // Initialize strategy with default costs:
@@ -402,7 +402,7 @@ impl MonitorEngine {
     }
 
     fn settlement_service(&self) -> SettlementService {
-        SettlementService::new(self.db.clone(), Some(self.master_seed.clone()))
+        SettlementService::new(self.db.clone(), self.master_seed.clone())
     }
 
     async fn update_poll_result(&self, swap_id: &str, status: &str, next_poll_secs: u64) {

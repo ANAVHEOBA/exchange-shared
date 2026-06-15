@@ -83,6 +83,10 @@ impl PayoutPolicyConfig {
         self.classify_chain_key(chain_key) == ChainPayoutPolicy::LocalCertified
     }
 
+    pub fn has_local_certified_chains(&self) -> bool {
+        !self.local_certified.is_empty()
+    }
+
     pub fn local_certified_chain_keys(&self) -> Vec<String> {
         self.local_certified.iter().cloned().collect()
     }
@@ -135,6 +139,7 @@ mod tests {
     fn default_policy_keeps_conservative_local_certified_set() {
         let policy = PayoutPolicyConfig::default();
 
+        assert!(policy.has_local_certified_chains());
         assert_eq!(
             policy.classify_chain_key("ethereum"),
             ChainPayoutPolicy::LocalCertified
@@ -157,12 +162,24 @@ mod tests {
     fn trocador_only_override_wins_over_local_certified() {
         let policy = PayoutPolicyConfig::from_sets(&["ethereum", "tron"], &["tron"]);
 
+        assert!(policy.has_local_certified_chains());
         assert_eq!(
             policy.classify_chain_key("ethereum"),
             ChainPayoutPolicy::LocalCertified
         );
         assert_eq!(
             policy.classify_chain_key("tron"),
+            ChainPayoutPolicy::TrocadorOnly
+        );
+    }
+
+    #[test]
+    fn empty_local_certified_set_enables_trocador_only_mode() {
+        let policy = PayoutPolicyConfig::from_sets(&[], &[]);
+
+        assert!(!policy.has_local_certified_chains());
+        assert_eq!(
+            policy.classify_chain_key("ethereum"),
             ChainPayoutPolicy::TrocadorOnly
         );
     }

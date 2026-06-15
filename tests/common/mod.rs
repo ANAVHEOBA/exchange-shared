@@ -53,7 +53,7 @@ impl TestContext {
             db.clone(),
             redis_service.clone(),
             jwt_service,
-            wallet_mnemonic,
+            Some(wallet_mnemonic),
             rpc_manager,
             payout_policy,
         )
@@ -222,7 +222,7 @@ pub async fn setup_test_app() -> axum::Router {
         db,
         redis_service,
         jwt_service,
-        wallet_mnemonic,
+        Some(wallet_mnemonic),
         rpc_manager,
         payout_policy,
     )

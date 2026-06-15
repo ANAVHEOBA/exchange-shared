@@ -103,7 +103,10 @@ impl<'a> UserCrud<'a> {
         .await
     }
 
-    pub async fn get_dashboard_stats(&self, user_id: &str) -> Result<UserDashboardStats, sqlx::Error> {
+    pub async fn get_dashboard_stats(
+        &self,
+        user_id: &str,
+    ) -> Result<UserDashboardStats, sqlx::Error> {
         sqlx::query_as::<_, UserDashboardStats>(
             r#"
             SELECT
@@ -212,11 +215,16 @@ impl<'a> UserCrud<'a> {
         Ok(result.rows_affected())
     }
 
-    pub async fn revoke_all_refresh_tokens_for_user(&self, user_id: &str) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ? AND revoked = FALSE")
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
+    pub async fn revoke_all_refresh_tokens_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ? AND revoked = FALSE",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
 
         Ok(result.rows_affected())
     }
@@ -419,7 +427,11 @@ impl<'a> UserCrud<'a> {
         Ok(user_id)
     }
 
-    pub async fn update_password(&self, user_id: &str, password_hash: &str) -> Result<(), sqlx::Error> {
+    pub async fn update_password(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?")
             .bind(password_hash)
             .bind(user_id)

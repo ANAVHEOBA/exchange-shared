@@ -44,7 +44,7 @@ async fn test_resilience_to_external_api_timeout() {
     let engine = MonitorEngine::new(
         ctx.db.clone(),
         ctx.redis.clone(),
-        "seed".to_string(),
+        Some("seed".to_string()),
         rpc_manager,
     );
 

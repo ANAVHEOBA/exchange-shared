@@ -91,6 +91,14 @@ CORS_ORIGINS=https://app.yourdomain.com
 
 # Trocador API Key
 TROCADOR_API_KEY=your-api-key
+# Optional documented Trocador swap markup: 0, 1, 1.65, or 3
+TROCADOR_SWAP_MARKUP=
+# Optional hosted donation target for fixed-recipient Trocador swaps
+DONATION_TARGET_LABEL=
+DONATION_TARGET_TICKER=
+DONATION_TARGET_NETWORK=
+DONATION_TARGET_ADDRESS=
+DONATION_TARGET_EXTRA_ID=
 
 # Environment
 RUST_LOG=exchange_shared=debug,tower_http=debug

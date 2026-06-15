@@ -109,6 +109,7 @@ impl TrocadorClient {
         network_to: &str,
         amount: f64,
         min_kycrating: Option<&str>,
+        markup: Option<&str>,
     ) -> Result<crate::modules::swap::schema::TrocadorRatesResponse, TrocadorError> {
         let url = format!("{}/new_rate", self.base_url);
 
@@ -123,6 +124,10 @@ impl TrocadorClient {
 
         if let Some(rating) = min_kycrating {
             params.push(("min_kycrating", rating.to_string()));
+        }
+
+        if let Some(markup) = markup {
+            params.push(("markup", markup.to_string()));
         }
 
         let response = self
@@ -169,6 +174,7 @@ impl TrocadorClient {
         min_kycrating: Option<&str>,
         webhook: Option<&str>,
         webhook_key: Option<&str>,
+        markup: Option<&str>,
     ) -> Result<TrocadorTradeResponse, TrocadorError> {
         let url = format!("{}/new_trade", self.base_url);
 
@@ -210,6 +216,10 @@ impl TrocadorClient {
 
         if let Some(webhook_key) = webhook_key {
             params.push(("webhook_key", webhook_key.to_string()));
+        }
+
+        if let Some(markup) = markup {
+            params.push(("markup", markup.to_string()));
         }
 
         // Log the full request details

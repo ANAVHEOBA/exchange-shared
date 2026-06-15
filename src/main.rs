@@ -45,16 +45,27 @@ async fn main() {
     });
     tracing::info!("Started RPC health check loop");
 
-    // Start blockchain listener in background (PRIMARY: Direct blockchain monitoring)
-    let listener_db = db.clone();
-    let listener_mnemonic = config.wallet_mnemonic.clone();
-    let listener_rpc = rpc_manager.clone();
-    tokio::spawn(async move {
-        let listener = BlockchainListener::new(listener_db, listener_rpc)
-            .with_wallet_mnemonic(listener_mnemonic);
-        listener.run().await;
-    });
-    tracing::info!("Blockchain listener started (primary fund detection)");
+    // Start blockchain listener only when local settlement is enabled.
+    if config.payout_policy.has_local_certified_chains() {
+        let listener_db = db.clone();
+        let listener_rpc = rpc_manager.clone();
+        if let Some(listener_mnemonic) = config.wallet_mnemonic.clone() {
+            tokio::spawn(async move {
+                let listener = BlockchainListener::new(listener_db, listener_rpc)
+                    .with_wallet_mnemonic(listener_mnemonic);
+                listener.run().await;
+            });
+            tracing::info!("Blockchain listener started (primary fund detection)");
+        } else {
+            tracing::warn!(
+                "Blockchain listener not started because WALLET_MNEMONIC is not configured"
+            );
+        }
+    } else {
+        tracing::info!(
+            "Blockchain listener disabled because no local certified payout chains are configured"
+        );
+    }
 
     // Start monitor engine in background (FALLBACK: Trocador polling + blockchain verification)
     let monitor_db = db.clone();

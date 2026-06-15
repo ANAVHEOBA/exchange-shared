@@ -727,7 +727,7 @@ async fn ethereum_monitor_engine_trace_live_until_money_boundary() {
     let engine = MonitorEngine::new(
         ctx.db.clone(),
         ctx.redis.clone(),
-        mnemonic.clone(),
+        Some(mnemonic.clone()),
         rpc_manager.clone(),
     );
 

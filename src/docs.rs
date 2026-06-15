@@ -25,17 +25,19 @@ use crate::{
         },
         swap::{
             controller::{
-                __path_create_swap, __path_get_client_swap_history, __path_get_currencies,
+                __path_create_donation_swap, __path_create_swap, __path_get_client_swap_history,
+                __path_get_currencies, __path_get_donation_rates, __path_get_donation_target,
                 __path_get_estimate, __path_get_pairs, __path_get_providers, __path_get_rates,
                 __path_get_swap_history, __path_get_swap_status, __path_validate_address,
             },
             schema::{
-                ClientHistoryResponse, CreateSwapRequest, CreateSwapResponse, CurrenciesQuery,
-                CurrencyResponse, EstimateQuery, EstimateResponse, FiltersApplied, HistoryQuery,
-                HistoryResponse, PaginationInfo, PairResponse, PairsPaginationInfo, PairsQuery,
-                PairsResponse, ProviderResponse, ProvidersQuery, RateResponse, RateType,
-                RatesQuery, RatesResponse, SwapErrorResponse, SwapStatusResponse, SwapSummary,
-                ValidateAddressRequest, ValidateAddressResponse,
+                ClientHistoryResponse, CreateDonationSwapRequest, CreateSwapRequest,
+                CreateSwapResponse, CurrenciesQuery, CurrencyResponse, DonationRatesQuery,
+                DonationTargetResponse, EstimateQuery, EstimateResponse, FiltersApplied,
+                HistoryQuery, HistoryResponse, PaginationInfo, PairResponse, PairsPaginationInfo,
+                PairsQuery, PairsResponse, ProviderResponse, ProvidersQuery, RateResponse,
+                RateType, RatesQuery, RatesResponse, SwapErrorResponse, SwapStatusResponse,
+                SwapSummary, ValidateAddressRequest, ValidateAddressResponse,
             },
             status::SwapStatus,
         },
@@ -55,6 +57,9 @@ use crate::{
         login,
         verify_email,
         create_swap,
+        get_donation_target,
+        get_donation_rates,
+        create_donation_swap,
         get_currencies,
         get_providers,
         get_pairs,
@@ -96,8 +101,11 @@ use crate::{
             RateType,
             RateResponse,
             RatesResponse,
+            DonationTargetResponse,
+            DonationRatesQuery,
             EstimateQuery,
             EstimateResponse,
+            CreateDonationSwapRequest,
             CreateSwapRequest,
             CreateSwapResponse,
             SwapStatus,
@@ -155,6 +163,9 @@ mod tests {
         assert!(paths.contains_key("/admin/swaps/export"));
         assert!(paths.contains_key("/auth/login"));
         assert!(paths.contains_key("/swap/create"));
+        assert!(paths.contains_key("/swap/donation/target"));
+        assert!(paths.contains_key("/swap/donation/rates"));
+        assert!(paths.contains_key("/swap/donation/create"));
         assert!(paths.contains_key("/swap/history"));
         assert!(paths.contains_key("/swap/history/client"));
     }

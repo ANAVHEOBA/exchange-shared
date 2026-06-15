@@ -72,7 +72,12 @@ async fn test_finished_status_triggers_bridge_payout() {
     let rpc_configs = build_default_rpc_configs();
     let rpc_manager = std::sync::Arc::new(RpcManager::new(rpc_configs));
 
-    let engine = MonitorEngine::new(ctx.db.clone(), ctx.redis.clone(), master_seed, rpc_manager);
+    let engine = MonitorEngine::new(
+        ctx.db.clone(),
+        ctx.redis.clone(),
+        Some(master_seed),
+        rpc_manager,
+    );
 
     // 4. Execution: Verify the bridge logic
     let polling_state = PollingState {

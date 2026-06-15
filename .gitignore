@@ -38,3 +38,8 @@ coverage/
 src/config/chains_updated.json
 rpc_config.json
 *.rpc.json
+
+# Local secret / ops artifacts
+*.pem
+*.p12
+EC2_COMMANDS.txt

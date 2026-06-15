@@ -128,7 +128,7 @@ async fn forgot_password_creates_reset_token_in_database() {
     let result = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM password_resets pr
          JOIN users u ON pr.user_id = u.id
-         WHERE u.email = ?"
+         WHERE u.email = ?",
     )
     .bind(&email)
     .fetch_one(&ctx.db)
@@ -167,7 +167,7 @@ async fn forgot_password_rate_limits_requests() {
     // Either OK (if no rate limiting) or TOO_MANY_REQUESTS
     assert!(
         response.status_code() == StatusCode::OK
-        || response.status_code() == StatusCode::TOO_MANY_REQUESTS
+            || response.status_code() == StatusCode::TOO_MANY_REQUESTS
     );
 
     ctx.cleanup().await;

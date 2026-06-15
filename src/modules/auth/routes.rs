@@ -23,7 +23,10 @@ pub fn auth_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/refresh", post(controller::refresh))
         .route("/forgot-password", post(controller::forgot_password))
         .route("/reset-password", post(controller::reset_password))
-        .route("/request-verification", post(controller::request_verification))
+        .route(
+            "/request-verification",
+            post(controller::request_verification),
+        )
         .route(
             "/verify-email",
             get(controller::verify_email_get).post(controller::verify_email),

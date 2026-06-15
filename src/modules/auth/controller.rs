@@ -9,11 +9,11 @@ use crate::modules::auth::{
     model::User as UserModel,
     schema,
     schema::{
-        ErrorResponse, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest,
-        LoginResponse, LogoutRequest, LogoutResponse, MeResponse, RefreshTokenRequest,
-        RefreshTokenResponse, RegisterRequest, RegisterResponse, RequestVerificationRequest,
-        RequestVerificationResponse, ResetPasswordRequest, ResetPasswordResponse, UserResponse,
-        VerifyEmailQuery, VerifyEmailRequest,
+        ErrorResponse, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, LoginResponse,
+        LogoutRequest, LogoutResponse, MeResponse, RefreshTokenRequest, RefreshTokenResponse,
+        RegisterRequest, RegisterResponse, RequestVerificationRequest, RequestVerificationResponse,
+        ResetPasswordRequest, ResetPasswordResponse, UserResponse, VerifyEmailQuery,
+        VerifyEmailRequest,
     },
 };
 use crate::services::hashing;
@@ -245,23 +245,29 @@ pub async fn refresh(
     Json(req): Json<RefreshTokenRequest>,
 ) -> Result<(StatusCode, Json<RefreshTokenResponse>), (StatusCode, Json<ErrorResponse>)> {
     let crud = UserCrud::new(state.db.clone(), &state.jwt_service);
-    let user_id = crud.validate_refresh_token(&req.refresh_token).await.map_err(|_| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse::new("Invalid refresh token")),
-        )
-    })?;
+    let user_id = crud
+        .validate_refresh_token(&req.refresh_token)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse::new("Invalid refresh token")),
+            )
+        })?;
 
-    let user = crud.find_by_id(&user_id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(e.to_string())),
-        )
-    })?
-    .ok_or((
-        StatusCode::UNAUTHORIZED,
-        Json(ErrorResponse::new("User not found")),
-    ))?;
+    let user = crud
+        .find_by_id(&user_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string())),
+            )
+        })?
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse::new("User not found")),
+        ))?;
 
     crud.revoke_refresh_token(&req.refresh_token)
         .await
