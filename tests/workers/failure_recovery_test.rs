@@ -44,7 +44,7 @@ async fn test_worker_lock_prevents_concurrency() {
 
     let engine = MonitorEngine::new(
         ctx.db.clone(),
-        ctx.redis.clone(),
+        Some(ctx.redis.clone()),
         Some(master_seed),
         rpc_manager,
     );

@@ -23,6 +23,18 @@ use crate::{
                 UserResponse, VerifyEmailQuery, VerifyEmailResponse,
             },
         },
+        giftcard::{
+            controller::{
+                __path_get_giftcard_catalog, __path_get_order_status, __path_get_prepaid_cards,
+                __path_order_giftcard, __path_order_prepaid_card,
+            },
+            schema::{
+                CardOrderDetailsResponse, CardOrderResponse, CreateGiftCardOrderRequest,
+                CreatePrepaidCardOrderRequest, GiftCardCatalogQuery, GiftCardCatalogResponse,
+                GiftCardErrorResponse, GiftCardProductResponse, PrepaidCardResponse,
+                PrepaidCardsResponse,
+            },
+        },
         swap::{
             controller::{
                 __path_create_donation_swap, __path_create_swap, __path_get_client_swap_history,
@@ -56,6 +68,11 @@ use crate::{
         register,
         login,
         verify_email,
+        get_prepaid_cards,
+        get_giftcard_catalog,
+        order_giftcard,
+        order_prepaid_card,
+        get_order_status,
         create_swap,
         get_donation_target,
         get_donation_rates,
@@ -89,6 +106,16 @@ use crate::{
             VerifyEmailQuery,
             VerifyEmailResponse,
             ErrorResponse,
+            GiftCardCatalogQuery,
+            GiftCardCatalogResponse,
+            GiftCardProductResponse,
+            PrepaidCardsResponse,
+            PrepaidCardResponse,
+            CreateGiftCardOrderRequest,
+            CreatePrepaidCardOrderRequest,
+            CardOrderDetailsResponse,
+            CardOrderResponse,
+            GiftCardErrorResponse,
             ProvidersQuery,
             ProviderResponse,
             CurrenciesQuery,
@@ -126,6 +153,7 @@ use crate::{
         (name = "System", description = "Service root and health endpoints"),
         (name = "Admin", description = "Administrative authentication endpoints"),
         (name = "Auth", description = "Authentication and email verification endpoints"),
+        (name = "Gift Cards", description = "Gift card and prepaid card catalog/order endpoints"),
         (name = "Swap", description = "Swap discovery, rate lookup, creation, and history endpoints")
     )
 )]
@@ -162,6 +190,10 @@ mod tests {
         assert!(paths.contains_key("/ping"));
         assert!(paths.contains_key("/admin/swaps/export"));
         assert!(paths.contains_key("/auth/login"));
+        assert!(paths.contains_key("/giftcards"));
+        assert!(paths.contains_key("/giftcards/prepaid"));
+        assert!(paths.contains_key("/giftcards/order"));
+        assert!(paths.contains_key("/giftcards/prepaid/order"));
         assert!(paths.contains_key("/swap/create"));
         assert!(paths.contains_key("/swap/donation/target"));
         assert!(paths.contains_key("/swap/donation/rates"));

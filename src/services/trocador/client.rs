@@ -1,6 +1,9 @@
 use reqwest::Client;
 
-use crate::modules::swap::schema::{TrocadorCurrency, TrocadorProvider, TrocadorTradeResponse};
+use crate::modules::{
+    giftcard::schema::{TrocadorGiftCardProduct, TrocadorPrepaidCard},
+    swap::schema::{TrocadorCurrency, TrocadorProvider, TrocadorTradeResponse},
+};
 
 /// Trocador API client
 /// Handles all communication with Trocador.app API
@@ -98,6 +101,63 @@ impl TrocadorClient {
             .map_err(|e| TrocadorError::ParseError(e.to_string()))?;
 
         Ok(providers)
+    }
+
+    /// Fetch prepaid cards from Trocador /cards endpoint
+    pub async fn get_prepaid_cards(&self) -> Result<Vec<TrocadorPrepaidCard>, TrocadorError> {
+        let url = format!("{}/cards", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("API-Key", &self.api_key)
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))
+    }
+
+    /// Fetch gift card catalog from Trocador /giftcards endpoint
+    pub async fn get_giftcards(
+        &self,
+        country: Option<&str>,
+    ) -> Result<Vec<TrocadorGiftCardProduct>, TrocadorError> {
+        let url = format!("{}/giftcards", self.base_url);
+
+        let mut request = self.client.get(&url).header("API-Key", &self.api_key);
+        if let Some(country) = country {
+            request = request.query(&[("country", country)]);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))
     }
 
     /// Get rates from Trocador (new_rate)
@@ -276,6 +336,122 @@ impl TrocadorClient {
         );
 
         Ok(trade_response)
+    }
+
+    /// Create a prepaid card order on Trocador
+    pub async fn order_prepaid_card(
+        &self,
+        provider: &str,
+        currency_code: &str,
+        ticker_from: &str,
+        network_from: &str,
+        amount: f64,
+        email: &str,
+        webhook: Option<&str>,
+        webhook_key: Option<&str>,
+        card_markup: Option<&str>,
+    ) -> Result<TrocadorTradeResponse, TrocadorError> {
+        let url = format!("{}/order_prepaidcard", self.base_url);
+
+        let mut params = vec![
+            ("provider", provider.to_string()),
+            ("currency_code", currency_code.to_string()),
+            ("ticker_from", ticker_from.to_string()),
+            ("network_from", network_from.to_string()),
+            ("amount", amount.to_string()),
+            ("email", email.to_string()),
+        ];
+
+        if let Some(webhook) = webhook {
+            params.push(("webhook", webhook.to_string()));
+        }
+
+        if let Some(webhook_key) = webhook_key {
+            params.push(("webhook_key", webhook_key.to_string()));
+        }
+
+        if let Some(card_markup) = card_markup {
+            params.push(("card_markup", card_markup.to_string()));
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .header("API-Key", &self.api_key)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))
+    }
+
+    /// Create a gift card order on Trocador
+    pub async fn order_giftcard(
+        &self,
+        product_id: &str,
+        ticker_from: &str,
+        network_from: &str,
+        amount: f64,
+        email: &str,
+        webhook: Option<&str>,
+        webhook_key: Option<&str>,
+        card_markup: Option<&str>,
+    ) -> Result<TrocadorTradeResponse, TrocadorError> {
+        let url = format!("{}/order_giftcard", self.base_url);
+
+        let mut params = vec![
+            ("product_id", product_id.to_string()),
+            ("ticker_from", ticker_from.to_string()),
+            ("network_from", network_from.to_string()),
+            ("amount", amount.to_string()),
+            ("email", email.to_string()),
+        ];
+
+        if let Some(webhook) = webhook {
+            params.push(("webhook", webhook.to_string()));
+        }
+
+        if let Some(webhook_key) = webhook_key {
+            params.push(("webhook_key", webhook_key.to_string()));
+        }
+
+        if let Some(card_markup) = card_markup {
+            params.push(("card_markup", card_markup.to_string()));
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .header("API-Key", &self.api_key)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| TrocadorError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(TrocadorError::ApiError(format!(
+                "API returned error: {}",
+                error_text
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| TrocadorError::ParseError(e.to_string()))
     }
 
     /// Get trade status from Trocador (trade)

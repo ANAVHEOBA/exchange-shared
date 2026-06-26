@@ -26,6 +26,7 @@ ripemd = "0.1"
 prometheus = "0.13"
 lazy_static = "1.4"
 hmac = "0.12"
+aes-gcm = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.146"
 secp256k1 = { version = "0.29", features = ["recovery"] }

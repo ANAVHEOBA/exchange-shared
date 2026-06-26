@@ -51,7 +51,7 @@ impl TestContext {
 
         let app = exchange_shared::create_app(
             db.clone(),
-            redis_service.clone(),
+            Some(redis_service.clone()),
             jwt_service,
             Some(wallet_mnemonic),
             rpc_manager,
@@ -220,7 +220,7 @@ pub async fn setup_test_app() -> axum::Router {
 
     exchange_shared::create_app(
         db,
-        redis_service,
+        Some(redis_service),
         jwt_service,
         Some(wallet_mnemonic),
         rpc_manager,

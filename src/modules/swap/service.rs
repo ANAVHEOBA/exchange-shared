@@ -562,6 +562,32 @@ impl SwapService {
             .await?
             .ok_or(SwapError::SwapNotFound)?;
 
+        self.build_status_response(swap_id, swap).await
+    }
+
+    pub async fn get_swap_status_for_client(
+        &self,
+        swap_id: &str,
+        client_id: &str,
+    ) -> Result<SwapStatusResponse, SwapError> {
+        let swap = self
+            .repository
+            .get_swap_status_record(swap_id)
+            .await?
+            .ok_or(SwapError::SwapNotFound)?;
+
+        if swap.client_id.as_deref() != Some(client_id) {
+            return Err(SwapError::SwapNotFound);
+        }
+
+        self.build_status_response(swap_id, swap).await
+    }
+
+    async fn build_status_response(
+        &self,
+        swap_id: &str,
+        swap: SwapStatusRecord,
+    ) -> Result<SwapStatusResponse, SwapError> {
         if let Some(ref trocador_id) = swap.provider_swap_id {
             let trocador_gateway = TrocadorGateway::from_env()
                 .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
@@ -935,8 +961,9 @@ impl SwapService {
     }
 
     fn resolve_trocador_webhook_config() -> Option<(String, String)> {
-        let base_url = std::env::var("RENDER_EXTERNAL_URL")
+        let base_url = std::env::var("PUBLIC_BACKEND_URL")
             .ok()
+            .or_else(|| std::env::var("RENDER_EXTERNAL_URL").ok())
             .or_else(|| std::env::var("API_BASE_URL").ok());
         let webhook_key = std::env::var("TROCADOR_WEBHOOK_KEY").ok();
 
@@ -950,7 +977,7 @@ impl SwapService {
             }
             (Some(_), None) | (None, Some(_)) => {
                 tracing::warn!(
-                    "Trocador webhook config is incomplete; API_BASE_URL/RENDER_EXTERNAL_URL and TROCADOR_WEBHOOK_KEY are both required. Falling back to polling only."
+                    "Trocador webhook config is incomplete; PUBLIC_BACKEND_URL/RENDER_EXTERNAL_URL/API_BASE_URL and TROCADOR_WEBHOOK_KEY are both required. Falling back to polling only."
                 );
                 None
             }

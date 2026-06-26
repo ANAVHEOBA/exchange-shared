@@ -102,11 +102,17 @@ async fn main() {
         local_base_url
     );
 
-    if let Ok(external_base_url) =
-        std::env::var("RENDER_EXTERNAL_URL").or_else(|_| std::env::var("API_BASE_URL"))
+    if let Ok(external_base_url) = std::env::var("PUBLIC_BACKEND_URL")
+        .or_else(|_| std::env::var("RENDER_EXTERNAL_URL"))
+        .or_else(|_| std::env::var("API_BASE_URL"))
     {
         let external_base_url = external_base_url.trim_end_matches('/');
         tracing::info!("Public server URL: {}", external_base_url);
+        if external_base_url.starts_with("http://") {
+            tracing::warn!(
+                "Public server URL is not HTTPS. Meta webhooks require a valid HTTPS endpoint."
+            );
+        }
         tracing::info!("Public Swagger UI available at {}/docs", external_base_url);
         tracing::info!(
             "Public OpenAPI JSON available at {}/api-docs/openapi.json",

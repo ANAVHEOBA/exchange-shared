@@ -2,6 +2,7 @@ use crate::services::trocador::HostedSwapRecipientConfig;
 use crate::services::wallet::validation::default_extra_id_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::{IntoParams, ToSchema};
 
 pub use super::status::SwapStatus;
@@ -68,7 +69,7 @@ pub struct CurrenciesQuery {
 }
 
 // Response DTO matching Trocador's /coins format EXACTLY
-#[derive(Debug, Serialize, Clone, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct CurrencyResponse {
     pub name: String,
     pub ticker: String, // Maps from symbol
@@ -576,13 +577,23 @@ pub struct CreateSwapResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TrocadorTradeDetails {
     pub hashout: Option<String>,
+    pub id: Option<String>,
+    pub email: Option<String>,
+    pub status: Option<String>,
+    pub value: Option<serde_json::Value>,
+    #[serde(alias = "activationLink", alias = "activation_url")]
+    pub activation_link: Option<String>,
+    #[serde(alias = "redeemCode", alias = "redeem_code")]
+    pub redeem_code: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 // Trocador's internal trade response
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TrocadorTradeResponse {
     pub trade_id: String,
     pub status: String,
@@ -602,7 +613,9 @@ pub struct TrocadorTradeResponse {
     pub refund_address: Option<String>,
     pub refund_address_memo: Option<String>,
     pub id_provider: Option<String>,
+    pub password: Option<String>,
     pub date: Option<String>,
+    pub fixed: Option<bool>,
     pub payment: Option<bool>,
     pub details: Option<TrocadorTradeDetails>,
 }

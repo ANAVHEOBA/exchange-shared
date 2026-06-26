@@ -726,7 +726,7 @@ async fn ethereum_monitor_engine_trace_live_until_money_boundary() {
     let live_http = Arc::new(HttpRpcClient::new(live_endpoint.clone()));
     let engine = MonitorEngine::new(
         ctx.db.clone(),
-        ctx.redis.clone(),
+        Some(ctx.redis.clone()),
         Some(mnemonic.clone()),
         rpc_manager.clone(),
     );

@@ -88,6 +88,9 @@ JWT_SECRET=your-secret-key-min-32-characters-long
 HOST=0.0.0.0
 PORT=3000
 CORS_ORIGINS=https://app.yourdomain.com
+BASE_URL=https://app.yourdomain.com
+PUBLIC_BACKEND_URL=https://api.yourdomain.com
+API_BASE_URL=https://api.yourdomain.com
 
 # Trocador API Key
 TROCADOR_API_KEY=your-api-key
@@ -106,6 +109,10 @@ RUST_LOG=exchange_shared=debug,tower_http=debug
 
 If `CORS_ORIGINS` is empty, cross-origin browser access is disabled by default.
 
+`BASE_URL` is used for frontend-facing links such as email verification. `PUBLIC_BACKEND_URL` is
+the public backend origin used for inbound provider callbacks and WhatsApp webhook registration.
+`API_BASE_URL` can remain separate for other API consumers if needed.
+
 ### Database Setup
 
 ```bash
@@ -123,6 +130,30 @@ cargo run
 cargo build --release
 ./target/release/exchange-shared
 ```
+
+## EC2 HTTPS Deployment
+
+For Meta WhatsApp webhooks, the backend must be reachable over public HTTPS with a valid
+certificate. This repo includes an EC2 deploy script that installs Caddy on the instance, obtains
+the TLS certificate, and reverse-proxies traffic to the Rust app on `localhost:3000`.
+
+1. Set `PUBLIC_BACKEND_URL` in `.env` to your public HTTPS hostname.
+   Example:
+   `PUBLIC_BACKEND_URL=https://ec2-16-171-154-42.eu-north-1.compute.amazonaws.com`
+2. Open inbound TCP ports `80` and `443` on the EC2 security group.
+3. Run:
+
+```bash
+bash deploy-to-ec2.sh
+```
+
+After the script finishes, use:
+
+```text
+https://<your-public-host>/whatsapp/webhook
+```
+
+as the Meta callback URL.
 
 ## API Documentation
 

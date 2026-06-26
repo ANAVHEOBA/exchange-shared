@@ -1054,6 +1054,16 @@ impl SwapCrud {
         self.swap_service().get_swap_status(swap_id).await
     }
 
+    pub async fn get_swap_status_for_client(
+        &self,
+        swap_id: &str,
+        client_id: &str,
+    ) -> Result<super::schema::SwapStatusResponse, SwapError> {
+        self.swap_service()
+            .get_swap_status_for_client(swap_id, client_id)
+            .await
+    }
+
     // =========================================================================
     // ADDRESS VALIDATION
     // =========================================================================

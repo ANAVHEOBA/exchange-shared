@@ -6,7 +6,7 @@ pub mod services;
 
 use axum::{
     extract::State,
-    http::{header, HeaderValue, Method},
+    http::{header, HeaderName, HeaderValue, Method},
     middleware as axum_middleware,
     routing::get,
     Json, Router,
@@ -21,7 +21,11 @@ use config::DbPool;
 use docs::ApiDoc;
 use modules::admin::admin_routes;
 use modules::auth::auth_routes;
+use modules::giftcard::{
+    giftcard_public_routes, giftcard_webhook_routes, worker::run_giftcard_worker,
+};
 use modules::swap::swap_routes;
+use modules::whatsapp::{whatsapp_routes, worker::run_whatsapp_worker};
 use services::jwt::JwtService;
 use services::payout_policy::PayoutPolicyConfig;
 use services::rate_limit::{create_rate_limiter, RateLimitLayer};
@@ -29,6 +33,7 @@ use services::redis_cache::RedisService;
 use services::rpc::{RpcHealthOverview, RpcManager};
 use services::security::security_headers;
 use services::trocador::TrocadorGateway;
+use services::whatsapp::WhatsAppService;
 
 pub struct AppState {
     pub db: DbPool,
@@ -37,6 +42,7 @@ pub struct AppState {
     pub jwt_service: JwtService,
     pub wallet_mnemonic: Option<String>,
     pub email_service: Option<services::email::EmailService>,
+    pub whatsapp_service: Option<Arc<WhatsAppService>>,
     pub rpc_manager: Arc<RpcManager>,
     pub payout_policy: PayoutPolicyConfig,
 }
@@ -60,21 +66,79 @@ pub async fn create_app(
         );
     }
 
+    let http_client = reqwest::Client::new();
+    let whatsapp_service = match WhatsAppService::from_env(http_client.clone()) {
+        Ok(service) => {
+            if let Some(service) = service.as_ref() {
+                let webhook_url = service
+                    .config()
+                    .webhook_url()
+                    .unwrap_or_else(|| "<public URL not configured>".to_string());
+                tracing::info!(
+                    "📲 WhatsApp service configured (phone_number_id={}, webhook_url={})",
+                    service.config().phone_number_id,
+                    webhook_url
+                );
+                if webhook_url.starts_with("http://") {
+                    tracing::warn!(
+                        "⚠️  WhatsApp webhook URL is not HTTPS; Meta webhook verification will fail until PUBLIC_BACKEND_URL/RENDER_EXTERNAL_URL/API_BASE_URL is switched to https://"
+                    );
+                }
+            } else {
+                tracing::info!("WhatsApp service not configured");
+            }
+            service.map(Arc::new)
+        }
+        Err(error) => {
+            tracing::warn!("⚠️  WhatsApp service disabled: {}", error);
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         db,
         redis,
-        http_client: reqwest::Client::new(),
+        http_client,
         jwt_service,
         wallet_mnemonic,
         email_service,
+        whatsapp_service,
         rpc_manager,
         payout_policy,
     });
 
-    // Rate limit: burst of 100, then 60 per minute (1 per second sustained)
-    let rate_limiter = create_rate_limiter(100);
+    {
+        let worker_state = state.clone();
+        tokio::spawn(async move {
+            run_giftcard_worker(worker_state).await;
+        });
+        tracing::info!("Started gift card worker");
+    }
 
-    let app = Router::new()
+    if state.whatsapp_service.is_some() {
+        let worker_state = state.clone();
+        tokio::spawn(async move {
+            run_whatsapp_worker(worker_state).await;
+        });
+        tracing::info!("Started WhatsApp worker");
+    }
+
+    let public_rate_limiter = create_rate_limiter(100);
+    let giftcard_rate_limiter = create_rate_limiter(20);
+    let giftcard_webhook_rate_limiter = create_rate_limiter(120);
+    let whatsapp_rate_limiter = create_rate_limiter(300);
+
+    let giftcard_routes = Router::new()
+        .nest(
+            "/giftcards",
+            giftcard_public_routes().layer(RateLimitLayer::new(giftcard_rate_limiter)),
+        )
+        .nest(
+            "/giftcards",
+            giftcard_webhook_routes().layer(RateLimitLayer::new(giftcard_webhook_rate_limiter)),
+        );
+
+    let public_routes = Router::new()
         .route("/", get(root))
         .route("/ping", get(ping))
         .route("/health", get(health_check))
@@ -82,12 +146,21 @@ pub async fn create_app(
         .nest("/auth", auth_routes(state.clone()))
         .nest("/swap", swap_routes())
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .layer(RateLimitLayer::new(public_rate_limiter));
+
+    let whatsapp_routes = Router::new()
+        .nest("/whatsapp", whatsapp_routes())
+        .layer(RateLimitLayer::new(whatsapp_rate_limiter));
+
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(giftcard_routes)
+        .merge(whatsapp_routes)
         .layer(axum_middleware::from_fn(
             crate::middleware::client_identity::attach_client_identity,
         ))
         .layer(axum_middleware::from_fn(security_headers))
         .layer(RequestBodyLimitLayer::new(1024 * 100)) // 100KB max body
-        .layer(RateLimitLayer::new(rate_limiter))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -395,7 +468,13 @@ fn configured_cors_layer() -> Result<Option<CorsLayer>, String> {
         CorsLayer::new()
             .allow_origin(origins)
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]),
+            .allow_headers([
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
+                HeaderName::from_static("x-client-id"),
+            ])
+            .expose_headers([HeaderName::from_static("x-client-id")]),
     ))
 }
 

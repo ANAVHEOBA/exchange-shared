@@ -18,3 +18,4 @@ pub mod token;
 pub mod trocador;
 pub mod wallet;
 pub mod webhook;
+pub mod whatsapp;

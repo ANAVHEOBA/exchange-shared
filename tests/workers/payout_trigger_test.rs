@@ -74,7 +74,7 @@ async fn test_finished_status_triggers_bridge_payout() {
 
     let engine = MonitorEngine::new(
         ctx.db.clone(),
-        ctx.redis.clone(),
+        Some(ctx.redis.clone()),
         Some(master_seed),
         rpc_manager,
     );
