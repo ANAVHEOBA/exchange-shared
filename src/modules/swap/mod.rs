@@ -7,4 +7,4 @@ pub mod schema;
 pub mod service;
 pub mod status;
 
-pub use routes::swap_routes;
+pub use routes::{swap_admin_routes, swap_routes};

@@ -707,7 +707,7 @@ impl SwapRepository {
         user_id: &str,
         query: HistoryQuery,
     ) -> Result<HistoryResponse, SwapError> {
-        self.get_swap_history_for_scope("user_id = ?", user_id, query)
+        self.get_swap_history_for_scope(Some(("user_id = ?", user_id)), query)
             .await
     }
 
@@ -716,14 +716,23 @@ impl SwapRepository {
         client_id: &str,
         query: HistoryQuery,
     ) -> Result<HistoryResponse, SwapError> {
-        self.get_swap_history_for_scope("client_id = ? AND user_id IS NULL", client_id, query)
-            .await
+        self.get_swap_history_for_scope(
+            Some(("client_id = ? AND user_id IS NULL", client_id)),
+            query,
+        )
+        .await
+    }
+
+    pub async fn get_admin_swap_history(
+        &self,
+        query: HistoryQuery,
+    ) -> Result<HistoryResponse, SwapError> {
+        self.get_swap_history_for_scope(None, query).await
     }
 
     async fn get_swap_history_for_scope(
         &self,
-        scope_clause: &str,
-        scope_value: &str,
+        scope: Option<(&str, &str)>,
         query: HistoryQuery,
     ) -> Result<HistoryResponse, SwapError> {
         let cursor = if let Some(cursor_str) = &query.cursor {
@@ -768,12 +777,15 @@ impl SwapRepository {
                 is_sandbox,
                 created_at, completed_at
             FROM swaps
-            WHERE user_id = ?",
+            WHERE 1 = 1",
         );
 
-        sql = sql.replace("WHERE user_id = ?", &format!("WHERE {}", scope_clause));
-
-        let mut bind_values: Vec<String> = vec![scope_value.to_string()];
+        let mut bind_values: Vec<String> = Vec::new();
+        if let Some((scope_clause, scope_value)) = scope {
+            sql.push_str(" AND ");
+            sql.push_str(scope_clause);
+            bind_values.push(scope_value.to_string());
+        }
 
         if let Some(ref cursor) = cursor {
             sql.push_str(" AND (created_at, id) < (?, ?)");

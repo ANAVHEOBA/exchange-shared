@@ -12,7 +12,10 @@ use validator::Validate;
 
 use super::{
     crud::{AdminCrud, AdminError},
-    schema::{AdminErrorResponse, AdminLoginRequest, AdminLoginResponse, AdminSwapExportQuery},
+    schema::{
+        AdminErrorResponse, AdminLoginRequest, AdminLoginResponse, AdminOverviewResponse,
+        AdminSwapExportQuery,
+    },
 };
 use crate::middleware::admin::Admin;
 use crate::AppState;
@@ -56,6 +59,39 @@ pub async fn login(
         })?;
 
     Ok((StatusCode::OK, Json(response)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/admin/overview",
+    tag = "Admin",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Admin overview metrics", body = AdminOverviewResponse),
+        (status = 401, description = "Missing or invalid admin token", body = AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = AdminErrorResponse),
+        (status = 500, description = "Server error", body = AdminErrorResponse)
+    )
+)]
+pub async fn overview(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+) -> Result<Json<AdminOverviewResponse>, (StatusCode, Json<AdminErrorResponse>)> {
+    let crud = AdminCrud::new(state.db.clone(), &state.jwt_service);
+    let response = crud.overview().await.map_err(|error| {
+        let status = match error {
+            AdminError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            AdminError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            AdminError::TokenCreation(_) | AdminError::Database(_) | AdminError::Csv(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+        (status, Json(AdminErrorResponse::new(error.to_string())))
+    })?;
+
+    Ok(Json(response))
 }
 
 #[utoipa::path(

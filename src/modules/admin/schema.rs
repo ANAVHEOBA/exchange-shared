@@ -54,3 +54,23 @@ impl AdminErrorResponse {
         }
     }
 }
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminOverviewSwapMetrics {
+    pub open: u64,
+    pub failed_last_24h: u64,
+    pub refunded_last_24h: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminOverviewWhatsAppMetrics {
+    pub open_conversations: u64,
+    pub giftcard_sell_leads: u64,
+    pub waiting_user: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminOverviewResponse {
+    pub swaps: AdminOverviewSwapMetrics,
+    pub whatsapp: AdminOverviewWhatsAppMetrics,
+}

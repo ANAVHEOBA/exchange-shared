@@ -9,10 +9,11 @@ use crate::{
         admin::{
             controller::{
                 __path_export_swaps_csv as __path_admin_export_swaps_csv,
-                __path_login as __path_admin_login,
+                __path_login as __path_admin_login, __path_overview as __path_admin_overview,
             },
             schema::{
-                AdminErrorResponse, AdminLoginRequest, AdminLoginResponse, AdminSwapExportQuery,
+                AdminErrorResponse, AdminLoginRequest, AdminLoginResponse, AdminOverviewResponse,
+                AdminOverviewSwapMetrics, AdminOverviewWhatsAppMetrics, AdminSwapExportQuery,
                 AdminUserResponse,
             },
         },
@@ -37,7 +38,8 @@ use crate::{
         },
         swap::{
             controller::{
-                __path_create_donation_swap, __path_create_swap, __path_get_client_swap_history,
+                __path_create_donation_swap, __path_create_swap, __path_get_admin_swap_history,
+                __path_get_admin_swap_status, __path_get_client_swap_history,
                 __path_get_currencies, __path_get_donation_rates, __path_get_donation_target,
                 __path_get_estimate, __path_get_pairs, __path_get_providers, __path_get_rates,
                 __path_get_swap_history, __path_get_swap_status, __path_validate_address,
@@ -53,6 +55,19 @@ use crate::{
             },
             status::SwapStatus,
         },
+        whatsapp::{
+            controller::{
+                __path_get_admin_conversation, __path_list_admin_conversations,
+                __path_receive_webhook, __path_update_admin_conversation, __path_verify_webhook,
+            },
+            schema::{
+                AdminConversationDetailResponse, AdminConversationEvent,
+                AdminConversationFiltersApplied, AdminConversationListResponse,
+                AdminConversationPagination, AdminConversationQuery, AdminConversationSummary,
+                AdminOutboundMessage, ApiError, RelatedSwapSummary, UpdateAdminConversationRequest,
+                WebhookAcceptedResponse,
+            },
+        },
     },
     DependencyHealth, HealthChecks, HealthResponse, RpcDependencyHealth,
 };
@@ -64,6 +79,7 @@ use crate::{
         ping,
         health_check,
         admin_login,
+        admin_overview,
         admin_export_swaps_csv,
         register,
         login,
@@ -85,7 +101,14 @@ use crate::{
         get_swap_history,
         get_client_swap_history,
         get_swap_status,
-        validate_address
+        get_admin_swap_history,
+        get_admin_swap_status,
+        validate_address,
+        verify_webhook,
+        receive_webhook,
+        list_admin_conversations,
+        get_admin_conversation,
+        update_admin_conversation
     ),
     components(
         schemas(
@@ -96,6 +119,9 @@ use crate::{
             AdminLoginRequest,
             AdminUserResponse,
             AdminLoginResponse,
+            AdminOverviewSwapMetrics,
+            AdminOverviewWhatsAppMetrics,
+            AdminOverviewResponse,
             AdminSwapExportQuery,
             AdminErrorResponse,
             RegisterRequest,
@@ -145,7 +171,19 @@ use crate::{
             ClientHistoryResponse,
             ValidateAddressRequest,
             ValidateAddressResponse,
-            SwapErrorResponse
+            SwapErrorResponse,
+            ApiError,
+            WebhookAcceptedResponse,
+            AdminConversationQuery,
+            AdminConversationSummary,
+            AdminConversationPagination,
+            AdminConversationFiltersApplied,
+            AdminConversationListResponse,
+            AdminConversationEvent,
+            AdminOutboundMessage,
+            RelatedSwapSummary,
+            AdminConversationDetailResponse,
+            UpdateAdminConversationRequest
         )
     ),
     modifiers(&SecurityAddon),
@@ -154,7 +192,8 @@ use crate::{
         (name = "Admin", description = "Administrative authentication endpoints"),
         (name = "Auth", description = "Authentication and email verification endpoints"),
         (name = "Gift Cards", description = "Gift card and prepaid card catalog/order endpoints"),
-        (name = "Swap", description = "Swap discovery, rate lookup, creation, and history endpoints")
+        (name = "Swap", description = "Swap discovery, rate lookup, creation, and history endpoints"),
+        (name = "WhatsApp", description = "WhatsApp webhook and admin inbox endpoints")
     )
 )]
 pub struct ApiDoc;
@@ -189,6 +228,9 @@ mod tests {
         assert!(paths.contains_key("/health"));
         assert!(paths.contains_key("/ping"));
         assert!(paths.contains_key("/admin/swaps/export"));
+        assert!(paths.contains_key("/admin/overview"));
+        assert!(paths.contains_key("/admin/swaps"));
+        assert!(paths.contains_key("/admin/whatsapp/conversations"));
         assert!(paths.contains_key("/auth/login"));
         assert!(paths.contains_key("/giftcards"));
         assert!(paths.contains_key("/giftcards/prepaid"));

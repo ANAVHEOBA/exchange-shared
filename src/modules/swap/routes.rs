@@ -5,9 +5,10 @@ use axum::{
 use std::sync::Arc;
 
 use super::controller::{
-    create_donation_swap, create_swap, get_client_swap_history, get_currencies, get_donation_rates,
-    get_donation_target, get_estimate, get_pairs, get_providers, get_rates, get_swap_history,
-    get_swap_status, trocador_webhook, validate_address,
+    create_donation_swap, create_swap, get_admin_swap_history, get_admin_swap_status,
+    get_client_swap_history, get_currencies, get_donation_rates, get_donation_target, get_estimate,
+    get_pairs, get_providers, get_rates, get_swap_history, get_swap_status, trocador_webhook,
+    validate_address,
 };
 use crate::AppState;
 
@@ -27,4 +28,10 @@ pub fn swap_routes() -> Router<Arc<AppState>> {
         .route("/history/client", get(get_client_swap_history))
         .route("/{id}", get(get_swap_status))
         .route("/validate-address", post(validate_address))
+}
+
+pub fn swap_admin_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/swaps", get(get_admin_swap_history))
+        .route("/swaps/{id}", get(get_admin_swap_status))
 }

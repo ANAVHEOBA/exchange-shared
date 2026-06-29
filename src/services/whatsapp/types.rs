@@ -128,6 +128,127 @@ pub struct SendTextBody<'a> {
     pub body: &'a str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct InteractiveListOption {
+    pub id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplyButtonOption {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendInteractiveListMessageRequest {
+    pub messaging_product: &'static str,
+    pub recipient_type: &'static str,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub message_type: &'static str,
+    pub interactive: SendInteractiveListBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendInteractiveListBody {
+    #[serde(rename = "type")]
+    pub interactive_type: &'static str,
+    pub body: InteractiveTextBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footer: Option<InteractiveTextBody>,
+    pub action: InteractiveListAction,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveTextBody {
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveListAction {
+    pub button: String,
+    pub sections: Vec<InteractiveListSection>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveListSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub rows: Vec<InteractiveListOption>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendImageMessageRequest {
+    pub messaging_product: &'static str,
+    pub recipient_type: &'static str,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub message_type: &'static str,
+    pub image: SendImageBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendImageBody {
+    pub link: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendInteractiveButtonMessageRequest {
+    pub messaging_product: &'static str,
+    pub recipient_type: &'static str,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub message_type: &'static str,
+    pub interactive: SendInteractiveButtonBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendInteractiveButtonBody {
+    #[serde(rename = "type")]
+    pub interactive_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<InteractiveMediaHeader>,
+    pub body: InteractiveTextBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footer: Option<InteractiveTextBody>,
+    pub action: InteractiveButtonAction,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveMediaHeader {
+    #[serde(rename = "type")]
+    pub header_type: &'static str,
+    pub image: InteractiveMediaLink,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveMediaLink {
+    pub link: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveButtonAction {
+    pub buttons: Vec<InteractiveReplyButton>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveReplyButton {
+    #[serde(rename = "type")]
+    pub button_type: &'static str,
+    pub reply: InteractiveReplyButtonPayload,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InteractiveReplyButtonPayload {
+    pub id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SendMessageResponse {
     #[serde(default)]
@@ -266,16 +387,20 @@ fn extract_message_preview(message: &InboundMessage) -> Option<String> {
 
     if let Some(interactive) = &message.interactive {
         if let Some(reply) = &interactive.button_reply {
-            if let Some(title) = reply.title.clone().filter(|value| !value.trim().is_empty()) {
-                return Some(title);
-            }
-
             if let Some(id) = reply.id.clone().filter(|value| !value.trim().is_empty()) {
                 return Some(id);
+            }
+
+            if let Some(title) = reply.title.clone().filter(|value| !value.trim().is_empty()) {
+                return Some(title);
             }
         }
 
         if let Some(reply) = &interactive.list_reply {
+            if let Some(id) = reply.id.clone().filter(|value| !value.trim().is_empty()) {
+                return Some(id);
+            }
+
             if let Some(title) = reply.title.clone().filter(|value| !value.trim().is_empty()) {
                 return Some(title);
             }
@@ -286,10 +411,6 @@ fn extract_message_preview(message: &InboundMessage) -> Option<String> {
                 .filter(|value| !value.trim().is_empty())
             {
                 return Some(description);
-            }
-
-            if let Some(id) = reply.id.clone().filter(|value| !value.trim().is_empty()) {
-                return Some(id);
             }
         }
     }

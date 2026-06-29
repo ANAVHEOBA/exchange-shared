@@ -90,9 +90,10 @@ fn encrypt_text(value: &str) -> Result<String, String> {
     let cipher = build_cipher();
     let mut nonce = [0u8; NONCE_SIZE];
     OsRng.fill_bytes(&mut nonce);
+    let nonce_bytes: &Nonce<_> = (&nonce[..]).into();
 
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), value.as_bytes())
+        .encrypt(nonce_bytes, value.as_bytes())
         .map_err(|error| format!("failed to encrypt WhatsApp payload: {}", error))?;
 
     let mut combined = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
@@ -112,8 +113,12 @@ fn decrypt_text(value: &str) -> Result<String, String> {
     }
 
     let (nonce, ciphertext) = bytes.split_at(NONCE_SIZE);
+    let nonce: [u8; NONCE_SIZE] = nonce
+        .try_into()
+        .map_err(|_| "encrypted WhatsApp payload nonce length is invalid".to_string())?;
+    let nonce_bytes: &Nonce<_> = (&nonce[..]).into();
     let plaintext = build_cipher()
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(nonce_bytes, ciphertext)
         .map_err(|error| format!("failed to decrypt WhatsApp payload: {}", error))?;
 
     String::from_utf8(plaintext)

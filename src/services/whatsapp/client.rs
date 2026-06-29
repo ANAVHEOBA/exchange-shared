@@ -1,11 +1,16 @@
 use std::sync::Arc;
 
 use reqwest::StatusCode;
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::services::whatsapp::{
-    verify_meta_signature, SendMessageResponse, SendTextBody, SendTextMessageRequest,
-    WhatsAppConfig,
+    verify_meta_signature, InteractiveButtonAction, InteractiveListAction, InteractiveListSection,
+    InteractiveMediaHeader, InteractiveMediaLink, InteractiveReplyButton,
+    InteractiveReplyButtonPayload, InteractiveTextBody, ReplyButtonOption, SendImageBody,
+    SendImageMessageRequest, SendInteractiveButtonBody, SendInteractiveButtonMessageRequest,
+    SendInteractiveListBody, SendInteractiveListMessageRequest, SendMessageResponse, SendTextBody,
+    SendTextMessageRequest, WhatsAppConfig,
 };
 
 #[derive(Debug, Error)]
@@ -94,11 +99,108 @@ impl WhatsAppService {
             },
         };
 
+        self.post_message(&payload).await
+    }
+
+    pub async fn send_interactive_list_message(
+        &self,
+        to: &str,
+        body: &str,
+        button: &str,
+        sections: Vec<InteractiveListSection>,
+    ) -> Result<SendMessageResponse, WhatsAppError> {
+        let payload = SendInteractiveListMessageRequest {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: to.to_string(),
+            message_type: "interactive",
+            interactive: SendInteractiveListBody {
+                interactive_type: "list",
+                body: InteractiveTextBody {
+                    text: body.to_string(),
+                },
+                footer: None,
+                action: InteractiveListAction {
+                    button: button.to_string(),
+                    sections,
+                },
+            },
+        };
+
+        self.post_message(&payload).await
+    }
+
+    pub async fn send_image_message(
+        &self,
+        to: &str,
+        image_link: &str,
+        caption: Option<&str>,
+    ) -> Result<SendMessageResponse, WhatsAppError> {
+        let payload = SendImageMessageRequest {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: to.to_string(),
+            message_type: "image",
+            image: SendImageBody {
+                link: image_link.to_string(),
+                caption: caption.map(str::to_string),
+            },
+        };
+
+        self.post_message(&payload).await
+    }
+
+    pub async fn send_interactive_button_message(
+        &self,
+        to: &str,
+        body: &str,
+        buttons: Vec<ReplyButtonOption>,
+        header_image_link: Option<&str>,
+    ) -> Result<SendMessageResponse, WhatsAppError> {
+        let payload = SendInteractiveButtonMessageRequest {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: to.to_string(),
+            message_type: "interactive",
+            interactive: SendInteractiveButtonBody {
+                interactive_type: "button",
+                header: header_image_link.map(|link| InteractiveMediaHeader {
+                    header_type: "image",
+                    image: InteractiveMediaLink {
+                        link: link.to_string(),
+                    },
+                }),
+                body: InteractiveTextBody {
+                    text: body.to_string(),
+                },
+                footer: None,
+                action: InteractiveButtonAction {
+                    buttons: buttons
+                        .into_iter()
+                        .map(|button| InteractiveReplyButton {
+                            button_type: "reply",
+                            reply: InteractiveReplyButtonPayload {
+                                id: button.id,
+                                title: button.title,
+                            },
+                        })
+                        .collect(),
+                },
+            },
+        };
+
+        self.post_message(&payload).await
+    }
+
+    async fn post_message<T: Serialize>(
+        &self,
+        payload: &T,
+    ) -> Result<SendMessageResponse, WhatsAppError> {
         let response = self
             .http_client
             .post(self.config.messages_endpoint())
             .bearer_auth(&self.config.access_token)
-            .json(&payload)
+            .json(payload)
             .send()
             .await?;
 

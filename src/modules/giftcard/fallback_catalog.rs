@@ -25,8 +25,9 @@ fn parse_gb_catalog() -> Vec<GiftCardProductResponse> {
     .expect("giftcard product regex must compile");
 
     let mut cards = Vec::new();
+    let html = include_str!("fallback_catalog_gb.html");
 
-    for capture in product_regex.captures_iter(include_str!("../../../flow.html")) {
+    for capture in product_regex.captures_iter(html) {
         let Some(product_id) = capture.name("id").map(|value| value.as_str().trim()) else {
             continue;
         };

@@ -8,6 +8,7 @@ use axum::{
     extract::State,
     http::{header, HeaderName, HeaderValue, Method},
     middleware as axum_middleware,
+    response::IntoResponse,
     routing::get,
     Json, Router,
 };
@@ -24,8 +25,8 @@ use modules::auth::auth_routes;
 use modules::giftcard::{
     giftcard_public_routes, giftcard_webhook_routes, worker::run_giftcard_worker,
 };
-use modules::swap::swap_routes;
-use modules::whatsapp::{whatsapp_routes, worker::run_whatsapp_worker};
+use modules::swap::{swap_admin_routes, swap_routes};
+use modules::whatsapp::{whatsapp_admin_routes, whatsapp_routes, worker::run_whatsapp_worker};
 use services::jwt::JwtService;
 use services::payout_policy::PayoutPolicyConfig;
 use services::rate_limit::{create_rate_limiter, RateLimitLayer};
@@ -141,8 +142,12 @@ pub async fn create_app(
     let public_routes = Router::new()
         .route("/", get(root))
         .route("/ping", get(ping))
+        .route("/branding/assetar-logo.jpg", get(assetar_logo_legacy))
+        .route("/branding/assetar-logo.png", get(assetar_logo))
         .route("/health", get(health_check))
         .nest("/admin", admin_routes())
+        .nest("/admin", swap_admin_routes())
+        .nest("/admin", whatsapp_admin_routes())
         .nest("/auth", auth_routes(state.clone()))
         .nest("/swap", swap_routes())
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -192,6 +197,26 @@ async fn root() -> &'static str {
 )]
 async fn ping() -> &'static str {
     "pong"
+}
+
+async fn assetar_logo() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../assetar-logo-rgb.png").as_slice(),
+    )
+}
+
+async fn assetar_logo_legacy() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../assetar logo with name 2.jpg").as_slice(),
+    )
 }
 
 #[derive(Serialize, ToSchema)]

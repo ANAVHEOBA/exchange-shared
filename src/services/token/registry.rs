@@ -7,6 +7,16 @@ use tokio::sync::RwLock;
 
 use crate::services::token::{Token, TokenError, TokenType};
 
+fn parse_optional_decimal(value: Option<String>) -> Option<Decimal> {
+    value
+        .as_deref()
+        .and_then(|raw| Decimal::from_str_exact(raw).ok())
+}
+
+fn parse_gas_multiplier(value: Option<String>) -> Decimal {
+    Decimal::from_str_exact(value.as_deref().unwrap_or("3.0")).unwrap_or(Decimal::from(3))
+}
+
 pub struct TokenRegistry {
     pool: MySqlPool,
     cache: Arc<RwLock<HashMap<String, Token>>>, // key: "network:contract_address" or "network:symbol"
@@ -78,16 +88,9 @@ impl TokenRegistry {
             coinmarketcap_id: token.coinmarketcap_id,
             is_active: token.is_active != 0,
             is_verified: token.is_verified != 0,
-            min_swap_amount: token
-                .min_swap_amount
-                .and_then(|s| Decimal::from_str_exact(&s).ok()),
-            max_swap_amount: token
-                .max_swap_amount
-                .and_then(|s| Decimal::from_str_exact(&s).ok()),
-            gas_multiplier: Decimal::from_str_exact(
-                &token.gas_multiplier.unwrap_or("3.0".to_string()),
-            )
-            .unwrap_or(Decimal::from(3)),
+            min_swap_amount: parse_optional_decimal(token.min_swap_amount),
+            max_swap_amount: parse_optional_decimal(token.max_swap_amount),
+            gas_multiplier: parse_gas_multiplier(token.gas_multiplier),
         };
 
         // Update cache
@@ -158,16 +161,9 @@ impl TokenRegistry {
             coinmarketcap_id: token.coinmarketcap_id,
             is_active: token.is_active != 0,
             is_verified: token.is_verified != 0,
-            min_swap_amount: token
-                .min_swap_amount
-                .and_then(|s| Decimal::from_str_exact(&s).ok()),
-            max_swap_amount: token
-                .max_swap_amount
-                .and_then(|s| Decimal::from_str_exact(&s).ok()),
-            gas_multiplier: Decimal::from_str_exact(
-                &token.gas_multiplier.unwrap_or("3.0".to_string()),
-            )
-            .unwrap_or(Decimal::from(3)),
+            min_swap_amount: parse_optional_decimal(token.min_swap_amount),
+            max_swap_amount: parse_optional_decimal(token.max_swap_amount),
+            gas_multiplier: parse_gas_multiplier(token.gas_multiplier),
         };
 
         // Update cache
@@ -256,16 +252,9 @@ impl TokenRegistry {
                 coinmarketcap_id: t.coinmarketcap_id,
                 is_active: t.is_active != 0,
                 is_verified: t.is_verified != 0,
-                min_swap_amount: t
-                    .min_swap_amount
-                    .and_then(|s| Decimal::from_str_exact(&s).ok()),
-                max_swap_amount: t
-                    .max_swap_amount
-                    .and_then(|s| Decimal::from_str_exact(&s).ok()),
-                gas_multiplier: Decimal::from_str_exact(
-                    &t.gas_multiplier.unwrap_or("3.0".to_string()),
-                )
-                .unwrap_or(Decimal::from(3)),
+                min_swap_amount: parse_optional_decimal(t.min_swap_amount),
+                max_swap_amount: parse_optional_decimal(t.max_swap_amount),
+                gas_multiplier: parse_gas_multiplier(t.gas_multiplier),
             })
             .collect())
     }

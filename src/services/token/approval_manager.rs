@@ -212,7 +212,8 @@ impl ApprovalManager {
 
         let avg_remaining = stats
             .avg_remaining
-            .and_then(|s| Decimal::from_str_exact(&s).ok())
+            .as_deref()
+            .and_then(|raw| Decimal::from_str_exact(raw).ok())
             .unwrap_or(Decimal::ZERO);
 
         Ok(ApprovalStats {

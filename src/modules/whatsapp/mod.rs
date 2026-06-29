@@ -5,4 +5,4 @@ pub mod schema;
 pub mod service;
 pub mod worker;
 
-pub use routes::whatsapp_routes;
+pub use routes::{whatsapp_admin_routes, whatsapp_routes};

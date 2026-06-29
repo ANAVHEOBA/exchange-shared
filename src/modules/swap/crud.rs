@@ -305,6 +305,102 @@ impl SwapCrud {
         });
     }
 
+    fn normalize_currency_search(value: &str) -> String {
+        value
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || character.is_ascii_whitespace() {
+                    character
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn currency_search_score(currency: &CurrencyResponse, search: &str) -> usize {
+        if search.is_empty() {
+            return 0;
+        }
+
+        let ticker = Self::normalize_currency_search(&currency.ticker);
+        let name = Self::normalize_currency_search(&currency.name);
+        let network = Self::normalize_currency_search(&currency.network);
+        let search_text = format!("{} {} {}", ticker, name, network);
+
+        let mut score = 0usize;
+
+        if ticker == search {
+            score += 100;
+        }
+        if name == search {
+            score += 90;
+        }
+        if ticker.starts_with(search) {
+            score += 70;
+        }
+        if name.starts_with(search) {
+            score += 50;
+        }
+        if network.starts_with(search) {
+            score += 30;
+        }
+        if search_text.contains(search) {
+            score += 10;
+        }
+
+        score
+    }
+
+    fn apply_search_ranking(
+        mut responses: Vec<CurrencyResponse>,
+        search: &str,
+    ) -> Vec<CurrencyResponse> {
+        let normalized_search = Self::normalize_currency_search(search);
+        if normalized_search.is_empty() {
+            Self::sort_currencies_for_display(&mut responses);
+            return responses;
+        }
+
+        let mut scored = responses
+            .into_iter()
+            .filter_map(|currency| {
+                let score = Self::currency_search_score(&currency, &normalized_search);
+                (score > 0).then_some((score, currency))
+            })
+            .collect::<Vec<_>>();
+
+        scored.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| {
+                    Self::preferred_currency_network_rank(&left.1)
+                        .cmp(&Self::preferred_currency_network_rank(&right.1))
+                })
+                .then_with(|| left.1.name.to_lowercase().cmp(&right.1.name.to_lowercase()))
+                .then_with(|| {
+                    left.1
+                        .ticker
+                        .to_lowercase()
+                        .cmp(&right.1.ticker.to_lowercase())
+                })
+                .then_with(|| {
+                    left.1
+                        .network
+                        .to_lowercase()
+                        .cmp(&right.1.network.to_lowercase())
+                })
+        });
+
+        scored.into_iter().map(|(_, currency)| currency).collect()
+    }
+
     /// Internal helper to estimate gas cost for payout on the target network
     /// Get the amount Trocador should have sent to our address
     pub async fn get_expected_trocador_amount(&self, swap_id: &str) -> Result<f64, SwapError> {
@@ -577,10 +673,19 @@ impl SwapCrud {
             })
             .collect();
 
-        Self::sort_currencies_for_display(&mut responses);
+        responses = match query.search.as_deref() {
+            Some(search) if !search.trim().is_empty() => {
+                Self::apply_search_ranking(responses, search)
+            }
+            _ => {
+                Self::sort_currencies_for_display(&mut responses);
+                responses
+            }
+        };
 
         // Apply pagination
-        if let (Some(page), Some(limit)) = (query.page, query.limit) {
+        if let Some(limit) = query.limit {
+            let page = query.page.unwrap_or(1).max(1);
             let start = ((page - 1) * limit) as usize;
             if start < responses.len() {
                 let end = std::cmp::min(start + limit as usize, responses.len());
@@ -1213,6 +1318,13 @@ impl SwapCrud {
             .await
     }
 
+    pub async fn get_admin_swap_history(
+        &self,
+        query: super::schema::HistoryQuery,
+    ) -> Result<super::schema::HistoryResponse, SwapError> {
+        self.repository.get_admin_swap_history(query).await
+    }
+
     // =============================================================================
     // ESTIMATE ENDPOINT - Quick rate preview without creating swap
     // =============================================================================
@@ -1453,5 +1565,74 @@ impl SwapCrud {
         let threshold = delta * beta * (-random.ln());
 
         now + threshold as i64 >= entry.expires_at
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SwapCrud;
+    use crate::modules::swap::schema::{CurrenciesQuery, CurrencyResponse, TrocadorCurrency};
+
+    fn trocador_currency(name: &str, ticker: &str, network: &str) -> TrocadorCurrency {
+        TrocadorCurrency {
+            name: name.to_string(),
+            ticker: ticker.to_string(),
+            network: network.to_string(),
+            memo: false,
+            image: String::new(),
+            minimum: 0.0,
+            maximum: 0.0,
+        }
+    }
+
+    fn currency(name: &str, ticker: &str, network: &str) -> CurrencyResponse {
+        CurrencyResponse {
+            name: name.to_string(),
+            ticker: ticker.to_string(),
+            network: network.to_string(),
+            memo: false,
+            extra_id_name: None,
+            image: String::new(),
+            minimum: 0.0,
+            maximum: 0.0,
+        }
+    }
+
+    #[test]
+    fn search_ranking_prefers_exact_ticker_then_name_prefix() {
+        let ranked = SwapCrud::apply_search_ranking(
+            vec![
+                currency("Lido DAO", "ldo", "ERC20"),
+                currency("Wrapped Lido Staked Ether", "wsteth", "ERC20"),
+                currency("Bitcoin", "btc", "Mainnet"),
+            ],
+            "lido",
+        );
+
+        assert_eq!(ranked.first().map(|item| item.ticker.as_str()), Some("ldo"));
+        assert!(ranked
+            .iter()
+            .all(|item| item.name.to_lowercase().contains("lido")));
+    }
+
+    #[test]
+    fn search_filter_uses_backend_search_parameter() {
+        let responses = SwapCrud::filter_and_convert_currencies(
+            vec![
+                trocador_currency("USD Coin", "usdc", "ERC20"),
+                trocador_currency("Bitcoin", "btc", "Mainnet"),
+                trocador_currency("Tether USD", "usdt", "TRC20"),
+            ],
+            &CurrenciesQuery {
+                search: Some("usd".to_string()),
+                page: Some(1),
+                limit: Some(10),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].ticker, "usdc");
+        assert_eq!(responses[1].ticker, "usdt");
     }
 }

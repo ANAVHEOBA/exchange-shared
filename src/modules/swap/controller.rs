@@ -17,6 +17,7 @@ use super::schema::{
     ValidateAddressResponse,
 };
 use super::service::SwapService;
+use crate::middleware::admin::Admin;
 use crate::middleware::client_identity::AnonymousClientId;
 use crate::middleware::user::{OptionalUser, User};
 use crate::services::trocador::HostedSwapRecipientConfig;
@@ -508,6 +509,33 @@ pub async fn get_swap_status(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    get,
+    path = "/admin/swaps/{id}",
+    tag = "Admin",
+    params(
+        ("id" = String, Path, description = "Internal swap id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Admin swap detail", body = SwapStatusResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Swap not found", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Upstream provider error", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_admin_swap_status(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(swap_id): Path<String>,
+) -> Result<Json<SwapStatusResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    get_swap_status(State(state), Path(swap_id)).await
+}
+
 // =============================================================================
 // POST /swap/validate-address - Validate cryptocurrency address
 // =============================================================================
@@ -580,6 +608,41 @@ pub async fn get_swap_history(
             };
             (status, Json(SwapErrorResponse::new(e.to_string())))
         })?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    get,
+    path = "/admin/swaps",
+    tag = "Admin",
+    params(HistoryQuery),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Admin swap history", body = HistoryResponse),
+        (status = 400, description = "Invalid history query", body = SwapErrorResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_admin_swap_history(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<HistoryResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = swap_crud(&state);
+
+    let response = crud.get_admin_swap_history(query).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
 
     Ok(Json(response))
 }

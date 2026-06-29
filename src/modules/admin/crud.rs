@@ -5,7 +5,10 @@ use sqlx::{MySql, QueryBuilder, Row};
 
 use super::{
     model::AdminAccount,
-    schema::{AdminLoginResponse, AdminSwapExportQuery, AdminUserResponse},
+    schema::{
+        AdminLoginResponse, AdminOverviewResponse, AdminOverviewSwapMetrics,
+        AdminOverviewWhatsAppMetrics, AdminSwapExportQuery, AdminUserResponse,
+    },
 };
 use crate::config::DbPool;
 use crate::services::jwt::JwtService;
@@ -244,6 +247,90 @@ impl<'a> AdminCrud<'a> {
         writer
             .into_inner()
             .map_err(|error| AdminError::Csv(error.into_error().to_string()))
+    }
+
+    pub async fn overview(&self) -> Result<AdminOverviewResponse, AdminError> {
+        let open_swaps = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM swaps
+            WHERE status NOT IN ('completed', 'failed', 'refunded', 'expired')
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let failed_last_24h = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM swaps
+            WHERE status = 'failed'
+              AND updated_at >= (UTC_TIMESTAMP() - INTERVAL 1 DAY)
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let refunded_last_24h = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM swaps
+            WHERE status = 'refunded'
+              AND updated_at >= (UTC_TIMESTAMP() - INTERVAL 1 DAY)
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let open_conversations = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM whatsapp_sessions
+            WHERE admin_status NOT IN ('closed', 'rejected', 'paid')
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let giftcard_sell_leads = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM whatsapp_sessions
+            WHERE admin_tag = 'giftcard_sell'
+              AND admin_status NOT IN ('closed', 'rejected', 'paid')
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let waiting_user = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM whatsapp_sessions
+            WHERE admin_status = 'waiting_user'
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(AdminOverviewResponse {
+            swaps: AdminOverviewSwapMetrics {
+                open: open_swaps.max(0) as u64,
+                failed_last_24h: failed_last_24h.max(0) as u64,
+                refunded_last_24h: refunded_last_24h.max(0) as u64,
+            },
+            whatsapp: AdminOverviewWhatsAppMetrics {
+                open_conversations: open_conversations.max(0) as u64,
+                giftcard_sell_leads: giftcard_sell_leads.max(0) as u64,
+                waiting_user: waiting_user.max(0) as u64,
+            },
+        })
     }
 }
 

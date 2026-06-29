@@ -288,37 +288,104 @@ impl SwapService {
         let fixed = matches!(request.rate_type, super::schema::RateType::Fixed);
         let trocador_webhook = Self::resolve_trocador_webhook_config();
         let swap_markup = swap_markup_from_env().map_err(SwapError::ExternalApiError)?;
-        let trocador_res = self
-            .call_trocador_with_retry(|| async {
+        let trocador_res = match self
+            .call_trocador_with_retry(|| {
                 let swap_markup = swap_markup.clone();
-                let res = trocador_gateway
-                    .create_trade(
-                        request.trade_id.as_deref(),
-                        &request.from,
-                        &request.network_from,
-                        &request.to,
-                        &request.network_to,
-                        request.amount,
-                        &trocador_payout_address,
-                        trocador_address_memo.as_deref(),
-                        refund_address.as_deref(),
-                        trocador_refund_memo.as_deref(),
-                        &request.provider,
-                        fixed,
-                        request.payment,
-                        request.min_kycrating.as_deref(),
-                        trocador_webhook.as_ref().map(|(url, _)| url.as_str()),
-                        trocador_webhook.as_ref().map(|(_, key)| key.as_str()),
-                        swap_markup.as_deref(),
-                    )
-                    .await;
+                let gateway = &trocador_gateway;
+                let payout_address = trocador_payout_address.as_str();
+                let address_memo = trocador_address_memo.as_deref();
+                let refund = refund_address.as_deref();
+                let refund_memo = trocador_refund_memo.as_deref();
+                let webhook_url = trocador_webhook.as_ref().map(|(url, _)| url.as_str());
+                let webhook_key = trocador_webhook.as_ref().map(|(_, key)| key.as_str());
+                async move {
+                    let res = gateway
+                        .create_trade(
+                            request.trade_id.as_deref(),
+                            &request.from,
+                            &request.network_from,
+                            &request.to,
+                            &request.network_to,
+                            request.amount,
+                            payout_address,
+                            address_memo,
+                            refund,
+                            refund_memo,
+                            &request.provider,
+                            fixed,
+                            request.payment,
+                            request.min_kycrating.as_deref(),
+                            webhook_url,
+                            webhook_key,
+                            swap_markup.as_deref(),
+                        )
+                        .await;
 
-                if let Err(ref e) = res {
-                    tracing::error!("Trocador create_trade failed: {}", e);
+                    if let Err(ref error) = res {
+                        tracing::error!("Trocador create_trade failed: {}", error);
+                    }
+                    res
                 }
-                res
             })
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error)
+                if swap_markup.is_some() && Self::should_retry_create_without_markup(&error) =>
+            {
+                tracing::warn!(
+                    "Trocador rejected create_trade with markup {:?} for {}/{} -> {}/{} via {}. Retrying without markup.",
+                    swap_markup,
+                    request.from,
+                    request.network_from,
+                    request.to,
+                    request.network_to,
+                    request.provider
+                );
+                self.call_trocador_with_retry(|| {
+                    let gateway = &trocador_gateway;
+                    let payout_address = trocador_payout_address.as_str();
+                    let address_memo = trocador_address_memo.as_deref();
+                    let refund = refund_address.as_deref();
+                    let refund_memo = trocador_refund_memo.as_deref();
+                    let webhook_url = trocador_webhook.as_ref().map(|(url, _)| url.as_str());
+                    let webhook_key = trocador_webhook.as_ref().map(|(_, key)| key.as_str());
+                    async move {
+                        let res = gateway
+                            .create_trade(
+                                request.trade_id.as_deref(),
+                                &request.from,
+                                &request.network_from,
+                                &request.to,
+                                &request.network_to,
+                                request.amount,
+                                payout_address,
+                                address_memo,
+                                refund,
+                                refund_memo,
+                                &request.provider,
+                                fixed,
+                                request.payment,
+                                request.min_kycrating.as_deref(),
+                                webhook_url,
+                                webhook_key,
+                                None,
+                            )
+                            .await;
+
+                        if let Err(ref error) = res {
+                            tracing::error!(
+                                "Trocador create_trade failed on no-markup fallback: {}",
+                                error
+                            );
+                        }
+                        res
+                    }
+                })
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
 
         let normalized_payout_network =
             GasEstimator::normalize_payout_network(&request.to, &request.network_to);
@@ -1211,6 +1278,17 @@ impl SwapService {
                     return Err(SwapError::from(e));
                 }
             }
+        }
+    }
+
+    fn should_retry_create_without_markup(error: &SwapError) -> bool {
+        match error {
+            SwapError::ExternalApiError(message) => {
+                let normalized = message.to_ascii_lowercase();
+                normalized.contains("trade could not be generated")
+                    || normalized.contains("unknown error happened")
+            }
+            _ => false,
         }
     }
 }

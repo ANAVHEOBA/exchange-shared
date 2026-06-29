@@ -1,8 +1,9 @@
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sqlx::{pool::PoolConnection, Error, MySql, QueryBuilder, Row};
 use uuid::Uuid;
 
 use crate::config::DbPool;
+use crate::modules::whatsapp::schema::AdminConversationQuery;
 use crate::services::whatsapp::NormalizedWebhookEvent;
 use crate::services::whatsapp::{
     build_stored_event_payload, extract_message_text_from_payload, redact_outbound_body,
@@ -14,6 +15,46 @@ pub struct SessionRecord {
     pub locale: String,
     pub state: String,
     pub draft_json: Option<String>,
+}
+
+pub struct AdminConversationRecord {
+    pub wa_id: String,
+    pub phone_number_id: String,
+    pub locale: String,
+    pub state: String,
+    pub admin_status: String,
+    pub admin_tag: Option<String>,
+    pub assigned_to: Option<String>,
+    pub internal_note: Option<String>,
+    pub last_inbound_at: Option<DateTime<Utc>>,
+    pub last_outbound_at: Option<DateTime<Utc>>,
+    pub last_message_preview: Option<String>,
+    pub last_outbound_status: Option<String>,
+    pub last_error: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub struct AdminConversationEventRecord {
+    pub id: String,
+    pub event_kind: String,
+    pub message_type: Option<String>,
+    pub provider_message_id: Option<String>,
+    pub text: Option<String>,
+    pub processed: i32,
+    pub attempt_count: i32,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct AdminOutboundMessageRecord {
+    pub id: String,
+    pub message_kind: String,
+    pub status: String,
+    pub provider_message_id: Option<String>,
+    pub body: String,
+    pub error_message: Option<String>,
+    pub sent_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 pub struct WhatsAppCrud {
@@ -136,6 +177,202 @@ impl WhatsAppCrud {
         }))
     }
 
+    pub async fn list_admin_conversations(
+        &self,
+        query: &AdminConversationQuery,
+    ) -> Result<(Vec<AdminConversationRecord>, u64), Error> {
+        let page = query.page.max(1);
+        let limit = query.limit.clamp(1, 100);
+        let offset = ((page - 1) * limit) as i64;
+
+        let mut where_clauses = Vec::new();
+        let mut bind_values = Vec::new();
+
+        if let Some(admin_status) = query.admin_status.as_deref() {
+            where_clauses.push("s.admin_status = ?");
+            bind_values.push(admin_status.trim().to_string());
+        }
+        if let Some(admin_tag) = query.admin_tag.as_deref() {
+            where_clauses.push("s.admin_tag = ?");
+            bind_values.push(admin_tag.trim().to_string());
+        }
+        if let Some(assigned_to) = query.assigned_to.as_deref() {
+            where_clauses.push("s.assigned_to = ?");
+            bind_values.push(assigned_to.trim().to_string());
+        }
+        if let Some(state) = query.state.as_deref() {
+            where_clauses.push("s.state = ?");
+            bind_values.push(state.trim().to_string());
+        }
+        if let Some(wa_id) = query.wa_id.as_deref() {
+            where_clauses.push("s.wa_id = ?");
+            bind_values.push(wa_id.trim().to_string());
+        }
+
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let count_sql = format!(
+            "SELECT COUNT(*) AS total FROM whatsapp_sessions s{}",
+            where_sql
+        );
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        for value in &bind_values {
+            count_query = count_query.bind(value);
+        }
+        let total = count_query.fetch_one(&self.pool).await?.max(0) as u64;
+
+        let list_sql = format!(
+            r#"
+            SELECT
+                s.wa_id,
+                s.phone_number_id,
+                s.locale,
+                s.state,
+                s.admin_status,
+                s.admin_tag,
+                s.assigned_to,
+                s.internal_note,
+                s.last_inbound_at,
+                s.last_outbound_at,
+                s.updated_at,
+                (
+                    SELECT e.text_preview
+                    FROM whatsapp_events e
+                    WHERE e.wa_id = s.wa_id
+                      AND e.phone_number_id = s.phone_number_id
+                    ORDER BY e.created_at DESC
+                    LIMIT 1
+                ) AS last_message_preview,
+                (
+                    SELECT o.status
+                    FROM whatsapp_outbound_messages o
+                    WHERE o.wa_id = s.wa_id
+                      AND o.phone_number_id = s.phone_number_id
+                    ORDER BY o.created_at DESC
+                    LIMIT 1
+                ) AS last_outbound_status,
+                (
+                    SELECT e.last_error
+                    FROM whatsapp_events e
+                    WHERE e.wa_id = s.wa_id
+                      AND e.phone_number_id = s.phone_number_id
+                      AND e.last_error IS NOT NULL
+                    ORDER BY e.updated_at DESC
+                    LIMIT 1
+                ) AS last_error
+            FROM whatsapp_sessions s
+            {}
+            ORDER BY COALESCE(s.last_inbound_at, s.updated_at) DESC, s.updated_at DESC
+            LIMIT ? OFFSET ?
+            "#,
+            where_sql
+        );
+
+        let mut list_query = sqlx::query(&list_sql);
+        for value in &bind_values {
+            list_query = list_query.bind(value);
+        }
+        list_query = list_query.bind(limit as i64).bind(offset);
+
+        let rows = list_query.fetch_all(&self.pool).await?;
+        let records = rows
+            .into_iter()
+            .map(|row| AdminConversationRecord {
+                wa_id: row.get("wa_id"),
+                phone_number_id: row.get("phone_number_id"),
+                locale: row.get("locale"),
+                state: row.get("state"),
+                admin_status: row.get("admin_status"),
+                admin_tag: row.try_get("admin_tag").unwrap_or(None),
+                assigned_to: row.try_get("assigned_to").unwrap_or(None),
+                internal_note: row.try_get("internal_note").unwrap_or(None),
+                last_inbound_at: row.try_get("last_inbound_at").unwrap_or(None),
+                last_outbound_at: row.try_get("last_outbound_at").unwrap_or(None),
+                last_message_preview: row.try_get("last_message_preview").unwrap_or(None),
+                last_outbound_status: row.try_get("last_outbound_status").unwrap_or(None),
+                last_error: row.try_get("last_error").unwrap_or(None),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok((records, total))
+    }
+
+    pub async fn get_admin_conversation(
+        &self,
+        wa_id: &str,
+    ) -> Result<Option<AdminConversationRecord>, Error> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                s.wa_id,
+                s.phone_number_id,
+                s.locale,
+                s.state,
+                s.admin_status,
+                s.admin_tag,
+                s.assigned_to,
+                s.internal_note,
+                s.last_inbound_at,
+                s.last_outbound_at,
+                s.updated_at,
+                (
+                    SELECT e.text_preview
+                    FROM whatsapp_events e
+                    WHERE e.wa_id = s.wa_id
+                      AND e.phone_number_id = s.phone_number_id
+                    ORDER BY e.created_at DESC
+                    LIMIT 1
+                ) AS last_message_preview,
+                (
+                    SELECT o.status
+                    FROM whatsapp_outbound_messages o
+                    WHERE o.wa_id = s.wa_id
+                      AND o.phone_number_id = s.phone_number_id
+                    ORDER BY o.created_at DESC
+                    LIMIT 1
+                ) AS last_outbound_status,
+                (
+                    SELECT e.last_error
+                    FROM whatsapp_events e
+                    WHERE e.wa_id = s.wa_id
+                      AND e.phone_number_id = s.phone_number_id
+                      AND e.last_error IS NOT NULL
+                    ORDER BY e.updated_at DESC
+                    LIMIT 1
+                ) AS last_error
+            FROM whatsapp_sessions s
+            WHERE s.wa_id = ?
+            ORDER BY s.updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(wa_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| AdminConversationRecord {
+            wa_id: row.get("wa_id"),
+            phone_number_id: row.get("phone_number_id"),
+            locale: row.get("locale"),
+            state: row.get("state"),
+            admin_status: row.get("admin_status"),
+            admin_tag: row.try_get("admin_tag").unwrap_or(None),
+            assigned_to: row.try_get("assigned_to").unwrap_or(None),
+            internal_note: row.try_get("internal_note").unwrap_or(None),
+            last_inbound_at: row.try_get("last_inbound_at").unwrap_or(None),
+            last_outbound_at: row.try_get("last_outbound_at").unwrap_or(None),
+            last_message_preview: row.try_get("last_message_preview").unwrap_or(None),
+            last_outbound_status: row.try_get("last_outbound_status").unwrap_or(None),
+            last_error: row.try_get("last_error").unwrap_or(None),
+            updated_at: row.get("updated_at"),
+        }))
+    }
+
     pub async fn upsert_session_state<T: serde::Serialize>(
         &self,
         wa_id: &str,
@@ -178,6 +415,139 @@ impl WhatsAppCrud {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn update_admin_conversation(
+        &self,
+        wa_id: &str,
+        admin_status: Option<&str>,
+        admin_tag: Option<Option<&str>>,
+        assigned_to: Option<Option<&str>>,
+        internal_note: Option<Option<&str>>,
+    ) -> Result<bool, Error> {
+        let result = sqlx::query(
+            r#"
+            UPDATE whatsapp_sessions
+            SET admin_status = COALESCE(?, admin_status),
+                admin_tag = CASE
+                    WHEN ? = 1 THEN ?
+                    ELSE admin_tag
+                END,
+                assigned_to = CASE
+                    WHEN ? = 1 THEN ?
+                    ELSE assigned_to
+                END,
+                internal_note = CASE
+                    WHEN ? = 1 THEN ?
+                    ELSE internal_note
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE wa_id = ?
+            "#,
+        )
+        .bind(admin_status)
+        .bind(admin_tag.is_some())
+        .bind(admin_tag.flatten())
+        .bind(assigned_to.is_some())
+        .bind(assigned_to.flatten())
+        .bind(internal_note.is_some())
+        .bind(internal_note.flatten())
+        .bind(wa_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_conversation_events(
+        &self,
+        wa_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AdminConversationEventRecord>, Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                event_kind,
+                message_type,
+                provider_message_id,
+                CAST(payload AS CHAR) AS payload_json,
+                processed,
+                attempt_count,
+                last_error,
+                created_at
+            FROM whatsapp_events
+            WHERE wa_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(wa_id)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let payload_json: String = row.get("payload_json");
+                let payload =
+                    serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
+                AdminConversationEventRecord {
+                    id: row.get("id"),
+                    event_kind: row.get("event_kind"),
+                    message_type: row.try_get("message_type").unwrap_or(None),
+                    provider_message_id: row.try_get("provider_message_id").unwrap_or(None),
+                    text: extract_message_text_from_payload(&payload).unwrap_or(None),
+                    processed: row.get::<i32, _>("processed"),
+                    attempt_count: row.get("attempt_count"),
+                    last_error: row.try_get("last_error").unwrap_or(None),
+                    created_at: row.get("created_at"),
+                }
+            })
+            .collect())
+    }
+
+    pub async fn list_conversation_outbound_messages(
+        &self,
+        wa_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AdminOutboundMessageRecord>, Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                message_kind,
+                status,
+                provider_message_id,
+                body,
+                error_message,
+                sent_at,
+                created_at
+            FROM whatsapp_outbound_messages
+            WHERE wa_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(wa_id)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| AdminOutboundMessageRecord {
+                id: row.get("id"),
+                message_kind: row.get("message_kind"),
+                status: row.get("status"),
+                provider_message_id: row.try_get("provider_message_id").unwrap_or(None),
+                body: row.get("body"),
+                error_message: row.try_get("error_message").unwrap_or(None),
+                sent_at: row.try_get("sent_at").unwrap_or(None),
+                created_at: row.get("created_at"),
+            })
+            .collect())
     }
 
     pub async fn insert_event(&self, event: &NormalizedWebhookEvent) -> Result<bool, Error> {
@@ -277,6 +647,21 @@ impl WhatsAppCrud {
                 sent_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
+            "#,
+        )
+        .bind(provider_message_id)
+        .bind(outbound_id)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE whatsapp_sessions s
+            JOIN whatsapp_outbound_messages o ON o.session_id = s.id
+            SET s.last_outbound_message_id = COALESCE(?, s.last_outbound_message_id),
+                s.last_outbound_at = CURRENT_TIMESTAMP,
+                s.updated_at = CURRENT_TIMESTAMP
+            WHERE o.id = ?
             "#,
         )
         .bind(provider_message_id)

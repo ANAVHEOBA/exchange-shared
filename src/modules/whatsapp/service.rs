@@ -12,15 +12,21 @@ use crate::modules::swap::schema::{
     ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
-use crate::services::whatsapp::derive_whatsapp_client_id;
+use crate::services::whatsapp::{
+    derive_whatsapp_client_id, InteractiveListOption, InteractiveListSection,
+};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ConversationState {
     Idle,
-    AwaitingFromAsset,
-    AwaitingToAsset,
+    AwaitingFromAssetSearch,
+    AwaitingFromAssetChoice,
+    AwaitingFromNetworkChoice,
+    AwaitingToAssetSearch,
+    AwaitingToAssetChoice,
+    AwaitingToNetworkChoice,
     AwaitingAmount,
     AwaitingQuoteSelection,
     AwaitingRecipientAddress,
@@ -39,8 +45,12 @@ impl Default for ConversationState {
 impl ConversationState {
     fn from_db(value: &str) -> Self {
         match value {
-            "awaiting_from_asset" => Self::AwaitingFromAsset,
-            "awaiting_to_asset" => Self::AwaitingToAsset,
+            "awaiting_from_asset" | "awaiting_from_asset_search" => Self::AwaitingFromAssetSearch,
+            "awaiting_from_asset_choice" => Self::AwaitingFromAssetChoice,
+            "awaiting_from_network_choice" => Self::AwaitingFromNetworkChoice,
+            "awaiting_to_asset" | "awaiting_to_asset_search" => Self::AwaitingToAssetSearch,
+            "awaiting_to_asset_choice" => Self::AwaitingToAssetChoice,
+            "awaiting_to_network_choice" => Self::AwaitingToNetworkChoice,
             "awaiting_amount" => Self::AwaitingAmount,
             "awaiting_quote_selection" => Self::AwaitingQuoteSelection,
             "awaiting_recipient_address" => Self::AwaitingRecipientAddress,
@@ -74,6 +84,12 @@ impl From<CurrencyResponse> for CurrencySelection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AssetFamilySelection {
+    ticker: String,
+    name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct QuoteChoice {
     index: usize,
@@ -93,6 +109,8 @@ struct QuoteChoice {
 struct SwapDraft {
     from: Option<CurrencySelection>,
     to: Option<CurrencySelection>,
+    pending_from_family: Option<AssetFamilySelection>,
+    pending_to_family: Option<AssetFamilySelection>,
     amount: Option<f64>,
     quotes: Vec<QuoteChoice>,
     selected_quote: Option<QuoteChoice>,
@@ -109,11 +127,97 @@ struct ParsedSwapIntent {
     to_phrase: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AssetResolution {
     selected: Option<CurrencySelection>,
     ambiguous_options: Vec<CurrencySelection>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetSide {
+    From,
+    To,
+}
+
+impl AssetSide {
+    fn search_state(self) -> ConversationState {
+        match self {
+            Self::From => ConversationState::AwaitingFromAssetSearch,
+            Self::To => ConversationState::AwaitingToAssetSearch,
+        }
+    }
+
+    fn choice_state(self) -> ConversationState {
+        match self {
+            Self::From => ConversationState::AwaitingFromAssetChoice,
+            Self::To => ConversationState::AwaitingToAssetChoice,
+        }
+    }
+
+    fn network_state(self) -> ConversationState {
+        match self {
+            Self::From => ConversationState::AwaitingFromNetworkChoice,
+            Self::To => ConversationState::AwaitingToNetworkChoice,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::From => "sending",
+            Self::To => "receiving",
+        }
+    }
+
+    fn asset_prompt(self) -> &'static str {
+        match self {
+            Self::From => {
+                "What coin are you sending? Type the ticker or coin name. Examples: btc, xlm, usdc on stellar."
+            }
+            Self::To => {
+                "What coin do you want to receive? Type the ticker or coin name. Examples: xmr, btc, usdt on tron."
+            }
+        }
+    }
+
+    fn network_prompt(self, family: &AssetFamilySelection) -> String {
+        format!(
+            "{} ({}) has multiple networks. Choose one.",
+            family.name,
+            family.ticker.to_uppercase(),
+        )
+    }
+
+    fn family_prompt(self, count: usize) -> String {
+        if count > 10 {
+            format!(
+                "I found {} matching {} assets. Showing the top 10. Choose the asset first or type a narrower search.",
+                count,
+                self.label()
+            )
+        } else {
+            format!(
+                "I found {} matching {} assets. Choose the asset first or type a narrower search.",
+                count,
+                self.label()
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum AssetInputPlan {
+    Selected(CurrencySelection),
+    ChooseResults {
+        prompt: String,
+        options: Vec<CurrencySelection>,
+    },
+    ChooseAsset(Vec<AssetFamilySelection>),
+    ChooseNetwork {
+        family: AssetFamilySelection,
+        options: Vec<CurrencySelection>,
+    },
+    Error(String),
 }
 
 #[derive(Clone)]
@@ -178,12 +282,20 @@ impl WhatsAppFlowService {
         inbound_message_id: Option<&str>,
         text: &str,
     ) -> Result<(), String> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
+        let raw_trimmed = text.trim();
+        if raw_trimmed.is_empty() {
             return self
-                .reply(wa_id, phone_number_id, None, "Send a text message like `swap 100 usdc on stellar to bitcoin`, `swap`, or `status <swap_id>`.")
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    None,
+                    "Type swap to start a new swap. Type status and then your swap ID to check progress.",
+                )
                 .await;
         }
+
+        let normalized_command = normalize_quick_action_command(raw_trimmed);
+        let trimmed = normalized_command.as_str();
 
         let crud = WhatsAppCrud::new(self.state.db.clone());
         let session = crud
@@ -202,6 +314,17 @@ impl WhatsAppFlowService {
         };
 
         let lowered = trimmed.to_ascii_lowercase();
+        if lowered == "status_help" {
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &Self::status_help_message(),
+                )
+                .await;
+        }
+
         if matches!(lowered.as_str(), "cancel" | "restart" | "reset") {
             crud.upsert_session_state(
                 wa_id,
@@ -219,29 +342,30 @@ impl WhatsAppFlowService {
                     wa_id,
                     phone_number_id,
                     session_id.as_deref(),
-                    "Swap flow reset. Send `swap` to start again or `swap 100 usdc on stellar to bitcoin`.",
+                    "Swap flow reset. Type swap to start again.",
                 )
                 .await;
         }
 
-        if lowered == "help" || lowered == "menu" || lowered == "start" {
-            crud.upsert_session_state(
-                wa_id,
-                phone_number_id,
-                &ConversationState::Idle,
-                &locale,
-                &draft,
-                inbound_message_id,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-
+        if lowered == "examples" {
             return self
                 .reply(
                     wa_id,
                     phone_number_id,
                     session_id.as_deref(),
-                    &Self::help_message(),
+                    &Self::examples_message(),
+                )
+                .await;
+        }
+
+        if lowered == "help" || lowered == "menu" || lowered == "start" || is_greeting(&lowered) {
+            return self
+                .send_welcome_sequence(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    inbound_message_id,
                 )
                 .await;
         }
@@ -265,7 +389,7 @@ impl WhatsAppFlowService {
                     crud.upsert_session_state(
                         wa_id,
                         phone_number_id,
-                        &ConversationState::AwaitingFromAsset,
+                        &ConversationState::AwaitingFromAssetSearch,
                         &locale,
                         &SwapDraft::default(),
                         inbound_message_id,
@@ -278,7 +402,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "What are you sending? Example: `usdc on stellar`, `btc mainnet`, or `eth on arbitrum`.",
+                            AssetSide::From.asset_prompt(),
                         )
                         .await;
                 }
@@ -289,25 +413,97 @@ impl WhatsAppFlowService {
                     }
 
                     let catalog = self.fetch_currency_catalog().await?;
+                    let from_plan = match intent.from_phrase.as_deref() {
+                        Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
+                        None => None,
+                    };
+                    let to_plan = match intent.to_phrase.as_deref() {
+                        Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
+                        None => None,
+                    };
 
-                    if let Some(from_phrase) = intent.from_phrase {
-                        match resolve_currency_phrase(&catalog, &from_phrase)? {
-                            AssetResolution {
-                                selected: Some(selection),
-                                ..
-                            } => draft.from = Some(selection),
-                            AssetResolution {
-                                ambiguous_options,
-                                error,
-                                ..
-                            } => {
-                                let message = error.unwrap_or_else(|| {
-                                    format_ambiguity_message(
-                                        "sending",
-                                        &ambiguous_options,
-                                        "Reply with the asset and network more precisely.",
+                    if let Some(AssetInputPlan::Selected(selection)) = from_plan.as_ref() {
+                        draft.from = Some(selection.clone());
+                        draft.pending_from_family = None;
+                    }
+
+                    if let Some(AssetInputPlan::Selected(selection)) = to_plan.as_ref() {
+                        draft.to = Some(selection.clone());
+                        draft.pending_to_family = None;
+                    }
+
+                    if let Some(plan) = from_plan {
+                        match plan {
+                            AssetInputPlan::Selected(_) => {}
+                            AssetInputPlan::ChooseResults { prompt, options } => {
+                                crud.upsert_session_state(
+                                    wa_id,
+                                    phone_number_id,
+                                    &ConversationState::AwaitingFromAssetChoice,
+                                    &locale,
+                                    &draft,
+                                    inbound_message_id,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+
+                                return self
+                                    .reply_currency_options(
+                                        wa_id,
+                                        phone_number_id,
+                                        session_id.as_deref(),
+                                        &prompt,
+                                        "Choose coin",
+                                        &options,
                                     )
-                                });
+                                    .await;
+                            }
+                            AssetInputPlan::ChooseAsset(families) => {
+                                crud.upsert_session_state(
+                                    wa_id,
+                                    phone_number_id,
+                                    &ConversationState::AwaitingFromAssetChoice,
+                                    &locale,
+                                    &draft,
+                                    inbound_message_id,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+
+                                return self
+                                    .reply_asset_family_options(
+                                        wa_id,
+                                        phone_number_id,
+                                        session_id.as_deref(),
+                                        &AssetSide::From.family_prompt(families.len()),
+                                        &families,
+                                    )
+                                    .await;
+                            }
+                            AssetInputPlan::ChooseNetwork { family, options } => {
+                                draft.pending_from_family = Some(family.clone());
+                                crud.upsert_session_state(
+                                    wa_id,
+                                    phone_number_id,
+                                    &ConversationState::AwaitingFromNetworkChoice,
+                                    &locale,
+                                    &draft,
+                                    inbound_message_id,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+
+                                return self
+                                    .reply_network_options(
+                                        wa_id,
+                                        phone_number_id,
+                                        session_id.as_deref(),
+                                        &AssetSide::From.network_prompt(&family),
+                                        &options,
+                                    )
+                                    .await;
+                            }
+                            AssetInputPlan::Error(message) => {
                                 return self
                                     .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                                     .await;
@@ -315,24 +511,78 @@ impl WhatsAppFlowService {
                         }
                     }
 
-                    if let Some(to_phrase) = intent.to_phrase {
-                        match resolve_currency_phrase(&catalog, &to_phrase)? {
-                            AssetResolution {
-                                selected: Some(selection),
-                                ..
-                            } => draft.to = Some(selection),
-                            AssetResolution {
-                                ambiguous_options,
-                                error,
-                                ..
-                            } => {
-                                let message = error.unwrap_or_else(|| {
-                                    format_ambiguity_message(
-                                        "receiving",
-                                        &ambiguous_options,
-                                        "Reply with the asset and network more precisely.",
+                    if let Some(plan) = to_plan {
+                        match plan {
+                            AssetInputPlan::Selected(_) => {}
+                            AssetInputPlan::ChooseResults { prompt, options } => {
+                                crud.upsert_session_state(
+                                    wa_id,
+                                    phone_number_id,
+                                    &ConversationState::AwaitingToAssetChoice,
+                                    &locale,
+                                    &draft,
+                                    inbound_message_id,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+
+                                return self
+                                    .reply_currency_options(
+                                        wa_id,
+                                        phone_number_id,
+                                        session_id.as_deref(),
+                                        &prompt,
+                                        "Choose coin",
+                                        &options,
                                     )
-                                });
+                                    .await;
+                            }
+                            AssetInputPlan::ChooseAsset(families) => {
+                                crud.upsert_session_state(
+                                    wa_id,
+                                    phone_number_id,
+                                    &ConversationState::AwaitingToAssetChoice,
+                                    &locale,
+                                    &draft,
+                                    inbound_message_id,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+
+                                return self
+                                    .reply_asset_family_options(
+                                        wa_id,
+                                        phone_number_id,
+                                        session_id.as_deref(),
+                                        &AssetSide::To.family_prompt(families.len()),
+                                        &families,
+                                    )
+                                    .await;
+                            }
+                            AssetInputPlan::ChooseNetwork { family, options } => {
+                                draft.pending_to_family = Some(family.clone());
+                                crud.upsert_session_state(
+                                    wa_id,
+                                    phone_number_id,
+                                    &ConversationState::AwaitingToNetworkChoice,
+                                    &locale,
+                                    &draft,
+                                    inbound_message_id,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+
+                                return self
+                                    .reply_network_options(
+                                        wa_id,
+                                        phone_number_id,
+                                        session_id.as_deref(),
+                                        &AssetSide::To.network_prompt(&family),
+                                        &options,
+                                    )
+                                    .await;
+                            }
+                            AssetInputPlan::Error(message) => {
                                 return self
                                     .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                                     .await;
@@ -369,93 +619,83 @@ impl WhatsAppFlowService {
                 )
                 .await
             }
-            ConversationState::AwaitingFromAsset => {
-                let catalog = self.fetch_currency_catalog().await?;
-                match resolve_currency_phrase(&catalog, trimmed)? {
-                    AssetResolution {
-                        selected: Some(selection),
-                        ..
-                    } => {
-                        draft.from = Some(selection);
-                        crud.upsert_session_state(
-                            wa_id,
-                            phone_number_id,
-                            &ConversationState::AwaitingToAsset,
-                            &locale,
-                            &draft,
-                            inbound_message_id,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-
-                        self.reply(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            "What do you want to receive? Example: `bitcoin mainnet`, `xmr`, or `usdt on trc20`.",
-                        )
-                        .await
-                    }
-                    AssetResolution {
-                        ambiguous_options,
-                        error,
-                        ..
-                    } => {
-                        let message = error.unwrap_or_else(|| {
-                            format_ambiguity_message(
-                                "sending",
-                                &ambiguous_options,
-                                "Reply with the exact asset and network you are sending.",
-                            )
-                        });
-                        self.reply(wa_id, phone_number_id, session_id.as_deref(), &message)
-                            .await
-                    }
-                }
+            ConversationState::AwaitingFromAssetSearch => {
+                self.handle_asset_search_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    AssetSide::From,
+                )
+                .await
             }
-            ConversationState::AwaitingToAsset => {
-                let catalog = self.fetch_currency_catalog().await?;
-                match resolve_currency_phrase(&catalog, trimmed)? {
-                    AssetResolution {
-                        selected: Some(selection),
-                        ..
-                    } => {
-                        draft.to = Some(selection);
-                        crud.upsert_session_state(
-                            wa_id,
-                            phone_number_id,
-                            &ConversationState::AwaitingAmount,
-                            &locale,
-                            &draft,
-                            inbound_message_id,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-
-                        self.reply(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            "How much do you want to send? Reply with only the amount, for example `100` or `0.25`.",
-                        )
-                        .await
-                    }
-                    AssetResolution {
-                        ambiguous_options,
-                        error,
-                        ..
-                    } => {
-                        let message = error.unwrap_or_else(|| {
-                            format_ambiguity_message(
-                                "receiving",
-                                &ambiguous_options,
-                                "Reply with the exact asset and network you want to receive.",
-                            )
-                        });
-                        self.reply(wa_id, phone_number_id, session_id.as_deref(), &message)
-                            .await
-                    }
-                }
+            ConversationState::AwaitingFromAssetChoice => {
+                self.handle_asset_choice_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    AssetSide::From,
+                )
+                .await
+            }
+            ConversationState::AwaitingFromNetworkChoice => {
+                self.handle_network_choice_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    AssetSide::From,
+                )
+                .await
+            }
+            ConversationState::AwaitingToAssetSearch => {
+                self.handle_asset_search_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    AssetSide::To,
+                )
+                .await
+            }
+            ConversationState::AwaitingToAssetChoice => {
+                self.handle_asset_choice_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    AssetSide::To,
+                )
+                .await
+            }
+            ConversationState::AwaitingToNetworkChoice => {
+                self.handle_network_choice_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    AssetSide::To,
+                )
+                .await
             }
             ConversationState::AwaitingAmount => {
                 let Some(amount) = parse_amount(trimmed) else {
@@ -464,7 +704,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Amount not recognized. Reply with a number like `100` or `0.25`.",
+                            "Amount not recognized. Reply with a number like 100 or 0.25.",
                         )
                         .await;
                 };
@@ -495,7 +735,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Reply with the quote number you want, for example `1`.",
+                            "Reply with the quote number you want, for example 1.",
                         )
                         .await;
                 };
@@ -559,7 +799,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Destination asset missing. Send `swap` to restart.",
+                            "Destination asset missing. Type swap to restart.",
                         )
                         .await;
                 };
@@ -614,7 +854,7 @@ impl WhatsAppFlowService {
                         wa_id,
                         phone_number_id,
                         session_id.as_deref(),
-                        "Optional but recommended: send a refund address for the asset you are sending, or reply `skip`.",
+                        "Optional but recommended: send a refund address for the asset you are sending, or reply skip.",
                     )
                     .await
                 }
@@ -647,7 +887,7 @@ impl WhatsAppFlowService {
                     wa_id,
                     phone_number_id,
                     session_id.as_deref(),
-                    "Optional but recommended: send a refund address for the asset you are sending, or reply `skip`.",
+                    "Optional but recommended: send a refund address for the asset you are sending, or reply skip.",
                 )
                 .await
             }
@@ -680,7 +920,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Source asset missing. Send `swap` to restart.",
+                            "Source asset missing. Type swap to restart.",
                         )
                         .await;
                 };
@@ -777,7 +1017,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Reply `confirm` to create the swap, or `cancel` to reset.",
+                            "Reply confirm to create the swap, or cancel to reset.",
                         )
                         .await;
                 }
@@ -804,36 +1044,594 @@ impl WhatsAppFlowService {
                 .await
                 .map_err(|error| error.to_string())?;
 
-                let mut lines = vec![
-                    format!("Swap created: {}", response.swap_id),
+                let summary = [
+                    "Swap created successfully.".to_string(),
                     format!(
                         "Send exactly {} {} on {}",
                         trim_f64(response.deposit_amount),
                         response.from.to_uppercase(),
                         response.network_from
                     ),
-                    format!("Deposit address: {}", response.deposit_address),
-                ];
+                    format!(
+                        "Expected receive: {} {}",
+                        trim_f64(response.estimated_receive),
+                        response.to.to_uppercase()
+                    ),
+                    format!("Provider: {}", response.provider),
+                    "To check progress later, type status and then paste the swap ID.".to_string(),
+                ]
+                .join("\n");
 
-                if let Some(extra_id) = response.deposit_extra_id.as_ref() {
-                    lines.push(format!("Deposit extra ID: {}", extra_id));
-                }
-
-                lines.push(format!(
-                    "Expected receive: {} {}",
-                    trim_f64(response.estimated_receive),
-                    response.to.to_uppercase()
-                ));
-                lines.push(format!("Provider: {}", response.provider));
-                lines.push("Check progress any time with `status <swap_id>`.".to_string());
-
+                self.reply(wa_id, phone_number_id, session_id.as_deref(), &summary)
+                    .await?;
                 self.reply(
                     wa_id,
                     phone_number_id,
                     session_id.as_deref(),
-                    &lines.join("\n"),
+                    &format!("Swap ID\n{}", response.swap_id),
+                )
+                .await?;
+                self.reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &format!("Deposit address\n{}", response.deposit_address),
+                )
+                .await?;
+
+                if let Some(extra_id) = response.deposit_extra_id.as_ref() {
+                    self.reply(
+                        wa_id,
+                        phone_number_id,
+                        session_id.as_deref(),
+                        &format!("Deposit extra ID\n{}", extra_id),
+                    )
+                    .await?;
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    async fn handle_asset_search_input(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        input: &str,
+        side: AssetSide,
+    ) -> Result<(), String> {
+        if normalize_quick_action_command(input).eq_ignore_ascii_case("swap") {
+            return self
+                .reply(wa_id, phone_number_id, session_id, side.asset_prompt())
+                .await;
+        }
+
+        let catalog = self.fetch_currency_catalog().await?;
+
+        if let Some(selection) = parse_asset_selection_id(&catalog, input) {
+            return self
+                .continue_after_asset_selected(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    selection,
+                )
+                .await;
+        }
+
+        if let Some(family_key) = parse_family_selection_id(input) {
+            return self
+                .handle_asset_family_choice(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    family_key,
+                    &catalog,
+                )
+                .await;
+        }
+
+        match self.resolve_asset_input(&catalog, input).await? {
+            AssetInputPlan::Selected(selection) => {
+                self.continue_after_asset_selected(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    selection,
                 )
                 .await
+            }
+            AssetInputPlan::ChooseResults { prompt, options } => {
+                set_pending_family(&mut draft, side, None);
+                WhatsAppCrud::new(self.state.db.clone())
+                    .upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &side.choice_state(),
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                self.reply_currency_options(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    &prompt,
+                    "Choose coin",
+                    &options,
+                )
+                .await
+            }
+            AssetInputPlan::ChooseAsset(families) => {
+                let total_matches = families.len();
+                let prompt = if total_matches > 10 {
+                    format!(
+                        "I found {} matching {} assets. Showing the top 10. Choose the asset first or type a narrower search.",
+                        total_matches,
+                        side.label()
+                    )
+                } else {
+                    side.family_prompt(total_matches)
+                };
+
+                set_pending_family(&mut draft, side, None);
+                WhatsAppCrud::new(self.state.db.clone())
+                    .upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &side.choice_state(),
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                self.reply_asset_family_options(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    &prompt,
+                    &families,
+                )
+                .await
+            }
+            AssetInputPlan::ChooseNetwork { family, options } => {
+                self.persist_network_choice_state(
+                    wa_id,
+                    phone_number_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    family.clone(),
+                )
+                .await?;
+
+                self.reply_network_options(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    &side.network_prompt(&family),
+                    &options,
+                )
+                .await
+            }
+            AssetInputPlan::Error(message) => {
+                self.reply(wa_id, phone_number_id, session_id, &message)
+                    .await
+            }
+        }
+    }
+
+    async fn handle_asset_choice_input(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        input: &str,
+        side: AssetSide,
+    ) -> Result<(), String> {
+        let catalog = self.fetch_currency_catalog().await?;
+
+        if let Some(family_key) = parse_family_selection_id(input) {
+            return self
+                .handle_asset_family_choice(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    family_key,
+                    &catalog,
+                )
+                .await;
+        }
+
+        self.handle_asset_search_input(
+            wa_id,
+            phone_number_id,
+            session_id,
+            locale,
+            draft,
+            inbound_message_id,
+            input,
+            side,
+        )
+        .await
+    }
+
+    async fn handle_network_choice_input(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        input: &str,
+        side: AssetSide,
+    ) -> Result<(), String> {
+        let catalog = self.fetch_currency_catalog().await?;
+
+        if let Some(selection) = parse_asset_selection_id(&catalog, input) {
+            return self
+                .continue_after_asset_selected(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    selection,
+                )
+                .await;
+        }
+
+        let Some(family) = pending_family(&draft, side).cloned() else {
+            return self
+                .handle_asset_search_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    input,
+                    side,
+                )
+                .await;
+        };
+
+        if should_restart_asset_search_from_network_choice(&family, input) {
+            let mut next_draft = draft.clone();
+            set_pending_family(&mut next_draft, side, None);
+
+            return self
+                .handle_asset_search_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    next_draft,
+                    inbound_message_id,
+                    input,
+                    side,
+                )
+                .await;
+        }
+
+        let family_catalog = find_family_currencies(&catalog, &family);
+        if family_catalog.is_empty() {
+            let mut next_draft = draft.clone();
+            set_pending_family(&mut next_draft, side, None);
+            WhatsAppCrud::new(self.state.db.clone())
+                .upsert_session_state(
+                    wa_id,
+                    phone_number_id,
+                    &side.search_state(),
+                    locale,
+                    &next_draft,
+                    inbound_message_id,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    "That asset family is no longer available. Start the search again.",
+                )
+                .await;
+        }
+
+        match resolve_currency_phrase(&family_catalog, input)? {
+            AssetResolution {
+                selected: Some(selection),
+                ..
+            } => {
+                self.continue_after_asset_selected(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    selection,
+                )
+                .await
+            }
+            AssetResolution {
+                ambiguous_options, ..
+            } if !ambiguous_options.is_empty() => {
+                let network_options = ambiguous_options;
+                self.persist_network_choice_state(
+                    wa_id,
+                    phone_number_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    family.clone(),
+                )
+                .await?;
+
+                self.reply_network_options(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    &side.network_prompt(&family),
+                    &network_options,
+                )
+                .await
+            }
+            resolution => {
+                self.reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    resolution.error.as_deref().unwrap_or(
+                        "I could not match that network. Tap one of the listed networks or type it more clearly.",
+                    ),
+                )
+                .await
+            }
+        }
+    }
+
+    async fn handle_asset_family_choice(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        side: AssetSide,
+        family_key: AssetFamilyKey,
+        catalog: &[CurrencyResponse],
+    ) -> Result<(), String> {
+        let Some(family) = find_family_selection(catalog, &family_key) else {
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    "That asset choice is no longer available. Search again.",
+                )
+                .await;
+        };
+
+        let family_catalog = find_family_currencies(catalog, &family);
+        if family_catalog.is_empty() {
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    "That asset choice is no longer available. Search again.",
+                )
+                .await;
+        }
+
+        if family_catalog.len() == 1 {
+            return self
+                .continue_after_asset_selected(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    CurrencySelection::from(family_catalog[0].clone()),
+                )
+                .await;
+        }
+
+        let options = family_catalog
+            .into_iter()
+            .map(CurrencySelection::from)
+            .collect::<Vec<_>>();
+
+        self.persist_network_choice_state(
+            wa_id,
+            phone_number_id,
+            locale,
+            draft,
+            inbound_message_id,
+            side,
+            family.clone(),
+        )
+        .await?;
+
+        self.reply_network_options(
+            wa_id,
+            phone_number_id,
+            session_id,
+            &side.network_prompt(&family),
+            &options,
+        )
+        .await
+    }
+
+    async fn persist_network_choice_state(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        side: AssetSide,
+        family: AssetFamilySelection,
+    ) -> Result<(), String> {
+        set_pending_family(&mut draft, side, Some(family));
+        WhatsAppCrud::new(self.state.db.clone())
+            .upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &side.network_state(),
+                locale,
+                &draft,
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    async fn continue_after_asset_selected(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        side: AssetSide,
+        selection: CurrencySelection,
+    ) -> Result<(), String> {
+        match side {
+            AssetSide::From => draft.from = Some(selection),
+            AssetSide::To => draft.to = Some(selection),
+        }
+        set_pending_family(&mut draft, side, None);
+
+        match side {
+            AssetSide::From => {
+                if draft.to.is_some() && draft.amount.is_some() {
+                    self.fetch_and_prompt_quotes(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        locale,
+                        draft,
+                        inbound_message_id,
+                    )
+                    .await
+                } else if draft.to.is_some() {
+                    WhatsAppCrud::new(self.state.db.clone())
+                        .upsert_session_state(
+                            wa_id,
+                            phone_number_id,
+                            &ConversationState::AwaitingAmount,
+                            locale,
+                            &draft,
+                            inbound_message_id,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                    self.reply(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        "How much do you want to send? Reply with only the amount, for example 100 or 0.25.",
+                    )
+                    .await
+                } else {
+                    WhatsAppCrud::new(self.state.db.clone())
+                        .upsert_session_state(
+                            wa_id,
+                            phone_number_id,
+                            &ConversationState::AwaitingToAssetSearch,
+                            locale,
+                            &draft,
+                            inbound_message_id,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                    self.reply(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        AssetSide::To.asset_prompt(),
+                    )
+                    .await
+                }
+            }
+            AssetSide::To => {
+                if draft.amount.is_some() {
+                    self.fetch_and_prompt_quotes(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        locale,
+                        draft,
+                        inbound_message_id,
+                    )
+                    .await
+                } else {
+                    WhatsAppCrud::new(self.state.db.clone())
+                        .upsert_session_state(
+                            wa_id,
+                            phone_number_id,
+                            &ConversationState::AwaitingAmount,
+                            locale,
+                            &draft,
+                            inbound_message_id,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                    self.reply(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        "How much do you want to send? Reply with only the amount, for example 100 or 0.25.",
+                    )
+                    .await
+                }
             }
         }
     }
@@ -850,14 +1648,14 @@ impl WhatsAppFlowService {
         let from = draft
             .from
             .as_ref()
-            .ok_or_else(|| "Source asset missing. Send `swap` to restart.".to_string())?;
+            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
         let to = draft
             .to
             .as_ref()
-            .ok_or_else(|| "Destination asset missing. Send `swap` to restart.".to_string())?;
+            .ok_or_else(|| "Destination asset missing. Type swap to restart.".to_string())?;
         let amount = draft
             .amount
-            .ok_or_else(|| "Amount missing. Send `swap` to restart.".to_string())?;
+            .ok_or_else(|| "Amount missing. Type swap to restart.".to_string())?;
 
         let swap_crud = self.swap_crud();
         let rates = match swap_crud
@@ -1029,7 +1827,7 @@ impl WhatsAppFlowService {
             ));
         }
 
-        lines.push("Reply `confirm` to create the swap, or `cancel` to abort.".to_string());
+        lines.push("Reply confirm to create the swap, or cancel to abort.".to_string());
 
         self.reply(wa_id, phone_number_id, session_id, &lines.join("\n"))
             .await
@@ -1096,7 +1894,7 @@ impl WhatsAppFlowService {
             .swap_crud()
             .get_swap_status_for_client(swap_id, &client_id)
             .await
-            .map_err(|error| format!("I could not find swap `{}`: {}", swap_id, error))?;
+            .map_err(|error| format!("I could not find swap \"{}\": {}", swap_id, error))?;
 
         let mut lines = vec![
             format!("Swap {}", status.swap_id),
@@ -1190,6 +1988,115 @@ impl WhatsAppFlowService {
         Ok(currencies)
     }
 
+    async fn search_currency_matches(
+        &self,
+        catalog: &[CurrencyResponse],
+        phrase: &str,
+        limit: usize,
+    ) -> Result<Vec<CurrencyResponse>, String> {
+        let network_aliases = build_network_aliases(catalog);
+        let (search_term, network_filter) = if let Some((asset_phrase, explicit_network)) =
+            split_explicit_network_phrase(phrase, &network_aliases)
+        {
+            (asset_phrase, Some(explicit_network))
+        } else {
+            (phrase.trim().to_string(), None)
+        };
+
+        let query = CurrenciesQuery {
+            network: network_filter.clone(),
+            search: Some(search_term.clone()),
+            page: Some(1),
+            limit: Some(limit),
+            ..Default::default()
+        };
+
+        let mut matches = match self
+            .swap_crud()
+            .get_currencies_optimized(query)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            CurrenciesResult::RawJson(json) => serde_json::from_str(&json)
+                .map_err(|error| format!("failed to parse currency search results: {}", error))?,
+            CurrenciesResult::Structured(currencies) => currencies,
+        };
+
+        if matches.is_empty() {
+            let scoped_catalog = match network_filter.as_deref() {
+                Some(network) => catalog
+                    .iter()
+                    .filter(|currency| currency.network.eq_ignore_ascii_case(network))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                None => catalog.to_vec(),
+            };
+
+            if let Some(selected) =
+                fuzzy_match_currency(&scoped_catalog, &normalize_phrase(&search_term), true)
+            {
+                matches.push(selected);
+            }
+        }
+
+        Ok(matches)
+    }
+
+    async fn resolve_asset_input(
+        &self,
+        catalog: &[CurrencyResponse],
+        input: &str,
+    ) -> Result<AssetInputPlan, String> {
+        let normalized_input = normalize_phrase(input);
+        if normalized_input.is_empty() {
+            return Ok(AssetInputPlan::Error(
+                "Type a coin ticker or name.".to_string(),
+            ));
+        }
+
+        let network_aliases = build_network_aliases(catalog);
+        if split_explicit_network_phrase(input, &network_aliases).is_some() {
+            return plan_asset_input(catalog, input);
+        }
+
+        let ranked_matches = self.search_currency_matches(catalog, input, 250).await?;
+        if ranked_matches.is_empty() {
+            return plan_asset_input(catalog, input);
+        }
+
+        let ranked_selections = ranked_matches
+            .into_iter()
+            .map(CurrencySelection::from)
+            .collect::<Vec<_>>();
+        if ranked_selections.len() == 1 {
+            return Ok(AssetInputPlan::Selected(ranked_selections[0].clone()));
+        }
+
+        let exact_matches = ranked_selections
+            .iter()
+            .filter(|selection| {
+                normalize_phrase(&selection.ticker) == normalized_input
+                    || normalize_phrase(&selection.name) == normalized_input
+            })
+            .count();
+
+        let prompt = if exact_matches > 1 {
+            format!("\"{}\" matches multiple options. Choose one.", input.trim())
+        } else if ranked_selections.len() > 10 {
+            format!(
+                "Top matches for \"{}\". Showing first 10. Choose one or narrow the search.",
+                input.trim()
+            )
+        } else {
+            format!("Top matches for \"{}\". Choose one.", input.trim())
+        };
+
+        Ok(AssetInputPlan::ChooseResults {
+            prompt,
+            options: ranked_selections.into_iter().take(10).collect(),
+        })
+    }
+
     fn swap_crud(&self) -> SwapCrud {
         SwapCrud::new(
             self.state.db.clone(),
@@ -1237,15 +2144,268 @@ impl WhatsAppFlowService {
         }
     }
 
+    async fn reply_image(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        image_link: &str,
+        caption: Option<&str>,
+    ) -> Result<(), String> {
+        let service = self
+            .state
+            .whatsapp_service
+            .as_ref()
+            .ok_or_else(|| "WhatsApp is not configured".to_string())?;
+
+        let body_for_audit = caption.unwrap_or(image_link);
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+        let outbound_id = crud
+            .record_outbound_message(session_id, wa_id, phone_number_id, "image", body_for_audit)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        match service.send_image_message(wa_id, image_link, caption).await {
+            Ok(response) => {
+                let provider_message_id =
+                    response.messages.first().map(|message| message.id.as_str());
+                crud.mark_outbound_sent(&outbound_id, provider_message_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = crud
+                    .mark_outbound_failed(&outbound_id, &error.to_string())
+                    .await;
+                Err(error.to_string())
+            }
+        }
+    }
+
+    async fn reply_asset_family_options(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        families: &[AssetFamilySelection],
+    ) -> Result<(), String> {
+        let rows = families
+            .iter()
+            .map(|family| InteractiveListOption {
+                id: build_family_selection_id(family),
+                title: truncate_whatsapp_text(&family.ticker.to_ascii_uppercase(), 24),
+                description: Some(truncate_whatsapp_text(&family.name, 72)),
+            })
+            .collect::<Vec<_>>();
+
+        self.reply_interactive_list(
+            wa_id,
+            phone_number_id,
+            session_id,
+            body,
+            "Choose asset",
+            rows,
+        )
+        .await
+    }
+
+    async fn reply_network_options(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        options: &[CurrencySelection],
+    ) -> Result<(), String> {
+        let rows = options
+            .iter()
+            .map(|option| InteractiveListOption {
+                id: build_asset_selection_id(option),
+                title: truncate_whatsapp_text(&option.network, 24),
+                description: Some(truncate_whatsapp_text(
+                    &format!("{} ({})", option.name, option.ticker.to_ascii_uppercase()),
+                    72,
+                )),
+            })
+            .collect::<Vec<_>>();
+
+        self.reply_interactive_list(wa_id, phone_number_id, session_id, body, "Networks", rows)
+            .await
+    }
+
+    async fn reply_currency_options(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        button_label: &str,
+        options: &[CurrencySelection],
+    ) -> Result<(), String> {
+        let rows = options
+            .iter()
+            .map(|option| InteractiveListOption {
+                id: build_asset_selection_id(option),
+                title: truncate_whatsapp_text(
+                    &format!(
+                        "{} • {}",
+                        option.ticker.to_ascii_uppercase(),
+                        option.network
+                    ),
+                    24,
+                ),
+                description: Some(truncate_whatsapp_text(&option.name, 72)),
+            })
+            .collect::<Vec<_>>();
+
+        self.reply_interactive_list(wa_id, phone_number_id, session_id, body, button_label, rows)
+            .await
+    }
+
+    async fn reply_interactive_list(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        button_label: &str,
+        rows: Vec<InteractiveListOption>,
+    ) -> Result<(), String> {
+        let service = self
+            .state
+            .whatsapp_service
+            .as_ref()
+            .ok_or_else(|| "WhatsApp is not configured".to_string())?;
+
+        if rows.is_empty() {
+            return Err("no WhatsApp list options available".to_string());
+        }
+
+        let sections = vec![InteractiveListSection {
+            title: None,
+            rows: rows.into_iter().take(10).collect::<Vec<_>>(),
+        }];
+
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+        let outbound_id = crud
+            .record_outbound_message(session_id, wa_id, phone_number_id, "interactive_list", body)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        match service
+            .send_interactive_list_message(wa_id, body, button_label, sections)
+            .await
+        {
+            Ok(response) => {
+                let provider_message_id =
+                    response.messages.first().map(|message| message.id.as_str());
+                crud.mark_outbound_sent(&outbound_id, provider_message_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = crud
+                    .mark_outbound_failed(&outbound_id, &error.to_string())
+                    .await;
+                Err(error.to_string())
+            }
+        }
+    }
+
+    async fn send_welcome_sequence(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        inbound_message_id: Option<&str>,
+    ) -> Result<(), String> {
+        WhatsAppCrud::new(self.state.db.clone())
+            .upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::Idle,
+                locale,
+                &SwapDraft::default(),
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let welcome_copy = Self::welcome_intro_message();
+        if let Some(image_link) = self.branding_logo_url() {
+            if let Err(error) = self
+                .reply_image(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    &image_link,
+                    Some(&welcome_copy),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "failed to send WhatsApp welcome image with caption, retrying as text only: {}",
+                    error
+                );
+                return self
+                    .reply(wa_id, phone_number_id, session_id, &welcome_copy)
+                    .await;
+            }
+
+            return Ok(());
+        }
+
+        self.reply(wa_id, phone_number_id, session_id, &welcome_copy)
+            .await
+    }
+
+    fn branding_logo_url(&self) -> Option<String> {
+        self.state
+            .whatsapp_service
+            .as_ref()
+            .and_then(|service| service.config().public_base_url.as_ref())
+            .map(|base| format!("{}/branding/assetar-logo.png", base.trim_end_matches('/')))
+    }
+
     fn help_message() -> String {
         [
-            "Commands:",
-            "- `swap 100 usdc on stellar to bitcoin`",
-            "- `swap` for a guided flow",
-            "- `status <swap_id>` to check a swap",
-            "- `cancel` to reset the current flow",
+            "Assetar menu:",
+            "- Type swap to start a guided swap",
+            "- Type status and then your swap ID to check a swap",
+            "- Type cancel to reset the current flow",
+            "- Type help to see this menu again",
         ]
         .join("\n")
+    }
+
+    fn welcome_intro_message() -> String {
+        [
+            "Hi 👋 Welcome to Assetar.",
+            "Assetar helps you compare live crypto swap routes and complete swaps easily in chat.",
+            "Type swap to begin.",
+            "Type status and then your swap ID to check progress later.",
+            "Type cancel any time to reset the current flow.",
+        ]
+        .join("\n\n")
+    }
+
+    fn examples_message() -> String {
+        [
+            "Swap examples:",
+            "- swap",
+            "- swap 100 usdc on stellar to bitcoin",
+            "- swap 0.5 btc to xmr",
+        ]
+        .join("\n")
+    }
+
+    fn status_help_message() -> String {
+        "Type status and then your swap ID to check a swap. Example: status 4fd0c0e1-1234-5678-9abc-1234567890ab."
+            .to_string()
     }
 }
 
@@ -1284,6 +2444,45 @@ fn to_quote_choice(index: usize, rate: &RateResponse, trade_id: &str) -> QuoteCh
     }
 }
 
+fn normalize_quick_action_command(input: &str) -> String {
+    let trimmed = input.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+
+    match lowered.as_str() {
+        "cta:start_swap" => "swap".to_string(),
+        "cta:examples" => "examples".to_string(),
+        "cta:status_help" => "status_help".to_string(),
+        "/swap" | "start swap" | "i want to swap crypto" | "i want to make a swap" => {
+            "swap".to_string()
+        }
+        "/help" | "/menu" => "help".to_string(),
+        "/examples" | "swap examples" | "show examples" => "examples".to_string(),
+        "/status" | "status" => "status_help".to_string(),
+        "/cancel" | "/restart" | "/reset" => "cancel".to_string(),
+        "track swap" | "check swap status" | "swap status" => "status_help".to_string(),
+        _ => {
+            if let Some(remainder) = trimmed.strip_prefix('/') {
+                remainder.trim().to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
+}
+
+fn is_greeting(input: &str) -> bool {
+    matches!(
+        input.trim(),
+        "hi" | "hello" | "hey" | "good morning" | "good afternoon" | "good evening"
+    )
+}
+
+#[derive(Debug, Clone)]
+struct AssetFamilyKey {
+    ticker: String,
+    name: String,
+}
+
 fn parse_status_command(input: &str) -> Option<String> {
     let normalized = input.trim();
     let lowercase = normalized.to_ascii_lowercase();
@@ -1309,6 +2508,181 @@ fn parse_amount(input: &str) -> Option<f64> {
     } else {
         None
     }
+}
+
+fn parse_asset_selection_id(
+    catalog: &[CurrencyResponse],
+    input: &str,
+) -> Option<CurrencySelection> {
+    let normalized = input.trim().to_ascii_lowercase();
+    let remainder = normalized.strip_prefix("asset:")?;
+    let (ticker, network_token) = remainder.split_once(':')?;
+
+    catalog
+        .iter()
+        .find(|currency| {
+            normalize_phrase(&currency.ticker) == normalize_phrase(ticker)
+                && normalize_phrase(&currency.network).replace(' ', "_") == network_token
+        })
+        .cloned()
+        .map(CurrencySelection::from)
+}
+
+fn build_asset_selection_id(option: &CurrencySelection) -> String {
+    format!(
+        "asset:{}:{}",
+        normalize_phrase(&option.ticker).replace(' ', "_"),
+        normalize_phrase(&option.network).replace(' ', "_")
+    )
+}
+
+fn parse_family_selection_id(input: &str) -> Option<AssetFamilyKey> {
+    let normalized = input.trim().to_ascii_lowercase();
+    let remainder = normalized.strip_prefix("family:")?;
+    let (ticker, name) = remainder.split_once(':')?;
+
+    Some(AssetFamilyKey {
+        ticker: ticker.to_string(),
+        name: name.to_string(),
+    })
+}
+
+fn build_family_selection_id(family: &AssetFamilySelection) -> String {
+    format!(
+        "family:{}:{}",
+        normalize_phrase(&family.ticker).replace(' ', "_"),
+        normalize_phrase(&family.name).replace(' ', "_")
+    )
+}
+
+fn pending_family(draft: &SwapDraft, side: AssetSide) -> Option<&AssetFamilySelection> {
+    match side {
+        AssetSide::From => draft.pending_from_family.as_ref(),
+        AssetSide::To => draft.pending_to_family.as_ref(),
+    }
+}
+
+fn set_pending_family(draft: &mut SwapDraft, side: AssetSide, value: Option<AssetFamilySelection>) {
+    match side {
+        AssetSide::From => draft.pending_from_family = value,
+        AssetSide::To => draft.pending_to_family = value,
+    }
+}
+
+fn should_restart_asset_search_from_network_choice(
+    family: &AssetFamilySelection,
+    input: &str,
+) -> bool {
+    let normalized_input = normalize_phrase(input);
+    if normalized_input.is_empty() {
+        return false;
+    }
+
+    normalized_input == normalize_phrase(&family.ticker)
+        || normalized_input == normalize_phrase(&family.name)
+}
+
+fn plan_asset_input(catalog: &[CurrencyResponse], phrase: &str) -> Result<AssetInputPlan, String> {
+    let resolution = resolve_currency_phrase(catalog, phrase)?;
+
+    if let Some(selected) = resolution.selected {
+        return Ok(AssetInputPlan::Selected(selected));
+    }
+
+    if !resolution.ambiguous_options.is_empty() {
+        let families = group_asset_families(&resolution.ambiguous_options);
+        if families.len() == 1 {
+            let family = families[0].clone();
+            let options = find_family_currencies(catalog, &family)
+                .into_iter()
+                .map(CurrencySelection::from)
+                .collect::<Vec<_>>();
+
+            if options.len() == 1 {
+                return Ok(AssetInputPlan::Selected(options[0].clone()));
+            }
+
+            return Ok(AssetInputPlan::ChooseNetwork { family, options });
+        }
+
+        return Ok(AssetInputPlan::ChooseAsset(families));
+    }
+
+    Ok(AssetInputPlan::Error(resolution.error.unwrap_or_else(
+        || "I could not match that asset. Try another search.".to_string(),
+    )))
+}
+
+fn group_asset_families(options: &[CurrencySelection]) -> Vec<AssetFamilySelection> {
+    let mut families = Vec::new();
+    let mut seen = HashSet::new();
+
+    for option in options {
+        let family = AssetFamilySelection {
+            ticker: option.ticker.clone(),
+            name: option.name.clone(),
+        };
+        let key = build_family_selection_id(&family);
+        if seen.insert(key) {
+            families.push(family);
+        }
+    }
+
+    families
+}
+
+fn find_family_selection(
+    catalog: &[CurrencyResponse],
+    family_key: &AssetFamilyKey,
+) -> Option<AssetFamilySelection> {
+    catalog.iter().find_map(|currency| {
+        let ticker = normalize_phrase(&currency.ticker).replace(' ', "_");
+        let name = normalize_phrase(&currency.name).replace(' ', "_");
+
+        (ticker == family_key.ticker && name == family_key.name).then(|| AssetFamilySelection {
+            ticker: currency.ticker.clone(),
+            name: currency.name.clone(),
+        })
+    })
+}
+
+fn find_family_currencies(
+    catalog: &[CurrencyResponse],
+    family: &AssetFamilySelection,
+) -> Vec<CurrencyResponse> {
+    let mut matches = catalog
+        .iter()
+        .filter(|currency| {
+            normalize_phrase(&currency.ticker) == normalize_phrase(&family.ticker)
+                && normalize_phrase(&currency.name) == normalize_phrase(&family.name)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    matches.sort_by(|left, right| {
+        network_sort_key(&left.network)
+            .cmp(&network_sort_key(&right.network))
+            .then_with(|| {
+                left.network
+                    .to_ascii_lowercase()
+                    .cmp(&right.network.to_ascii_lowercase())
+            })
+    });
+
+    matches
+}
+
+fn network_sort_key(network: &str) -> (u8, String) {
+    let normalized = normalize_phrase(network);
+    let priority = match normalized.as_str() {
+        "mainnet" => 0,
+        "erc20" => 1,
+        "trc20" => 2,
+        "bep20" => 3,
+        _ => 10,
+    };
+
+    (priority, normalized)
 }
 
 fn parse_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
@@ -1346,56 +2720,44 @@ fn resolve_currency_phrase(
     }
 
     let network_aliases = build_network_aliases(catalog);
+
+    if let Some((asset_phrase, explicit_network)) =
+        split_explicit_network_phrase(phrase, &network_aliases)
+    {
+        let filtered = catalog
+            .iter()
+            .filter(|currency| currency.network.eq_ignore_ascii_case(&explicit_network))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if !filtered.is_empty() {
+            return Ok(resolve_asset_phrase(
+                &filtered,
+                &asset_phrase,
+                phrase,
+                Some(&explicit_network),
+            ));
+        }
+    }
+
     let matched_networks = network_aliases
         .iter()
         .filter(|(alias, _)| normalized_phrase.contains(alias.as_str()))
         .map(|(_, canonical)| canonical.clone())
         .collect::<HashSet<_>>();
 
-    let mut scored = Vec::new();
-    for currency in catalog {
-        let ticker_alias = normalize_phrase(&currency.ticker);
-        let name_alias = normalize_phrase(&currency.name);
-        let network_alias = normalize_phrase(&currency.network);
-
-        let mut score = 0usize;
-        if normalized_phrase == ticker_alias {
-            score += 120;
-        } else if normalized_phrase
-            .split_whitespace()
-            .any(|token| token == ticker_alias)
-        {
-            score += 100;
-        } else if normalized_phrase.contains(&ticker_alias) {
-            score += 80;
-        }
-
-        if normalized_phrase == name_alias {
-            score += 120;
-        } else if normalized_phrase.contains(&name_alias) {
-            score += 90;
-        }
-
-        if matched_networks.contains(&currency.network)
-            || normalized_phrase.contains(&network_alias)
-        {
-            score += 40;
-        }
-
-        if score > 0 {
-            scored.push((score, currency.clone()));
-        }
-    }
+    let mut scored = score_currency_matches(catalog, &normalized_phrase, Some(&matched_networks));
 
     if scored.is_empty() {
-        return Ok(AssetResolution {
-            selected: None,
-            ambiguous_options: Vec::new(),
-            error: Some(format!(
-                "I could not match `{}` to a supported asset. Try something like `usdc on stellar`, `btc mainnet`, or `xmr`.",
-                phrase
-            )),
-        });
+        if let Some(selected) = fuzzy_match_currency(catalog, &normalized_phrase, false) {
+            return Ok(AssetResolution {
+                selected: Some(CurrencySelection::from(selected)),
+                ambiguous_options: Vec::new(),
+                error: None,
+            });
+        }
+
+        return Ok(unmatched_asset_resolution(phrase));
     }
 
     scored.sort_by(|left, right| {
@@ -1423,39 +2785,12 @@ fn resolve_currency_phrase(
         .map(|(_, currency)| currency)
         .collect::<Vec<_>>();
 
-    if top.len() == 1 {
-        return Ok(AssetResolution {
-            selected: top.into_iter().next().map(CurrencySelection::from),
-            ambiguous_options: Vec::new(),
-            error: None,
-        });
-    }
-
-    let unique_networks = top
-        .iter()
-        .map(|currency| currency.network.to_lowercase())
-        .collect::<HashSet<_>>();
-
-    if unique_networks.len() == 1 {
-        return Ok(AssetResolution {
-            selected: top.into_iter().next().map(CurrencySelection::from),
-            ambiguous_options: Vec::new(),
-            error: None,
-        });
-    }
-
-    Ok(AssetResolution {
-        selected: None,
-        ambiguous_options: top
-            .into_iter()
-            .take(6)
-            .map(CurrencySelection::from)
-            .collect::<Vec<_>>(),
-        error: Some(format!(
-            "`{}` matches multiple networks. Specify the network too.",
-            phrase
-        )),
-    })
+    Ok(resolve_ranked_matches(
+        top,
+        &normalized_phrase,
+        phrase,
+        None,
+    ))
 }
 
 fn build_network_aliases(catalog: &[CurrencyResponse]) -> HashMap<String, String> {
@@ -1472,18 +2807,25 @@ fn build_network_aliases(catalog: &[CurrencyResponse]) -> HashMap<String, String
         ("solana", "SOL"),
         ("sol", "SOL"),
         ("erc20", "ERC20"),
+        ("eth", "ERC20"),
         ("ethereum", "ERC20"),
         ("eth mainnet", "ERC20"),
         ("tron", "TRC20"),
         ("trc20", "TRC20"),
         ("bep20", "BEP20"),
         ("bsc", "BEP20"),
+        ("bnb chain", "BEP20"),
+        ("bnb smart chain", "BEP20"),
         ("binance smart chain", "BEP20"),
         ("avax c", "AVAXC"),
         ("avaxc", "AVAXC"),
         ("avalanche", "AVAXC"),
+        ("avax", "AVAXC"),
+        ("arb", "Arbitrum"),
         ("polygon", "Polygon"),
+        ("matic", "Polygon"),
         ("arbitrum", "Arbitrum"),
+        ("op", "Optimism"),
         ("optimism", "Optimism"),
         ("base", "Base"),
         ("mainnet", "Mainnet"),
@@ -1498,22 +2840,380 @@ fn build_network_aliases(catalog: &[CurrencyResponse]) -> HashMap<String, String
     aliases
 }
 
-fn format_ambiguity_message(side: &str, options: &[CurrencySelection], suffix: &str) -> String {
-    if options.is_empty() {
-        return format!("I need a clearer {} asset. {}", side, suffix);
+fn split_explicit_network_phrase(
+    phrase: &str,
+    network_aliases: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    static ASSET_ON_NETWORK_RE: OnceLock<Regex> = OnceLock::new();
+    let regex = ASSET_ON_NETWORK_RE.get_or_init(|| {
+        Regex::new(r"(?i)^(?P<asset>.+?)\s+on\s+(?P<network>.+)$")
+            .expect("valid asset-on-network regex")
+    });
+
+    if let Some(captures) = regex.captures(phrase.trim()) {
+        let asset = captures.name("asset")?.as_str().trim();
+        let network = captures.name("network")?.as_str().trim();
+        if let Some(canonical) = resolve_network_alias(network_aliases, network) {
+            return Some((asset.to_string(), canonical));
+        }
     }
 
-    let mut lines = vec![format!("I found multiple {} options:", side)];
-    for option in options.iter().take(6) {
-        lines.push(format!(
-            "- {} ({}) on {}",
-            option.name,
-            option.ticker.to_uppercase(),
-            option.network
-        ));
+    let normalized_phrase = normalize_phrase(phrase);
+    if normalized_phrase.split_whitespace().count() < 2 {
+        return None;
     }
-    lines.push(suffix.to_string());
-    lines.join("\n")
+
+    let mut aliases = network_aliases.keys().cloned().collect::<Vec<_>>();
+    aliases.sort_by(|left, right| {
+        right
+            .split_whitespace()
+            .count()
+            .cmp(&left.split_whitespace().count())
+            .then_with(|| right.len().cmp(&left.len()))
+    });
+
+    for alias in aliases {
+        let suffix = format!(" {}", alias);
+        if let Some(asset_part) = normalized_phrase.strip_suffix(&suffix) {
+            let trimmed_asset = asset_part.trim();
+            if trimmed_asset.is_empty() {
+                continue;
+            }
+
+            if let Some(canonical) = network_aliases.get(&alias) {
+                return Some((trimmed_asset.to_string(), canonical.clone()));
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_network_alias(
+    network_aliases: &HashMap<String, String>,
+    network_phrase: &str,
+) -> Option<String> {
+    let normalized = normalize_phrase(network_phrase);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Some(canonical) = network_aliases.get(&normalized) {
+        return Some(canonical.clone());
+    }
+
+    let mut fuzzy_matches = network_aliases
+        .iter()
+        .filter_map(|(alias, canonical)| {
+            let distance = levenshtein_distance(&normalized, alias);
+            let threshold = fuzzy_threshold(alias.len());
+            (distance <= threshold).then(|| (distance, alias.len(), canonical.clone()))
+        })
+        .collect::<Vec<_>>();
+
+    fuzzy_matches.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let best = fuzzy_matches.first()?;
+    if fuzzy_matches
+        .get(1)
+        .map(|candidate| candidate.0 == best.0 && candidate.2 != best.2)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    Some(best.2.clone())
+}
+
+fn resolve_asset_phrase(
+    catalog: &[CurrencyResponse],
+    asset_phrase: &str,
+    original_phrase: &str,
+    explicit_network: Option<&str>,
+) -> AssetResolution {
+    let normalized_asset = normalize_phrase(asset_phrase);
+    if normalized_asset.is_empty() {
+        return unmatched_asset_resolution(original_phrase);
+    }
+
+    let scored = score_currency_matches(catalog, &normalized_asset, None);
+    if scored.is_empty() {
+        if let Some(selected) = fuzzy_match_currency(catalog, &normalized_asset, true) {
+            return AssetResolution {
+                selected: Some(CurrencySelection::from(selected)),
+                ambiguous_options: Vec::new(),
+                error: None,
+            };
+        }
+
+        let message = match explicit_network {
+            Some(network) => format!(
+                "I could not find \"{}\" on {}. Try another asset or network.",
+                asset_phrase, network
+            ),
+            None => format!(
+                "I could not match \"{}\" to a supported asset. Try something like usdc on stellar, btc mainnet, xmr, or send a broader search term like usd or bit.",
+                original_phrase
+            ),
+        };
+
+        return AssetResolution {
+            selected: None,
+            ambiguous_options: Vec::new(),
+            error: Some(message),
+        };
+    }
+
+    resolve_ranked_matches(
+        scored.into_iter().map(|(_, currency)| currency).collect(),
+        &normalized_asset,
+        original_phrase,
+        explicit_network,
+    )
+}
+
+fn score_currency_matches(
+    catalog: &[CurrencyResponse],
+    normalized_phrase: &str,
+    matched_networks: Option<&HashSet<String>>,
+) -> Vec<(usize, CurrencyResponse)> {
+    let mut scored = Vec::new();
+
+    for currency in catalog {
+        let ticker_alias = normalize_phrase(&currency.ticker);
+        let name_alias = normalize_phrase(&currency.name);
+        let network_alias = normalize_phrase(&currency.network);
+
+        let mut score = 0usize;
+        if normalized_phrase == ticker_alias {
+            score += 220;
+        } else if normalized_phrase
+            .split_whitespace()
+            .any(|token| token == ticker_alias)
+        {
+            score += 170;
+        } else if normalized_phrase.contains(&ticker_alias) {
+            score += 120;
+        }
+
+        if normalized_phrase == name_alias {
+            score += 210;
+        } else if normalized_phrase.contains(&name_alias) {
+            score += 140;
+        }
+
+        if let Some(matched_networks) = matched_networks {
+            if matched_networks.contains(&currency.network)
+                || normalized_phrase.contains(&network_alias)
+            {
+                score += 40;
+            }
+        }
+
+        if score > 0 {
+            scored.push((score, currency.clone()));
+        }
+    }
+
+    scored
+}
+
+fn resolve_ranked_matches(
+    ranked: Vec<CurrencyResponse>,
+    normalized_phrase: &str,
+    original_phrase: &str,
+    explicit_network: Option<&str>,
+) -> AssetResolution {
+    if ranked.is_empty() {
+        return unmatched_asset_resolution(original_phrase);
+    }
+
+    if ranked.len() == 1 {
+        return AssetResolution {
+            selected: ranked.into_iter().next().map(CurrencySelection::from),
+            ambiguous_options: Vec::new(),
+            error: None,
+        };
+    }
+
+    let mut rescored = score_currency_matches(&ranked, normalized_phrase, None);
+    rescored.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| normalize_phrase(&left.1.ticker).cmp(&normalize_phrase(&right.1.ticker)))
+            .then_with(|| {
+                normalize_phrase(&left.1.network).cmp(&normalize_phrase(&right.1.network))
+            })
+    });
+
+    let top_score = rescored.first().map(|entry| entry.0).unwrap_or_default();
+    let top = rescored
+        .into_iter()
+        .filter(|entry| entry.0 == top_score)
+        .map(|(_, currency)| currency)
+        .collect::<Vec<_>>();
+
+    if top.len() == 1 {
+        return AssetResolution {
+            selected: top.into_iter().next().map(CurrencySelection::from),
+            ambiguous_options: Vec::new(),
+            error: None,
+        };
+    }
+
+    let unique_networks = top
+        .iter()
+        .map(|currency| normalize_phrase(&currency.network))
+        .collect::<HashSet<_>>();
+
+    if unique_networks.len() == 1 {
+        return AssetResolution {
+            selected: top.into_iter().next().map(CurrencySelection::from),
+            ambiguous_options: Vec::new(),
+            error: None,
+        };
+    }
+
+    let exact_asset_match = top.iter().all(|currency| {
+        normalize_phrase(&currency.ticker) == normalized_phrase
+            || normalize_phrase(&currency.name) == normalized_phrase
+    });
+
+    if explicit_network.is_none() && exact_asset_match {
+        if let Some(mainnet_currency) = top
+            .iter()
+            .find(|currency| currency.network.eq_ignore_ascii_case("Mainnet"))
+        {
+            return AssetResolution {
+                selected: Some(CurrencySelection::from(mainnet_currency.clone())),
+                ambiguous_options: Vec::new(),
+                error: None,
+            };
+        }
+    }
+
+    let message = match explicit_network {
+        Some(network) => format!(
+            "I found multiple assets matching \"{}\" on {}. Reply with the exact ticker or full asset name.",
+            original_phrase, network
+        ),
+        None => format!("\"{}\" matches multiple networks. Specify the network too.", original_phrase),
+    };
+
+    AssetResolution {
+        selected: None,
+        ambiguous_options: top
+            .into_iter()
+            .take(100)
+            .map(CurrencySelection::from)
+            .collect::<Vec<_>>(),
+        error: Some(message),
+    }
+}
+
+fn fuzzy_match_currency(
+    catalog: &[CurrencyResponse],
+    normalized_phrase: &str,
+    restricted_scope: bool,
+) -> Option<CurrencyResponse> {
+    let mut matches = catalog
+        .iter()
+        .filter_map(|currency| {
+            let ticker_alias = normalize_phrase(&currency.ticker);
+            let name_alias = normalize_phrase(&currency.name);
+            let ticker_distance = levenshtein_distance(normalized_phrase, &ticker_alias);
+            let name_distance = levenshtein_distance(normalized_phrase, &name_alias);
+            let (distance, prefers_ticker) = if ticker_distance <= name_distance {
+                (ticker_distance, true)
+            } else {
+                (name_distance, false)
+            };
+
+            let threshold = if prefers_ticker {
+                fuzzy_threshold(ticker_alias.len())
+            } else {
+                fuzzy_threshold(name_alias.len())
+            };
+
+            (distance <= threshold).then(|| {
+                (
+                    distance,
+                    if prefers_ticker { 0usize } else { 1usize },
+                    currency.clone(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    matches.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let best = matches.first()?;
+    if !restricted_scope && best.0 > 1 {
+        return None;
+    }
+
+    if matches
+        .get(1)
+        .map(|candidate| {
+            candidate.0 == best.0
+                && normalize_phrase(&candidate.2.ticker) != normalize_phrase(&best.2.ticker)
+        })
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    Some(best.2.clone())
+}
+
+fn unmatched_asset_resolution(phrase: &str) -> AssetResolution {
+    AssetResolution {
+        selected: None,
+        ambiguous_options: Vec::new(),
+        error: Some(format!(
+            "No match for \"{}\". Try btc, xmr, usdc, or add a network like usdc on stellar.",
+            phrase
+        )),
+    }
+}
+
+fn fuzzy_threshold(length: usize) -> usize {
+    match length {
+        0..=4 => 1,
+        5..=8 => 2,
+        _ => 3,
+    }
+}
+
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    if left.is_empty() {
+        return right.chars().count();
+    }
+    if right.is_empty() {
+        return left.chars().count();
+    }
+
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+
+    for (left_index, left_char) in left_chars.iter().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            let substitution_cost = usize::from(left_char != right_char);
+            let insertion = current[right_index] + 1;
+            let deletion = previous[right_index + 1] + 1;
+            let substitution = previous[right_index] + substitution_cost;
+            current.push(insertion.min(deletion).min(substitution));
+        }
+        previous = current;
+    }
+
+    previous[right_chars.len()]
 }
 
 fn normalize_phrase(value: &str) -> String {
@@ -1539,4 +3239,125 @@ fn trim_f64(value: f64) -> String {
         .trim_end_matches('0')
         .trim_end_matches('.')
         .to_string()
+}
+
+fn truncate_whatsapp_text(value: &str, max_chars: usize) -> String {
+    let characters = value.chars().collect::<Vec<_>>();
+    if characters.len() <= max_chars {
+        return value.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    let mut shortened = characters.into_iter().take(keep).collect::<String>();
+    shortened.push('…');
+    shortened
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_asset_selection_id, resolve_currency_phrase,
+        should_restart_asset_search_from_network_choice, AssetFamilySelection,
+    };
+    use crate::modules::swap::schema::CurrencyResponse;
+
+    fn currency(name: &str, ticker: &str, network: &str) -> CurrencyResponse {
+        CurrencyResponse {
+            name: name.to_string(),
+            ticker: ticker.to_string(),
+            network: network.to_string(),
+            memo: false,
+            extra_id_name: None,
+            image: String::new(),
+            minimum: 0.0,
+            maximum: 0.0,
+        }
+    }
+
+    fn sample_catalog() -> Vec<CurrencyResponse> {
+        vec![
+            currency("Ethereum", "eth", "Mainnet"),
+            currency("USD Coin", "usdc", "ERC20"),
+            currency("USD Coin", "usdc", "Arbitrum"),
+            currency("Bitcoin", "btc", "Mainnet"),
+        ]
+    }
+
+    #[test]
+    fn resolves_usdc_on_eth_to_erc20_network() {
+        let resolution =
+            resolve_currency_phrase(&sample_catalog(), "usdc on eth").expect("resolution");
+        let selected = resolution.selected.expect("selected asset");
+
+        assert_eq!(selected.ticker, "usdc");
+        assert_eq!(selected.network, "ERC20");
+    }
+
+    #[test]
+    fn resolves_usdc_with_trailing_network_alias() {
+        let resolution =
+            resolve_currency_phrase(&sample_catalog(), "usdc eth").expect("resolution");
+        let selected = resolution.selected.expect("selected asset");
+
+        assert_eq!(selected.ticker, "usdc");
+        assert_eq!(selected.network, "ERC20");
+    }
+
+    #[test]
+    fn keeps_usdc_ambiguous_without_network() {
+        let resolution = resolve_currency_phrase(&sample_catalog(), "usdc").expect("resolution");
+
+        assert!(resolution.selected.is_none());
+        assert_eq!(resolution.ambiguous_options.len(), 2);
+        assert!(resolution
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("multiple networks"));
+    }
+
+    #[test]
+    fn plain_eth_still_resolves_to_native_eth() {
+        let resolution = resolve_currency_phrase(&sample_catalog(), "eth").expect("resolution");
+        let selected = resolution.selected.expect("selected asset");
+
+        assert_eq!(selected.ticker, "eth");
+        assert_eq!(selected.network, "Mainnet");
+    }
+
+    #[test]
+    fn resolves_bitcoin_name_to_mainnet_btc() {
+        let resolution = resolve_currency_phrase(&sample_catalog(), "bitcoin").expect("resolution");
+        let selected = resolution.selected.expect("selected asset");
+
+        assert_eq!(selected.ticker, "btc");
+        assert_eq!(selected.network, "Mainnet");
+    }
+
+    #[test]
+    fn parses_structured_asset_selection_id() {
+        let selected = parse_asset_selection_id(&sample_catalog(), "asset:usdc:erc20")
+            .expect("selected asset");
+
+        assert_eq!(selected.ticker, "usdc");
+        assert_eq!(selected.network, "ERC20");
+    }
+
+    #[test]
+    fn network_choice_restarts_global_search_when_user_retypes_family_ticker() {
+        let family = AssetFamilySelection {
+            ticker: "xlm".to_string(),
+            name: "Stellar".to_string(),
+        };
+
+        assert!(should_restart_asset_search_from_network_choice(
+            &family, "xlm"
+        ));
+        assert!(should_restart_asset_search_from_network_choice(
+            &family, "stellar"
+        ));
+        assert!(!should_restart_asset_search_from_network_choice(
+            &family, "mainnet"
+        ));
+    }
 }

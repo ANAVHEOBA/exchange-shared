@@ -11,5 +11,6 @@ use crate::AppState;
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/login", post(controller::login))
+        .route("/overview", get(controller::overview))
         .route("/swaps/export", get(controller::export_swaps_csv))
 }

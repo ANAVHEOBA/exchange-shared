@@ -63,6 +63,7 @@ impl From<crate::modules::swap::model::Provider> for ProviderResponse {
 pub struct CurrenciesQuery {
     pub ticker: Option<String>,  // Filter by ticker (e.g., "btc")
     pub network: Option<String>, // Filter by network (e.g., "Mainnet")
+    pub search: Option<String>,  // Search by ticker, name, or network
     pub memo: Option<bool>,      // Filter by memo required
     pub page: Option<usize>,     // Pagination: Page number (1-based)
     pub limit: Option<usize>,    // Pagination: Items per page
