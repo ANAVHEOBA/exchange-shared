@@ -1248,21 +1248,8 @@ impl SwapCrud {
             match f().await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    let error_msg = e.to_string();
-
-                    // Check if it's a rate limit error
-                    let is_rate_limit = error_msg.contains("Rate limit")
-                        || error_msg.contains("rate limit")
-                        || error_msg.contains("429")
-                        || error_msg.contains("Too Many Requests");
-
-                    // Check if it's a transient network error
-                    let is_transient_error = error_msg.contains("error sending request")
-                        || error_msg.contains("connection")
-                        || error_msg.contains("timeout")
-                        || error_msg.contains("502")
-                        || error_msg.contains("503")
-                        || error_msg.contains("Bad Gateway");
+                    let is_rate_limit = e.is_rate_limited();
+                    let is_transient_error = e.is_retryable() && !is_rate_limit;
 
                     // Retry on either rate limit or transient errors
                     if (is_rate_limit || is_transient_error) && retries < max_retries {

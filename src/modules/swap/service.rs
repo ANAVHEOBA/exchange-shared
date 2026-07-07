@@ -6,6 +6,7 @@ use std::time::Duration;
 use super::crud::SwapError;
 use super::repository::{NewSwapRecord, SwapRepository, SwapStatusRecord};
 use super::schema::{CreateSwapRequest, CreateSwapResponse, SwapStatus, SwapStatusResponse};
+use crate::modules::monitor::crud::MonitorCrud;
 use crate::modules::wallet::crud::WalletCrud;
 use crate::services::gas::GasEstimator;
 use crate::services::payout_policy::PayoutPolicyConfig;
@@ -330,6 +331,43 @@ impl SwapService {
             .await
         {
             Ok(response) => response,
+            Err(error) if trocador_webhook.is_some() && Self::is_invalid_webhook_error(&error) => {
+                tracing::warn!(
+                    "Trocador could not reach the configured webhook. Creating the trade without a webhook and relying on status polling."
+                );
+                self.call_trocador_with_retry(|| {
+                    let gateway = &trocador_gateway;
+                    let payout_address = trocador_payout_address.as_str();
+                    let address_memo = trocador_address_memo.as_deref();
+                    let refund = refund_address.as_deref();
+                    let refund_memo = trocador_refund_memo.as_deref();
+                    let swap_markup = swap_markup.clone();
+                    async move {
+                        gateway
+                            .create_trade(
+                                request.trade_id.as_deref(),
+                                &request.from,
+                                &request.network_from,
+                                &request.to,
+                                &request.network_to,
+                                request.amount,
+                                payout_address,
+                                address_memo,
+                                refund,
+                                refund_memo,
+                                &request.provider,
+                                fixed,
+                                request.payment,
+                                request.min_kycrating.as_deref(),
+                                None,
+                                None,
+                                swap_markup.as_deref(),
+                            )
+                            .await
+                    }
+                })
+                .await?
+            }
             Err(error)
                 if swap_markup.is_some() && Self::should_retry_create_without_markup(&error) =>
             {
@@ -472,6 +510,18 @@ impl SwapService {
                 expires_at,
             })
             .await?;
+
+        if let Err(error) = MonitorCrud::new(self.pool.clone())
+            .schedule_swap(&swap_id, status.as_str())
+            .await
+        {
+            // The provider trade already exists, so never hide its deposit details from the user.
+            tracing::error!(
+                "Failed to schedule status polling for created swap {}: {}",
+                swap_id,
+                error
+            );
+        }
 
         if let Some((internal_payout_address, address_index, coin_type)) = address_tracking {
             let wallet_crud = WalletCrud::new(self.pool.clone());
@@ -1028,6 +1078,18 @@ impl SwapService {
     }
 
     fn resolve_trocador_webhook_config() -> Option<(String, String)> {
+        let webhooks_enabled = std::env::var("TROCADOR_WEBHOOK_ENABLED")
+            .ok()
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        if !webhooks_enabled {
+            tracing::info!(
+                "Trocador webhooks disabled by TROCADOR_WEBHOOK_ENABLED; using status polling"
+            );
+            return None;
+        }
+
         let base_url = std::env::var("PUBLIC_BACKEND_URL")
             .ok()
             .or_else(|| std::env::var("RENDER_EXTERNAL_URL").ok())
@@ -1243,17 +1305,8 @@ impl SwapService {
             match f().await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    let error_msg = e.to_string();
-                    let is_rate_limit = error_msg.contains("Rate limit")
-                        || error_msg.contains("rate limit")
-                        || error_msg.contains("429")
-                        || error_msg.contains("Too Many Requests");
-                    let is_transient_error = error_msg.contains("error sending request")
-                        || error_msg.contains("connection")
-                        || error_msg.contains("timeout")
-                        || error_msg.contains("502")
-                        || error_msg.contains("503")
-                        || error_msg.contains("Bad Gateway");
+                    let is_rate_limit = e.is_rate_limited();
+                    let is_transient_error = e.is_retryable() && !is_rate_limit;
 
                     if (is_rate_limit || is_transient_error) && retries < max_retries {
                         retries += 1;
@@ -1290,6 +1343,14 @@ impl SwapService {
             }
             _ => false,
         }
+    }
+
+    fn is_invalid_webhook_error(error: &SwapError) -> bool {
+        matches!(
+            error,
+            SwapError::ExternalApiError(message)
+                if message.to_ascii_lowercase().contains("invalid webhook")
+        )
     }
 }
 

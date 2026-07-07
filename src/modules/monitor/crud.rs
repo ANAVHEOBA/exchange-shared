@@ -20,6 +20,26 @@ impl MonitorCrud {
         .await
     }
 
+    pub async fn schedule_swap(&self, swap_id: &str, status: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO polling_states
+                (swap_id, last_polled_at, next_poll_at, poll_count, last_status)
+            VALUES (?, NULL, NOW(), 0, ?)
+            ON DUPLICATE KEY UPDATE
+                next_poll_at = LEAST(next_poll_at, NOW()),
+                last_status = VALUES(last_status),
+                updated_at = NOW()
+            "#,
+        )
+        .bind(swap_id)
+        .bind(status)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Update the polling state after a run
     pub async fn update_poll_result(
         &self,

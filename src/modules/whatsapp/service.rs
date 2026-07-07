@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -12,6 +13,8 @@ use crate::modules::swap::schema::{
     ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
+use crate::services::pricing::CommissionService;
+use crate::services::trocador::TrocadorGateway;
 use crate::services::whatsapp::{
     derive_whatsapp_client_id, InteractiveListOption, InteractiveListSection,
 };
@@ -27,6 +30,7 @@ enum ConversationState {
     AwaitingToAssetSearch,
     AwaitingToAssetChoice,
     AwaitingToNetworkChoice,
+    AwaitingAmountMode,
     AwaitingAmount,
     AwaitingQuoteSelection,
     AwaitingRecipientAddress,
@@ -51,6 +55,7 @@ impl ConversationState {
             "awaiting_to_asset" | "awaiting_to_asset_search" => Self::AwaitingToAssetSearch,
             "awaiting_to_asset_choice" => Self::AwaitingToAssetChoice,
             "awaiting_to_network_choice" => Self::AwaitingToNetworkChoice,
+            "awaiting_amount_mode" => Self::AwaitingAmountMode,
             "awaiting_amount" => Self::AwaitingAmount,
             "awaiting_quote_selection" => Self::AwaitingQuoteSelection,
             "awaiting_recipient_address" => Self::AwaitingRecipientAddress,
@@ -102,7 +107,18 @@ struct QuoteChoice {
     min_amount: f64,
     max_amount: f64,
     kyc_required: bool,
+    #[serde(default)]
+    privacy_rating: Option<String>,
+    #[serde(default)]
+    eta_minutes: Option<u32>,
     trade_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AmountInputMode {
+    SourceAsset,
+    Usd,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -112,6 +128,8 @@ struct SwapDraft {
     pending_from_family: Option<AssetFamilySelection>,
     pending_to_family: Option<AssetFamilySelection>,
     amount: Option<f64>,
+    amount_input_mode: Option<AmountInputMode>,
+    requested_amount_usd: Option<f64>,
     quotes: Vec<QuoteChoice>,
     selected_quote: Option<QuoteChoice>,
     recipient_address: Option<String>,
@@ -283,6 +301,9 @@ impl WhatsAppFlowService {
         text: &str,
     ) -> Result<(), String> {
         let raw_trimmed = text.trim();
+
+        self.acknowledge_inbound_message(inbound_message_id).await;
+
         if raw_trimmed.is_empty() {
             return self
                 .reply(
@@ -697,16 +718,65 @@ impl WhatsAppFlowService {
                 )
                 .await
             }
+            ConversationState::AwaitingAmountMode => {
+                self.handle_amount_mode_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                )
+                .await
+            }
             ConversationState::AwaitingAmount => {
-                let Some(amount) = parse_amount(trimmed) else {
-                    return self
-                        .reply(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            "Amount not recognized. Reply with a number like 100 or 0.25.",
-                        )
-                        .await;
+                let from = draft
+                    .from
+                    .as_ref()
+                    .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
+                let amount_mode = draft
+                    .amount_input_mode
+                    .clone()
+                    .unwrap_or(AmountInputMode::SourceAsset);
+
+                let amount = match amount_mode {
+                    AmountInputMode::SourceAsset => {
+                        let Some(amount) = parse_amount(trimmed) else {
+                            return self
+                                .reply(
+                                    wa_id,
+                                    phone_number_id,
+                                    session_id.as_deref(),
+                                    &format!(
+                                        "Amount not recognized. Reply with the {} amount, for example 0.25.",
+                                        from.ticker.to_uppercase()
+                                    ),
+                                )
+                                .await;
+                        };
+                        draft.requested_amount_usd = None;
+                        amount
+                    }
+                    AmountInputMode::Usd => {
+                        let Some(usd_amount) = parse_usd_amount(trimmed) else {
+                            return self
+                                .reply(
+                                    wa_id,
+                                    phone_number_id,
+                                    session_id.as_deref(),
+                                    "Dollar amount not recognized. Reply with a USD value like 1000 or $1000.",
+                                )
+                                .await;
+                        };
+
+                        let amount = self
+                            .resolve_source_amount_from_usd(from, usd_amount)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        draft.requested_amount_usd = Some(usd_amount);
+                        amount
+                    }
                 };
                 draft.amount = Some(amount);
 
@@ -729,13 +799,15 @@ impl WhatsAppFlowService {
                 }
             }
             ConversationState::AwaitingQuoteSelection => {
-                let Some(choice_index) = parse_quote_selection(trimmed) else {
+                let Some(choice_index) =
+                    parse_quote_selection_id(trimmed).or_else(|| parse_quote_selection(trimmed))
+                else {
                     return self
                         .reply(
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Reply with the quote number you want, for example 1.",
+                            "Choose an exchange from the list, or reply with the route number you want, for example 1.",
                         )
                         .await;
                 };
@@ -1058,6 +1130,13 @@ impl WhatsAppFlowService {
                         response.to.to_uppercase()
                     ),
                     format!("Provider: {}", response.provider),
+                    draft
+                        .selected_quote
+                        .as_ref()
+                        .and_then(|quote| format_eta_line(quote.eta_minutes))
+                        .unwrap_or_else(|| "ETA: unavailable".to_string()),
+                    format_expiry_line("Deposit window left", response.expires_at)
+                        .unwrap_or_else(|| "Deposit window left: unavailable".to_string()),
                     "To check progress later, type status and then paste the swap ID.".to_string(),
                 ]
                 .join("\n");
@@ -1559,23 +1638,13 @@ impl WhatsAppFlowService {
                     )
                     .await
                 } else if draft.to.is_some() {
-                    WhatsAppCrud::new(self.state.db.clone())
-                        .upsert_session_state(
-                            wa_id,
-                            phone_number_id,
-                            &ConversationState::AwaitingAmount,
-                            locale,
-                            &draft,
-                            inbound_message_id,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-
-                    self.reply(
+                    self.prompt_amount_mode(
                         wa_id,
                         phone_number_id,
                         session_id,
-                        "How much do you want to send? Reply with only the amount, for example 100 or 0.25.",
+                        locale,
+                        draft,
+                        inbound_message_id,
                     )
                     .await
                 } else {
@@ -1612,28 +1681,180 @@ impl WhatsAppFlowService {
                     )
                     .await
                 } else {
-                    WhatsAppCrud::new(self.state.db.clone())
-                        .upsert_session_state(
-                            wa_id,
-                            phone_number_id,
-                            &ConversationState::AwaitingAmount,
-                            locale,
-                            &draft,
-                            inbound_message_id,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-
-                    self.reply(
+                    self.prompt_amount_mode(
                         wa_id,
                         phone_number_id,
                         session_id,
-                        "How much do you want to send? Reply with only the amount, for example 100 or 0.25.",
+                        locale,
+                        draft,
+                        inbound_message_id,
                     )
                     .await
                 }
             }
         }
+    }
+
+    async fn handle_amount_mode_input(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        trimmed: &str,
+    ) -> Result<(), String> {
+        let from = draft
+            .from
+            .as_ref()
+            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
+
+        let Some(mode) =
+            parse_amount_mode_selection_id(trimmed).or_else(|| parse_amount_mode(trimmed, from))
+        else {
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    &format!(
+                        "Choose how you want to enter the amount: source coin ({}) or USD.",
+                        from.ticker.to_uppercase()
+                    ),
+                )
+                .await;
+        };
+
+        draft.amount_input_mode = Some(mode.clone());
+        draft.requested_amount_usd = None;
+        WhatsAppCrud::new(self.state.db.clone())
+            .upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::AwaitingAmount,
+                locale,
+                &draft,
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let prompt = match mode {
+            AmountInputMode::SourceAsset => format!(
+                "How much {} on {} do you want to send? Reply with the amount only, for example 0.25.",
+                from.ticker.to_uppercase(),
+                from.network
+            ),
+            AmountInputMode::Usd => {
+                "How many dollars do you want to send? Reply with a USD value like 1000 or $1000."
+                    .to_string()
+            }
+        };
+
+        self.reply(wa_id, phone_number_id, session_id, &prompt)
+            .await
+    }
+
+    async fn prompt_amount_mode(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+    ) -> Result<(), String> {
+        let from = draft
+            .from
+            .as_ref()
+            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
+
+        draft.amount = None;
+        draft.amount_input_mode = None;
+        draft.requested_amount_usd = None;
+
+        WhatsAppCrud::new(self.state.db.clone())
+            .upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::AwaitingAmountMode,
+                locale,
+                &draft,
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let rows = vec![
+            InteractiveListOption {
+                id: build_amount_mode_selection_id(&AmountInputMode::SourceAsset),
+                title: "Enter in source coin".to_string(),
+                description: Some(truncate_whatsapp_text(
+                    &format!(
+                        "Use the {} amount you want to send",
+                        from.ticker.to_uppercase(),
+                    ),
+                    72,
+                )),
+            },
+            InteractiveListOption {
+                id: build_amount_mode_selection_id(&AmountInputMode::Usd),
+                title: "Enter in USD".to_string(),
+                description: Some("Enter a dollar value like $1000".to_string()),
+            },
+        ];
+
+        self.reply_interactive_list(
+            wa_id,
+            phone_number_id,
+            session_id,
+            "Choose how you want to enter the send amount.",
+            "Choose",
+            rows,
+        )
+        .await
+    }
+
+    async fn resolve_source_amount_from_usd(
+        &self,
+        from: &CurrencySelection,
+        usd_amount: f64,
+    ) -> Result<f64, String> {
+        if usd_amount <= 0.0 {
+            return Err("USD amount must be greater than zero.".to_string());
+        }
+
+        let gateway = TrocadorGateway::from_env()
+            .map_err(|_| "Trocador pricing is not configured on the backend.".to_string())?;
+        let commission_service = CommissionService::new();
+        let probe_amounts = [1.0, 0.1, 0.01, 10.0, 100.0];
+        let mut last_error = None;
+
+        for probe_amount in probe_amounts {
+            match commission_service
+                .resolve_live_amount_usd(&gateway, &from.ticker, &from.network, probe_amount)
+                .await
+            {
+                Ok(probe_usd) if probe_usd.is_finite() && probe_usd > 0.0 => {
+                    let usd_per_unit = probe_usd / probe_amount;
+                    if usd_per_unit.is_finite() && usd_per_unit > 0.0 {
+                        return Ok((usd_amount / usd_per_unit).max(0.0));
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            format!(
+                "I couldn't convert ${} into {} on {} right now.",
+                trim_f64(usd_amount),
+                from.ticker.to_uppercase(),
+                from.network
+            )
+        }))
     }
 
     async fn fetch_and_prompt_quotes(
@@ -1695,10 +1916,14 @@ impl WhatsAppFlowService {
                 .await;
         }
 
-        draft.quotes = rates
-            .rates
+        let mut sorted_rates = rates.rates.clone();
+        sorted_rates.sort_by_key(|rate| rate.kyc_required);
+
+        let visible_route_count = sorted_rates.len().min(10);
+
+        draft.quotes = sorted_rates
             .iter()
-            .take(5)
+            .take(10)
             .enumerate()
             .map(|(index, rate)| to_quote_choice(index + 1, rate, &rates.trade_id))
             .collect::<Vec<_>>();
@@ -1716,34 +1941,47 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let mut lines = vec![format!(
-            "Found {} live routes for {} {} on {} -> {} on {}.",
-            rates.rates.len(),
-            trim_f64(amount),
-            from.ticker.to_uppercase(),
-            from.network,
-            to.ticker.to_uppercase(),
-            to.network
-        )];
-        lines.push("Reply with the route number you want:".to_string());
+        let request_context = if let Some(requested_usd) = draft.requested_amount_usd {
+            format!(
+                "Requested ${}. Using about {} {} on {}.",
+                trim_f64(requested_usd),
+                trim_f64(amount),
+                from.ticker.to_uppercase(),
+                from.network
+            )
+        } else {
+            format!(
+                "Requested {} {} on {}.",
+                trim_f64(amount),
+                from.ticker.to_uppercase(),
+                from.network
+            )
+        };
 
-        for quote in &draft.quotes {
-            lines.push(format!(
-                "{}. {} | receive {} {} | {} | {}",
-                quote.index,
-                quote.provider_name,
-                trim_f64(quote.estimated_amount),
+        let body = if rates.rates.len() > 10 {
+            format!(
+                "{} Found {} live routes for {} on {} -> {} on {}. Showing the top 10. Privacy-first sorting is applied, so Privacy A routes appear first.",
+                request_context,
+                rates.rates.len(),
+                from.ticker.to_uppercase(),
+                from.network,
                 to.ticker.to_uppercase(),
-                quote.rate_type.as_db_str(),
-                if quote.kyc_required {
-                    "KYC"
-                } else {
-                    "No KYC flag"
-                }
-            ));
-        }
+                to.network
+            )
+        } else {
+            format!(
+                "{} Found {} live routes for {} on {} -> {} on {}. Showing all {} routes. Privacy-first sorting is applied, so Privacy A routes appear first.",
+                request_context,
+                rates.rates.len(),
+                from.ticker.to_uppercase(),
+                from.network,
+                to.ticker.to_uppercase(),
+                to.network,
+                visible_route_count
+            )
+        };
 
-        self.reply(wa_id, phone_number_id, session_id, &lines.join("\n"))
+        self.reply_quote_options(wa_id, phone_number_id, session_id, &body, &draft.quotes)
             .await
     }
 
@@ -1802,6 +2040,10 @@ impl WhatsAppFlowService {
             format!("Provider: {}", quote.provider_name),
             format!("Recipient address: {}", recipient_address),
         ];
+
+        if let Some(eta_line) = format_eta_line(quote.eta_minutes) {
+            lines.push(eta_line);
+        }
 
         if let Some(extra_id) = draft.recipient_extra_id.as_ref() {
             lines.push(format!(
@@ -1912,6 +2154,12 @@ impl WhatsAppFlowService {
             format!("Deposit address: {}", status.deposit_address),
             format!("Provider: {}", status.provider),
         ];
+
+        if let Some(expires_at) = status.expires_at {
+            if let Some(expiry_line) = format_expiry_line("Deposit window left", expires_at) {
+                lines.push(expiry_line);
+            }
+        }
 
         if let Some(tx_hash_in) = status.tx_hash_in.as_ref() {
             lines.push(format!("Deposit tx: {}", tx_hash_in));
@@ -2107,6 +2355,33 @@ impl WhatsAppFlowService {
         )
     }
 
+    async fn acknowledge_inbound_message(&self, inbound_message_id: Option<&str>) {
+        let Some(message_id) = inbound_message_id else {
+            return;
+        };
+
+        let Some(service) = self.state.whatsapp_service.as_ref() else {
+            return;
+        };
+
+        if let Err(error) = service.mark_message_read(message_id).await {
+            tracing::warn!(
+                "failed to mark WhatsApp message {} as read: {}",
+                message_id,
+                error
+            );
+            return;
+        }
+
+        if let Err(error) = service.send_typing_indicator(message_id).await {
+            tracing::warn!(
+                "failed to send WhatsApp typing indicator for {}: {}",
+                message_id,
+                error
+            );
+        }
+    }
+
     async fn reply(
         &self,
         wa_id: &str,
@@ -2264,6 +2539,40 @@ impl WhatsAppFlowService {
             .await
     }
 
+    async fn reply_quote_options(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        quotes: &[QuoteChoice],
+    ) -> Result<(), String> {
+        let rows = quotes
+            .iter()
+            .map(|quote| InteractiveListOption {
+                id: build_quote_selection_id(quote.index),
+                title: truncate_whatsapp_text(
+                    &format!("{}. {}", quote.index, quote.provider_name),
+                    24,
+                ),
+                description: Some(truncate_whatsapp_text(
+                    &format_quote_list_description(quote),
+                    72,
+                )),
+            })
+            .collect::<Vec<_>>();
+
+        self.reply_interactive_list(
+            wa_id,
+            phone_number_id,
+            session_id,
+            body,
+            "Choose exchange",
+            rows,
+        )
+        .await
+    }
+
     async fn reply_interactive_list(
         &self,
         wa_id: &str,
@@ -2399,6 +2708,7 @@ impl WhatsAppFlowService {
             "- swap",
             "- swap 100 usdc on stellar to bitcoin",
             "- swap 0.5 btc to xmr",
+            "- swap, then choose USD amount and type $1000",
         ]
         .join("\n")
     }
@@ -2440,7 +2750,87 @@ fn to_quote_choice(index: usize, rate: &RateResponse, trade_id: &str) -> QuoteCh
         min_amount: rate.min_amount,
         max_amount: rate.max_amount,
         kyc_required: rate.kyc_required,
+        privacy_rating: rate
+            .privacy_rating
+            .clone()
+            .or_else(|| rate.kyc_rating.clone()),
+        eta_minutes: rate.eta_minutes,
         trade_id: trade_id.to_string(),
+    }
+}
+
+fn quote_privacy_label(quote: &QuoteChoice) -> String {
+    if let Some(rating) = quote
+        .privacy_rating
+        .as_deref()
+        .map(str::trim)
+        .filter(|rating| !rating.is_empty())
+    {
+        return format!("Privacy {}", rating.to_ascii_uppercase());
+    }
+
+    if quote.kyc_required {
+        "Privacy ?".to_string()
+    } else {
+        "Privacy A".to_string()
+    }
+}
+
+fn format_quote_list_description(quote: &QuoteChoice) -> String {
+    let mut parts = vec![
+        format!("Recv {}", trim_f64(quote.estimated_amount)),
+        quote.rate_type.as_db_str().to_string(),
+        quote_privacy_label(quote),
+    ];
+
+    if let Some(eta) = format_eta_short(quote.eta_minutes) {
+        parts.push(eta);
+    }
+
+    parts.join(" | ")
+}
+
+fn format_eta_line(eta_minutes: Option<u32>) -> Option<String> {
+    eta_minutes.map(|minutes| format!("ETA: {}", humanize_minutes(minutes)))
+}
+
+fn format_eta_short(eta_minutes: Option<u32>) -> Option<String> {
+    eta_minutes.map(|minutes| humanize_minutes(minutes).replace(' ', ""))
+}
+
+fn format_expiry_line(label: &str, expires_at: DateTime<Utc>) -> Option<String> {
+    let minutes_remaining = expires_at
+        .signed_duration_since(Utc::now())
+        .num_minutes()
+        .max(0) as u32;
+
+    if minutes_remaining == 0 {
+        Some(format!("{}: under 1 min", label))
+    } else {
+        Some(format!(
+            "{}: {}",
+            label,
+            humanize_minutes(minutes_remaining)
+        ))
+    }
+}
+
+fn humanize_minutes(minutes: u32) -> String {
+    if minutes <= 1 {
+        return "~1 min".to_string();
+    }
+
+    if minutes < 60 {
+        return format!("~{} min", minutes);
+    }
+
+    let hours = minutes / 60;
+    let remainder = minutes % 60;
+
+    if remainder == 0 {
+        format!("~{} hr", hours)
+    } else {
+        format!("~{} hr {} min", hours, remainder)
     }
 }
 
@@ -2500,6 +2890,54 @@ fn parse_quote_selection(input: &str) -> Option<usize> {
     input.trim().parse::<usize>().ok()
 }
 
+fn parse_quote_selection_id(input: &str) -> Option<usize> {
+    input
+        .trim()
+        .to_ascii_lowercase()
+        .strip_prefix("quote:")
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+fn build_quote_selection_id(index: usize) -> String {
+    format!("quote:{}", index)
+}
+
+fn parse_amount_mode_selection_id(input: &str) -> Option<AmountInputMode> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "amount_mode:source_asset" => Some(AmountInputMode::SourceAsset),
+        "amount_mode:usd" => Some(AmountInputMode::Usd),
+        _ => None,
+    }
+}
+
+fn build_amount_mode_selection_id(mode: &AmountInputMode) -> String {
+    match mode {
+        AmountInputMode::SourceAsset => "amount_mode:source_asset".to_string(),
+        AmountInputMode::Usd => "amount_mode:usd".to_string(),
+    }
+}
+
+fn parse_amount_mode(input: &str, from: &CurrencySelection) -> Option<AmountInputMode> {
+    let normalized = normalize_phrase(input);
+    let from_ticker = normalize_phrase(&from.ticker);
+    let from_network = normalize_phrase(&from.network);
+
+    match normalized.as_str() {
+        "from" | "source" | "coin" | "token" | "asset" | "fromamount" | "sourceamount" => {
+            Some(AmountInputMode::SourceAsset)
+        }
+        "usd" | "dollar" | "dollars" | "cash" | "$" => Some(AmountInputMode::Usd),
+        _ if normalized == from_ticker
+            || normalized == format!("from{}", from_ticker)
+            || normalized == format!("{}amount", from_ticker)
+            || normalized == from_network =>
+        {
+            Some(AmountInputMode::SourceAsset)
+        }
+        _ => None,
+    }
+}
+
 fn parse_amount(input: &str) -> Option<f64> {
     let value = input.trim().replace(',', "");
     let parsed = value.parse::<f64>().ok()?;
@@ -2508,6 +2946,19 @@ fn parse_amount(input: &str) -> Option<f64> {
     } else {
         None
     }
+}
+
+fn parse_usd_amount(input: &str) -> Option<f64> {
+    let normalized = input
+        .trim()
+        .trim_start_matches('$')
+        .replace(',', "")
+        .replace("USD", "")
+        .replace("usd", "")
+        .trim()
+        .to_string();
+
+    parse_amount(&normalized)
 }
 
 fn parse_asset_selection_id(
@@ -3256,8 +3707,9 @@ fn truncate_whatsapp_text(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_asset_selection_id, resolve_currency_phrase,
-        should_restart_asset_search_from_network_choice, AssetFamilySelection,
+        parse_amount_mode, parse_asset_selection_id, parse_usd_amount, resolve_currency_phrase,
+        should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
+        CurrencySelection,
     };
     use crate::modules::swap::schema::CurrencyResponse;
 
@@ -3281,6 +3733,16 @@ mod tests {
             currency("USD Coin", "usdc", "Arbitrum"),
             currency("Bitcoin", "btc", "Mainnet"),
         ]
+    }
+
+    fn selection(name: &str, ticker: &str, network: &str) -> CurrencySelection {
+        CurrencySelection {
+            ticker: ticker.to_string(),
+            name: name.to_string(),
+            network: network.to_string(),
+            memo: false,
+            extra_id_name: None,
+        }
     }
 
     #[test]
@@ -3359,5 +3821,27 @@ mod tests {
         assert!(!should_restart_asset_search_from_network_choice(
             &family, "mainnet"
         ));
+    }
+
+    #[test]
+    fn parses_usd_amount_inputs() {
+        assert_eq!(parse_usd_amount("$1000"), Some(1000.0));
+        assert_eq!(parse_usd_amount("1,250 usd"), Some(1250.0));
+        assert_eq!(parse_usd_amount("USD 50"), Some(50.0));
+    }
+
+    #[test]
+    fn parses_amount_mode_from_source_aliases() {
+        let from = selection("Bitcoin", "btc", "Mainnet");
+
+        assert_eq!(
+            parse_amount_mode("from", &from),
+            Some(AmountInputMode::SourceAsset)
+        );
+        assert_eq!(
+            parse_amount_mode("btc", &from),
+            Some(AmountInputMode::SourceAsset)
+        );
+        assert_eq!(parse_amount_mode("usd", &from), Some(AmountInputMode::Usd));
     }
 }

@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
 use reqwest::StatusCode;
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 
 use crate::services::whatsapp::{
     verify_meta_signature, InteractiveButtonAction, InteractiveListAction, InteractiveListSection,
     InteractiveMediaHeader, InteractiveMediaLink, InteractiveReplyButton,
-    InteractiveReplyButtonPayload, InteractiveTextBody, ReplyButtonOption, SendImageBody,
-    SendImageMessageRequest, SendInteractiveButtonBody, SendInteractiveButtonMessageRequest,
-    SendInteractiveListBody, SendInteractiveListMessageRequest, SendMessageResponse, SendTextBody,
-    SendTextMessageRequest, WhatsAppConfig,
+    InteractiveReplyButtonPayload, InteractiveTextBody, MarkMessageRequest, MarkMessageResponse,
+    ReplyButtonOption, SendImageBody, SendImageMessageRequest, SendInteractiveButtonBody,
+    SendInteractiveButtonMessageRequest, SendInteractiveListBody,
+    SendInteractiveListMessageRequest, SendMessageResponse, SendTextBody, SendTextMessageRequest,
+    TypingIndicatorBody, TypingIndicatorRequest, WhatsAppConfig,
 };
 
 #[derive(Debug, Error)]
@@ -99,7 +100,7 @@ impl WhatsAppService {
             },
         };
 
-        self.post_message(&payload).await
+        self.post_json(&payload).await
     }
 
     pub async fn send_interactive_list_message(
@@ -127,7 +128,7 @@ impl WhatsAppService {
             },
         };
 
-        self.post_message(&payload).await
+        self.post_json(&payload).await
     }
 
     pub async fn send_image_message(
@@ -147,7 +148,7 @@ impl WhatsAppService {
             },
         };
 
-        self.post_message(&payload).await
+        self.post_json(&payload).await
     }
 
     pub async fn send_interactive_button_message(
@@ -189,13 +190,55 @@ impl WhatsAppService {
             },
         };
 
-        self.post_message(&payload).await
+        self.post_json(&payload).await
     }
 
-    async fn post_message<T: Serialize>(
-        &self,
-        payload: &T,
-    ) -> Result<SendMessageResponse, WhatsAppError> {
+    pub async fn mark_message_read(&self, message_id: &str) -> Result<(), WhatsAppError> {
+        let payload = MarkMessageRequest {
+            messaging_product: "whatsapp",
+            message_id,
+            status: "read",
+        };
+
+        let response: MarkMessageResponse = self.post_json(&payload).await?;
+        if response.success {
+            Ok(())
+        } else {
+            Err(WhatsAppError::Api {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: "Meta Graph API returned success=false while marking message as read"
+                    .to_string(),
+            })
+        }
+    }
+
+    pub async fn send_typing_indicator(&self, message_id: &str) -> Result<(), WhatsAppError> {
+        let payload = TypingIndicatorRequest {
+            messaging_product: "whatsapp",
+            message_id,
+            status: "read",
+            typing_indicator: TypingIndicatorBody {
+                indicator_type: "text",
+            },
+        };
+
+        let response: MarkMessageResponse = self.post_json(&payload).await?;
+        if response.success {
+            Ok(())
+        } else {
+            Err(WhatsAppError::Api {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: "Meta Graph API returned success=false while sending typing indicator"
+                    .to_string(),
+            })
+        }
+    }
+
+    async fn post_json<T, R>(&self, payload: &T) -> Result<R, WhatsAppError>
+    where
+        T: Serialize,
+        R: DeserializeOwned,
+    {
         let response = self
             .http_client
             .post(self.config.messages_endpoint())

@@ -112,6 +112,9 @@ If `CORS_ORIGINS` is empty, cross-origin browser access is disabled by default.
 `BASE_URL` is used for frontend-facing links such as email verification. `PUBLIC_BACKEND_URL` is
 the public backend origin used for inbound provider callbacks and WhatsApp webhook registration.
 `API_BASE_URL` can remain separate for other API consumers if needed.
+For local swap testing without a public HTTPS tunnel, set `TROCADOR_WEBHOOK_ENABLED=false`.
+The backend will create trades without a callback and track them through status polling. Keep the
+variable enabled (or omit it, since it defaults to enabled) in production.
 
 ### Database Setup
 

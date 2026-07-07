@@ -32,6 +32,31 @@ impl std::fmt::Display for TrocadorError {
 
 impl std::error::Error for TrocadorError {}
 
+impl TrocadorError {
+    pub fn is_rate_limited(&self) -> bool {
+        let message = self.to_string().to_ascii_lowercase();
+        message.contains("rate limit")
+            || message.contains("429")
+            || message.contains("too many requests")
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // Transport failures happen before Trocador returns an API response.
+            Self::HttpError(_) => true,
+            Self::ApiError(message) => {
+                let message = message.to_ascii_lowercase();
+                self.is_rate_limited()
+                    || message.contains("502")
+                    || message.contains("503")
+                    || message.contains("bad gateway")
+                    || message.contains("service unavailable")
+            }
+            Self::ParseError(_) => false,
+        }
+    }
+}
+
 impl TrocadorClient {
     pub fn new(api_key: String) -> Self {
         Self {
@@ -547,5 +572,26 @@ impl TrocadorClient {
             .unwrap_or(false);
 
         Ok(is_valid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrocadorError;
+
+    #[test]
+    fn invalid_webhook_api_error_is_not_retried_as_a_network_failure() {
+        let error = TrocadorError::ApiError(
+            "Invalid Webhook: connection to callback timed out".to_string(),
+        );
+
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn transport_and_upstream_availability_errors_are_retryable() {
+        assert!(TrocadorError::HttpError("connection reset".to_string()).is_retryable());
+        assert!(TrocadorError::ApiError("503 Service Unavailable".to_string()).is_retryable());
+        assert!(TrocadorError::ApiError("429 Too Many Requests".to_string()).is_retryable());
     }
 }

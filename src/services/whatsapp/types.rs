@@ -128,6 +128,27 @@ pub struct SendTextBody<'a> {
     pub body: &'a str,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MarkMessageRequest<'a> {
+    pub messaging_product: &'static str,
+    pub message_id: &'a str,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TypingIndicatorRequest<'a> {
+    pub messaging_product: &'static str,
+    pub message_id: &'a str,
+    pub status: &'static str,
+    pub typing_indicator: TypingIndicatorBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TypingIndicatorBody {
+    #[serde(rename = "type")]
+    pub indicator_type: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InteractiveListOption {
     pub id: String,
@@ -258,6 +279,12 @@ pub struct SendMessageResponse {
 #[derive(Debug, Deserialize)]
 pub struct SendMessageId {
     pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MarkMessageResponse {
+    #[serde(default)]
+    pub success: bool,
 }
 
 pub fn extract_normalized_events(payload: &WhatsAppWebhookPayload) -> Vec<NormalizedWebhookEvent> {
