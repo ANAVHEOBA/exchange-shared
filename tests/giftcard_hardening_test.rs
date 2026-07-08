@@ -20,6 +20,26 @@ async fn giftcard_lock_is_exclusive_per_order() {
 }
 
 #[tokio::test]
+async fn giftcard_lock_supports_long_mysql_unsafe_keys() {
+    let Some(db) = setup_db().await else {
+        eprintln!("skipping giftcard long lock test: database is unavailable");
+        return;
+    };
+
+    let crud = GiftCardCrud::new(db);
+    let key = "giftcard:create:client:00798552-8bf8-48d8-8a14-15f48eb91804:0b2c34b9b7f037db390e0f487251bc31e30e8bd89b25b3b225c556ea2fd02355";
+
+    let first_lock = crud
+        .acquire_named_lock(key, 1)
+        .await
+        .expect("first long lock");
+    let second_attempt = crud.acquire_named_lock(key, 0).await;
+
+    assert!(second_attempt.is_err());
+    first_lock.release().await.expect("release long lock");
+}
+
+#[tokio::test]
 async fn giftcard_exhausted_retries_fail_and_terminal_records_redact() {
     let Some(db) = setup_db().await else {
         eprintln!("skipping giftcard hardening test: database is unavailable");

@@ -71,6 +71,58 @@ fn normalize_optional_string(value: Option<serde_json::Value>) -> Option<String>
     }
 }
 
+pub fn normalize_giftcard_currency_code(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_uppercase())
+        .filter(|value| value.len() <= 12)
+}
+
+pub fn infer_giftcard_currency_code(country: Option<&str>) -> Option<String> {
+    let normalized = country?
+        .trim()
+        .to_ascii_uppercase()
+        .replace('-', " ")
+        .replace('_', " ");
+
+    let currency = match normalized.as_str() {
+        "AR" | "ARGENTINA" => "ARS",
+        "AU" | "AUS" | "AUSTRALIA" => "AUD",
+        "BR" | "BRAZIL" => "BRL",
+        "CA" | "CANADA" => "CAD",
+        "CH" | "SWITZERLAND" => "CHF",
+        "GB" | "UK" | "UNITED KINGDOM" | "GREAT BRITAIN" => "GBP",
+        "GU" | "GUAM" | "PR" | "PUERTO RICO" | "US" | "USA" | "UNITED STATES" => "USD",
+        "IN" | "INDIA" => "INR",
+        "JP" | "JAPAN" => "JPY",
+        "MX" | "MEXICO" => "MXN",
+        "NZ" | "NEW ZEALAND" => "NZD",
+        "PE" | "PERU" => "PEN",
+        "PH" | "PHILIPPINES" => "PHP",
+        "SG" | "SINGAPORE" => "SGD",
+        "TR" | "TURKEY" => "TRY",
+        "AE" | "UAE" | "UNITED ARAB EMIRATES" => "AED",
+        "AT" | "AUSTRIA" | "BE" | "BELGIUM" | "CY" | "CYPRUS" | "DE" | "GERMANY" | "EE"
+        | "ESTONIA" | "ES" | "SPAIN" | "FI" | "FINLAND" | "FR" | "FRANCE" | "GR" | "GREECE"
+        | "HR" | "CROATIA" | "HU" | "HUNGARY" | "IE" | "IRELAND" | "IT" | "ITALY" | "LT"
+        | "LITHUANIA" | "LU" | "LUXEMBOURG" | "LV" | "LATVIA" | "MT" | "MALTA" | "NL"
+        | "NETHERLANDS" | "PL" | "POLAND" | "PT" | "PORTUGAL" | "RO" | "ROMANIA" | "SI"
+        | "SLOVENIA" | "SK" | "SLOVAKIA" | "SLOVAK REPUBLIC" => "EUR",
+        _ => return None,
+    };
+
+    Some(currency.to_string())
+}
+
+pub fn resolve_giftcard_currency_code(
+    currency_code: Option<&str>,
+    country: Option<&str>,
+) -> Option<String> {
+    normalize_giftcard_currency_code(currency_code)
+        .or_else(|| infer_giftcard_currency_code(country))
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GiftCardErrorResponse {
     pub error: String,
@@ -141,6 +193,7 @@ pub struct GiftCardProductResponse {
     pub expiry_and_validity: Option<String>,
     pub card_image_url: Option<String>,
     pub country: Option<String>,
+    pub currency_code: Option<String>,
     pub min_amount: Option<f64>,
     pub max_amount: Option<f64>,
     pub denominations: Option<Vec<f64>>,
@@ -157,6 +210,8 @@ pub struct TrocadorGiftCardProduct {
     pub expiry_and_validity: Option<String>,
     pub card_image_url: Option<String>,
     pub country: Option<String>,
+    #[serde(default, alias = "currencyCode", alias = "currency")]
+    pub currency_code: Option<String>,
     pub min_amount: Option<serde_json::Value>,
     pub max_amount: Option<serde_json::Value>,
     pub denominations: Option<serde_json::Value>,
@@ -164,6 +219,10 @@ pub struct TrocadorGiftCardProduct {
 
 impl From<TrocadorGiftCardProduct> for GiftCardProductResponse {
     fn from(value: TrocadorGiftCardProduct) -> Self {
+        let country = value.country;
+        let currency_code =
+            resolve_giftcard_currency_code(value.currency_code.as_deref(), country.as_deref());
+
         Self {
             product_id: value.product_id,
             name: value.name,
@@ -173,7 +232,8 @@ impl From<TrocadorGiftCardProduct> for GiftCardProductResponse {
             how_to_use: value.how_to_use,
             expiry_and_validity: value.expiry_and_validity,
             card_image_url: value.card_image_url,
-            country: value.country,
+            country,
+            currency_code,
             min_amount: normalize_optional_numeric(value.min_amount),
             max_amount: normalize_optional_numeric(value.max_amount),
             denominations: normalize_optional_numeric_list(value.denominations),
@@ -199,6 +259,8 @@ pub struct CreateGiftCardOrderRequest {
     pub amount: f64,
     #[validate(email)]
     pub email: String,
+    #[validate(length(min = 1, max = 12))]
+    pub currency_code: Option<String>,
     #[validate(length(min = 1, max = 2048))]
     pub webhook: Option<String>,
     #[validate(length(min = 1, max = 255))]
@@ -268,6 +330,7 @@ pub struct CardOrderResponse {
     pub provider: Option<String>,
     pub provider_trade_id: Option<String>,
     pub provider_password: Option<String>,
+    pub recipient_email: String,
     pub status: String,
     pub ticker_from: String,
     pub network_from: String,

@@ -628,7 +628,9 @@ pub struct SwapStatusResponse {
     pub provider_swap_id: Option<String>,
     pub status: SwapStatus,
     pub from: String,
+    pub network_from: String,
     pub to: String,
+    pub network_to: String,
     pub amount: f64,
     pub deposit_address: String,
     #[serde(skip_serializing_if = "Option::is_none")]

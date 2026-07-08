@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
+use sha2::{Digest, Sha256};
 use sqlx::{pool::PoolConnection, Error, MySql, Row};
 use uuid::Uuid;
 
@@ -107,16 +108,17 @@ impl GiftCardCrud {
         key: &str,
         timeout_seconds: i32,
     ) -> Result<GiftCardOrderLock, Error> {
+        let normalized_key = normalize_named_lock_key(key);
         let mut connection = self.pool.acquire().await?;
         let acquired = sqlx::query_scalar::<_, Option<i64>>("SELECT GET_LOCK(?, ?)")
-            .bind(key)
+            .bind(&normalized_key)
             .bind(timeout_seconds)
             .fetch_one(&mut *connection)
             .await?;
 
         match acquired {
             Some(1) => Ok(GiftCardOrderLock {
-                key: key.to_string(),
+                key: normalized_key,
                 connection: Some(connection),
             }),
             _ => Err(Error::Protocol(
@@ -364,6 +366,7 @@ impl GiftCardCrud {
                 target_network = ?,
                 source_coin_name = ?,
                 target_coin_name = ?,
+                amount = ?,
                 amount_to = ?,
                 fixed = ?,
                 payment = ?,
@@ -391,6 +394,7 @@ impl GiftCardCrud {
         .bind(&trade.network_to)
         .bind(&trade.coin_from)
         .bind(&trade.coin_to)
+        .bind(trade.amount_from)
         .bind(trade.amount_to)
         .bind(trade.fixed)
         .bind(trade.payment)
@@ -730,4 +734,34 @@ impl GiftCardCrud {
 
 pub fn new_order_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+fn normalize_named_lock_key(key: &str) -> String {
+    if key.len() <= 64 {
+        return key.to_string();
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_named_lock_key;
+
+    #[test]
+    fn keep_short_lock_keys_unchanged() {
+        let key = "giftcard:test:lock";
+        assert_eq!(normalize_named_lock_key(key), key);
+    }
+
+    #[test]
+    fn hash_long_lock_keys_to_mysql_safe_length() {
+        let key = "giftcard:create:client:00798552-8bf8-48d8-8a14-15f48eb91804:0b2c34b9b7f037db390e0f487251bc31e30e8bd89b25b3b225c556ea2fd02355";
+        let normalized = normalize_named_lock_key(key);
+
+        assert_eq!(normalized.len(), 64);
+        assert_ne!(normalized, key);
+    }
 }

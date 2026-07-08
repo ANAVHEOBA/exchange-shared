@@ -2,8 +2,8 @@ use crate::{
     modules::giftcard::{
         crud::{new_order_id, GiftCardCrud, GiftCardOrderRecord, NewGiftCardOrder},
         schema::{
-            CardOrderDetailsResponse, CardOrderResponse, CreateGiftCardOrderRequest,
-            CreatePrepaidCardOrderRequest,
+            normalize_giftcard_currency_code, CardOrderDetailsResponse, CardOrderResponse,
+            CreateGiftCardOrderRequest, CreatePrepaidCardOrderRequest,
         },
     },
     modules::swap::schema::TrocadorTradeResponse,
@@ -16,6 +16,8 @@ const DUPLICATE_WINDOW_SECONDS: i64 = 10 * 60;
 const RETRY_DELAY_SECONDS: i64 = 20;
 const DEFAULT_MAX_RETRY_ATTEMPTS: i32 = 5;
 const DEFAULT_REDACTION_RETENTION_DAYS: i64 = 30;
+const CREATE_LOCK_TIMEOUT_SECONDS: i32 = 10;
+const ORDER_LOCK_TIMEOUT_SECONDS: i32 = 2;
 
 #[derive(Debug)]
 pub enum GiftCardServiceError {
@@ -76,6 +78,15 @@ impl EffectiveWebhook {
     }
 }
 
+enum CreateOrderOutcome {
+    Existing(u16, CardOrderResponse),
+    Created {
+        order_id: String,
+        webhook: EffectiveWebhook,
+        response: CardOrderResponse,
+    },
+}
+
 pub struct GiftCardService {
     crud: GiftCardCrud,
 }
@@ -94,12 +105,13 @@ impl GiftCardService {
     ) -> Result<(u16, CardOrderResponse), GiftCardServiceError> {
         let card_markup = normalize_card_markup(req.card_markup.as_deref())
             .map_err(GiftCardServiceError::Validation)?;
+        let currency_code = normalize_giftcard_currency_code(req.currency_code.as_deref());
         let owner_key = owner_key(user_id, client_id);
         let request_hash = giftcard_request_hash(&owner_key, req, card_markup.as_deref());
         let lock_key = format!("giftcard:create:{}:{}", owner_key, request_hash);
         let lock = self
             .crud
-            .acquire_named_lock(&lock_key, 5)
+            .acquire_named_lock(&lock_key, CREATE_LOCK_TIMEOUT_SECONDS)
             .await
             .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
 
@@ -110,7 +122,10 @@ impl GiftCardService {
                 .await
                 .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
             {
-                return Ok((200, self.to_response(existing)));
+                return Ok(CreateOrderOutcome::Existing(
+                    200,
+                    self.to_response(existing),
+                ));
             }
 
             let webhook =
@@ -126,7 +141,7 @@ impl GiftCardService {
                     order_kind: "giftcard",
                     product_id: Some(&req.product_id),
                     prepaid_provider: None,
-                    currency_code: None,
+                    currency_code: currency_code.as_deref(),
                     source_ticker: &req.ticker_from,
                     source_network: &req.network_from,
                     amount: req.amount,
@@ -144,24 +159,37 @@ impl GiftCardService {
                 .await
                 .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
 
-            match self.process_order(order_id.as_str(), Some(&webhook)).await {
-                Ok(record) => Ok((201, self.to_response(record))),
-                Err(_error) if webhook.retryable() => {
-                    let record = self
-                        .crud
-                        .get_order_by_id(&order_id)
-                        .await
-                        .map_err(|db_error| GiftCardServiceError::Database(db_error.to_string()))?
-                        .ok_or(GiftCardServiceError::NotFound)?;
-                    Ok((202, self.to_response(record)))
-                }
-                Err(error) => Err(error),
-            }
+            let record = self
+                .crud
+                .get_order_by_id(&order_id)
+                .await
+                .map_err(|db_error| GiftCardServiceError::Database(db_error.to_string()))?
+                .ok_or(GiftCardServiceError::NotFound)?;
+
+            Ok(CreateOrderOutcome::Created {
+                order_id,
+                webhook,
+                response: self.to_response(record),
+            })
         }
         .await;
 
         let _ = lock.release().await;
-        outcome
+
+        match outcome? {
+            CreateOrderOutcome::Existing(status, response) => Ok((status, response)),
+            CreateOrderOutcome::Created {
+                order_id: _,
+                webhook,
+                response,
+            } if webhook.retryable() => Ok((202, response)),
+            CreateOrderOutcome::Created {
+                order_id, webhook, ..
+            } => self
+                .process_order(order_id.as_str(), Some(&webhook))
+                .await
+                .map(|record| (201, self.to_response(record))),
+        }
     }
 
     pub async fn create_prepaid_order(
@@ -177,7 +205,7 @@ impl GiftCardService {
         let lock_key = format!("giftcard:create:{}:{}", owner_key, request_hash);
         let lock = self
             .crud
-            .acquire_named_lock(&lock_key, 5)
+            .acquire_named_lock(&lock_key, CREATE_LOCK_TIMEOUT_SECONDS)
             .await
             .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
 
@@ -188,7 +216,10 @@ impl GiftCardService {
                 .await
                 .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
             {
-                return Ok((200, self.to_response(existing)));
+                return Ok(CreateOrderOutcome::Existing(
+                    200,
+                    self.to_response(existing),
+                ));
             }
 
             let webhook =
@@ -222,24 +253,37 @@ impl GiftCardService {
                 .await
                 .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
 
-            match self.process_order(order_id.as_str(), Some(&webhook)).await {
-                Ok(record) => Ok((201, self.to_response(record))),
-                Err(_error) if webhook.retryable() => {
-                    let record = self
-                        .crud
-                        .get_order_by_id(&order_id)
-                        .await
-                        .map_err(|db_error| GiftCardServiceError::Database(db_error.to_string()))?
-                        .ok_or(GiftCardServiceError::NotFound)?;
-                    Ok((202, self.to_response(record)))
-                }
-                Err(error) => Err(error),
-            }
+            let record = self
+                .crud
+                .get_order_by_id(&order_id)
+                .await
+                .map_err(|db_error| GiftCardServiceError::Database(db_error.to_string()))?
+                .ok_or(GiftCardServiceError::NotFound)?;
+
+            Ok(CreateOrderOutcome::Created {
+                order_id,
+                webhook,
+                response: self.to_response(record),
+            })
         }
         .await;
 
         let _ = lock.release().await;
-        outcome
+
+        match outcome? {
+            CreateOrderOutcome::Existing(status, response) => Ok((status, response)),
+            CreateOrderOutcome::Created {
+                order_id: _,
+                webhook,
+                response,
+            } if webhook.retryable() => Ok((202, response)),
+            CreateOrderOutcome::Created {
+                order_id, webhook, ..
+            } => self
+                .process_order(order_id.as_str(), Some(&webhook))
+                .await
+                .map(|record| (201, self.to_response(record))),
+        }
     }
 
     pub async fn get_order_for_requester(
@@ -353,7 +397,7 @@ impl GiftCardService {
         let lock_key = format!("giftcard:order:{}", order_id);
         let lock = self
             .crud
-            .acquire_named_lock(&lock_key, 2)
+            .acquire_named_lock(&lock_key, ORDER_LOCK_TIMEOUT_SECONDS)
             .await
             .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
 
@@ -397,7 +441,7 @@ impl GiftCardService {
                 };
 
                 if record.order_kind == "giftcard" {
-                    gateway
+                    let created_trade = gateway
                         .order_giftcard(
                             record.product_id.as_deref().ok_or_else(|| {
                                 GiftCardServiceError::Validation(
@@ -413,9 +457,11 @@ impl GiftCardService {
                             record.card_markup.as_deref(),
                         )
                         .await
-                        .map_err(|error| GiftCardServiceError::External(error.to_string()))
+                        .map_err(|error| GiftCardServiceError::External(error.to_string()))?;
+
+                    hydrate_created_trade(&gateway, created_trade).await
                 } else {
-                    gateway
+                    let created_trade = gateway
                         .order_prepaid_card(
                             record.prepaid_provider.as_deref().ok_or_else(|| {
                                 GiftCardServiceError::Validation(
@@ -436,7 +482,9 @@ impl GiftCardService {
                             record.card_markup.as_deref(),
                         )
                         .await
-                        .map_err(|error| GiftCardServiceError::External(error.to_string()))
+                        .map_err(|error| GiftCardServiceError::External(error.to_string()))?;
+
+                    hydrate_created_trade(&gateway, created_trade).await
                 }
             })()
             .await;
@@ -541,6 +589,7 @@ impl GiftCardService {
             provider: record.provider,
             provider_trade_id: record.provider_trade_id,
             provider_password: record.provider_password,
+            recipient_email: record.recipient_email,
             status: record.status,
             ticker_from: record.source_ticker,
             network_from: record.source_network,
@@ -592,9 +641,12 @@ fn giftcard_request_hash(
     card_markup: Option<&str>,
 ) -> String {
     let canonical = format!(
-        "owner={}|kind=giftcard|product_id={}|ticker_from={}|network_from={}|amount={:.12}|email={}|markup={}",
+        "owner={}|kind=giftcard|product_id={}|currency_code={}|ticker_from={}|network_from={}|amount={:.12}|email={}|markup={}",
         owner_key,
         req.product_id.trim().to_ascii_lowercase(),
+        normalize_giftcard_currency_code(req.currency_code.as_deref())
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
         req.ticker_from.trim().to_ascii_lowercase(),
         req.network_from.trim().to_ascii_lowercase(),
         req.amount,
@@ -714,6 +766,33 @@ fn should_refresh_status(record: &GiftCardOrderRecord) -> bool {
     }
 }
 
+async fn hydrate_created_trade(
+    gateway: &TrocadorGateway,
+    created_trade: TrocadorTradeResponse,
+) -> Result<TrocadorTradeResponse, GiftCardServiceError> {
+    let trade_id = created_trade.trade_id.clone();
+    let mut last_error = None;
+
+    for attempt in 0..3 {
+        match gateway.fetch_trade_status(&trade_id).await {
+            Ok(hydrated_trade) => return Ok(hydrated_trade),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+
+    tracing::warn!(
+        "Failed to hydrate created gift card trade {}; using create response: {}",
+        trade_id,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    );
+    Ok(created_trade)
+}
+
 fn resolve_max_retry_attempts() -> i32 {
     std::env::var("GIFTCARD_MAX_RETRY_ATTEMPTS")
         .ok()
@@ -761,6 +840,7 @@ mod tests {
             network_from: "Mainnet".to_string(),
             amount: 100.0,
             email: "me@example.com".to_string(),
+            currency_code: Some("USD".to_string()),
             webhook: None,
             webhook_key: None,
             card_markup: Some("1".to_string()),

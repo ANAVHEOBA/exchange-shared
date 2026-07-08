@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-use super::schema::GiftCardProductResponse;
+use super::schema::{infer_giftcard_currency_code, GiftCardProductResponse};
 
 static GB_CATALOG: OnceLock<Vec<GiftCardProductResponse>> = OnceLock::new();
 
@@ -44,6 +44,8 @@ fn parse_gb_catalog() -> Vec<GiftCardProductResponse> {
         let values = parse_numeric_values(range_label);
         let min_amount = values.first().copied();
         let max_amount = values.last().copied();
+        let currency_code =
+            parse_currency_code(range_label).or_else(|| infer_giftcard_currency_code(Some("GB")));
         let denominations = if values.len() == 1 {
             Some(values)
         } else {
@@ -60,6 +62,7 @@ fn parse_gb_catalog() -> Vec<GiftCardProductResponse> {
             expiry_and_validity: None,
             card_image_url: Some(image_url.to_string()),
             country: Some("GB".to_string()),
+            currency_code,
             min_amount,
             max_amount,
             denominations,
@@ -79,6 +82,16 @@ fn parse_numeric_values(label: &str) -> Vec<f64> {
         .collect()
 }
 
+fn parse_currency_code(label: &str) -> Option<String> {
+    let currency_regex =
+        Regex::new(r#"\b[A-Z]{3}\b"#).expect("giftcard currency regex must compile");
+
+    currency_regex
+        .find_iter(label)
+        .last()
+        .map(|value| value.as_str().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::fallback_catalog;
@@ -94,6 +107,7 @@ mod tests {
             .expect("expected Airbnb card in fallback catalog");
 
         assert_eq!(airbnb.name, "Airbnb");
+        assert_eq!(airbnb.currency_code.as_deref(), Some("GBP"));
         assert_eq!(airbnb.min_amount, Some(50.0));
         assert_eq!(airbnb.max_amount, Some(100.0));
         assert_eq!(
