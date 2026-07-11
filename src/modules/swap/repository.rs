@@ -7,7 +7,7 @@ use super::model::Provider;
 use super::schema::{
     FiltersApplied, HistoryCursor, HistoryQuery, HistoryResponse, PaginationInfo, PairResponse,
     PairsPaginationInfo, PairsQuery, PairsResponse, ProvidersQuery, RateType, SwapStatus,
-    SwapSummary, TrocadorCurrency, TrocadorProvider,
+    SwapSummary, SwapTimelineEvent, TrocadorCurrency, TrocadorProvider,
 };
 use crate::services::wallet::validation::default_extra_id_name;
 
@@ -700,6 +700,37 @@ impl SwapRepository {
         .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
 
         Ok(())
+    }
+
+    pub async fn get_status_timeline(
+        &self,
+        swap_id: &str,
+    ) -> Result<Vec<SwapTimelineEvent>, SwapError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT status, message, created_at
+            FROM swap_status_history
+            WHERE swap_id = ?
+            ORDER BY created_at ASC, id ASC
+            "#,
+        )
+        .bind(swap_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| SwapError::DatabaseError(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let status = SwapStatus::from_persisted(&row.get::<String, _>("status"))
+                    .unwrap_or(SwapStatus::Waiting);
+                SwapTimelineEvent {
+                    status,
+                    message: row.try_get("message").ok(),
+                    created_at: row.get("created_at"),
+                }
+            })
+            .collect())
     }
 
     pub async fn get_swap_history(

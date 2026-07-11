@@ -13,8 +13,8 @@ use super::crud::{CurrenciesResult, SwapCrud};
 use super::schema::{
     ClientHistoryResponse, CreateDonationSwapRequest, CreateSwapRequest, CreateSwapResponse,
     CurrenciesQuery, DonationRatesQuery, DonationTargetResponse, HistoryQuery, HistoryResponse,
-    ProvidersQuery, SwapErrorResponse, SwapStatusResponse, ValidateAddressRequest,
-    ValidateAddressResponse,
+    ProvidersQuery, SwapErrorResponse, SwapOpsActionResponse, SwapStatusResponse,
+    SwapTimelineResponse, ValidateAddressRequest, ValidateAddressResponse,
 };
 use super::service::SwapService;
 use crate::middleware::admin::Admin;
@@ -293,6 +293,19 @@ pub async fn create_donation_swap(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/swap/webhooks/trocador",
+    tag = "Swap",
+    request_body = String,
+    responses(
+        (status = 200, description = "Trocador swap webhook accepted"),
+        (status = 400, description = "Invalid webhook payload", body = SwapErrorResponse),
+        (status = 401, description = "Invalid webhook key", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 503, description = "Webhook not configured", body = SwapErrorResponse)
+    )
+)]
 pub async fn trocador_webhook(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
@@ -511,8 +524,8 @@ pub async fn get_swap_status(
 
 #[utoipa::path(
     get,
-    path = "/admin/swaps/{id}",
-    tag = "Admin",
+    path = "/swap/ops/{id}",
+    tag = "Swap Ops",
     params(
         ("id" = String, Path, description = "Internal swap id")
     ),
@@ -534,6 +547,126 @@ pub async fn get_admin_swap_status(
     Path(swap_id): Path<String>,
 ) -> Result<Json<SwapStatusResponse>, (StatusCode, Json<SwapErrorResponse>)> {
     get_swap_status(State(state), Path(swap_id)).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/swap/ops/{id}/timeline",
+    tag = "Swap Ops",
+    params(
+        ("id" = String, Path, description = "Internal swap id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Admin swap status timeline", body = SwapTimelineResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Swap not found", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_admin_swap_timeline(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(swap_id): Path<String>,
+) -> Result<Json<SwapTimelineResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let service = swap_service(&state);
+    let response = service.get_swap_timeline(&swap_id).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::SwapNotFound => StatusCode::NOT_FOUND,
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/swap/ops/{id}/refresh",
+    tag = "Swap Ops",
+    params(
+        ("id" = String, Path, description = "Internal swap id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Provider status refresh attempted", body = SwapOpsActionResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Swap not found", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Provider status error", body = SwapErrorResponse)
+    )
+)]
+pub async fn refresh_admin_swap_status(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(swap_id): Path<String>,
+) -> Result<Json<SwapOpsActionResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let service = swap_service(&state);
+    let status_response = service.get_swap_status(&swap_id).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::SwapNotFound => StatusCode::NOT_FOUND,
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+
+    Ok(Json(SwapOpsActionResponse {
+        action: "refresh".to_string(),
+        message: "Provider status refresh attempted".to_string(),
+        status: status_response,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/swap/ops/{id}/reconcile",
+    tag = "Swap Ops",
+    params(
+        ("id" = String, Path, description = "Internal swap id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Swap reconciled against provider state", body = SwapOpsActionResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Swap not found", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Provider reconciliation error", body = SwapErrorResponse)
+    )
+)]
+pub async fn reconcile_admin_swap(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(swap_id): Path<String>,
+) -> Result<Json<SwapOpsActionResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let service = swap_service(&state);
+    let status_response = service.get_swap_status(&swap_id).await.map_err(|e| {
+        let status = match e {
+            super::crud::SwapError::SwapNotFound => StatusCode::NOT_FOUND,
+            super::crud::SwapError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, Json(SwapErrorResponse::new(e.to_string())))
+    })?;
+
+    Ok(Json(SwapOpsActionResponse {
+        action: "reconcile".to_string(),
+        message: "Swap reconciled against provider status where available".to_string(),
+        status: status_response,
+    }))
 }
 
 // =============================================================================
@@ -614,8 +747,8 @@ pub async fn get_swap_history(
 
 #[utoipa::path(
     get,
-    path = "/admin/swaps",
-    tag = "Admin",
+    path = "/swap/ops",
+    tag = "Swap Ops",
     params(HistoryQuery),
     security(
         ("bearer_auth" = [])

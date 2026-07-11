@@ -21,7 +21,7 @@ struct ExportRow {
 async fn admin_token(ctx: &TestContext) -> String {
     let response = ctx
         .server
-        .post("/admin/login")
+        .post("/ops/login")
         .json(&json!({
             "email": DEFAULT_ADMIN_EMAIL,
             "password": DEFAULT_ADMIN_PASSWORD
@@ -77,7 +77,7 @@ async fn insert_export_test_swap(ctx: &TestContext, provider_swap_id: &str) -> S
 async fn admin_swap_export_requires_authentication() {
     let ctx = TestContext::new().await;
 
-    let response = ctx.server.get("/admin/swaps/export").await;
+    let response = ctx.server.get("/ops/swaps/export").await;
 
     response.assert_status(StatusCode::UNAUTHORIZED);
 
@@ -101,7 +101,7 @@ async fn admin_swap_export_returns_csv_attachment() {
     let response = ctx
         .server
         .get(&format!(
-            "/admin/swaps/export?provider_swap_id={}",
+            "/ops/swaps/export?provider_swap_id={}",
             provider_swap_id
         ))
         .authorization_bearer(&token)

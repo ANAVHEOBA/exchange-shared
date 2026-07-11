@@ -1,10 +1,11 @@
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
 use sha2::{Digest, Sha256};
-use sqlx::{pool::PoolConnection, Error, MySql, Row};
+use sqlx::{pool::PoolConnection, Error, MySql, QueryBuilder, Row};
 use uuid::Uuid;
 
 use crate::{
     config::DbPool,
+    modules::giftcard::schema::AdminGiftCardOrderQuery,
     modules::swap::schema::{TrocadorTradeDetails, TrocadorTradeResponse},
 };
 
@@ -249,6 +250,174 @@ impl GiftCardCrud {
         }
 
         self.get_order_by_ref("upstream_trade_id", order_ref).await
+    }
+
+    pub async fn admin_list_orders(
+        &self,
+        query: &AdminGiftCardOrderQuery,
+    ) -> Result<Vec<GiftCardOrderRecord>, Error> {
+        let mut builder = QueryBuilder::<MySql>::new(
+            r#"
+            SELECT
+                id,
+                user_id,
+                client_id,
+                owner_key,
+                request_hash,
+                order_kind,
+                product_id,
+                prepaid_provider,
+                currency_code,
+                source_ticker,
+                source_network,
+                CAST(amount AS DOUBLE) AS amount,
+                recipient_email,
+                card_markup,
+                webhook_mode,
+                webhook_url,
+                upstream_trade_id,
+                provider,
+                provider_trade_id,
+                provider_password,
+                target_ticker,
+                target_network,
+                source_coin_name,
+                target_coin_name,
+                CAST(amount_to AS DOUBLE) AS amount_to,
+                fixed,
+                payment,
+                deposit_address,
+                deposit_extra_id,
+                settlement_address,
+                settlement_extra_id,
+                refund_address,
+                refund_extra_id,
+                provider_status,
+                details_json,
+                status,
+                last_error,
+                attempt_count,
+                next_retry_at,
+                last_synced_at,
+                completed_at,
+                created_at,
+                updated_at
+            FROM giftcard_orders
+            WHERE 1 = 1
+            "#,
+        );
+
+        if let Some(status) = query
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            builder.push(" AND status = ").push_bind(status);
+        }
+        if let Some(email) = query
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            builder.push(" AND recipient_email = ").push_bind(email);
+        }
+        if let Some(trade_id) = query
+            .trade_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            builder
+                .push(" AND (id = ")
+                .push_bind(trade_id)
+                .push(" OR upstream_trade_id = ")
+                .push_bind(trade_id)
+                .push(" OR provider_trade_id = ")
+                .push_bind(trade_id)
+                .push(")");
+        }
+        if let Some(client_id) = query
+            .client_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            builder.push(" AND client_id = ").push_bind(client_id);
+        }
+        if let Some(provider) = query
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            builder.push(" AND provider = ").push_bind(provider);
+        }
+        if let Some(product_id) = query
+            .product_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            builder.push(" AND product_id = ").push_bind(product_id);
+        }
+
+        let limit = query.limit.unwrap_or(50).clamp(1, 200) as i64;
+        builder
+            .push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(limit);
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(Self::row_to_order)
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    pub async fn admin_mark_retry_now(&self, order_id: &str) -> Result<bool, Error> {
+        let result = sqlx::query(
+            r#"
+            UPDATE giftcard_orders
+            SET status = 'retry_pending',
+                next_retry_at = CURRENT_TIMESTAMP,
+                last_error = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND status IN ('queued', 'retry_pending', 'failed', 'creating')
+            "#,
+        )
+        .bind(order_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn audit_reveal(
+        &self,
+        order_id: &str,
+        field_group: &str,
+        reason: &str,
+        admin_id: &str,
+        admin_email: &str,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO ops_reveal_events (
+                entity_type, entity_id, field_group, reason, admin_id, admin_email
+            )
+            VALUES ('giftcard_order', ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(order_id)
+        .bind(field_group)
+        .bind(reason)
+        .bind(admin_id)
+        .bind(admin_email)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     async fn get_order_by_ref(

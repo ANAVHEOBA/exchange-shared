@@ -11,13 +11,16 @@ use validator::Validate;
 use super::{
     fallback_catalog::fallback_catalog,
     schema::{
-        CardOrderResponse, CreateGiftCardOrderRequest, CreatePrepaidCardOrderRequest,
-        GiftCardCatalogQuery, GiftCardCatalogResponse, GiftCardErrorResponse, PrepaidCardsResponse,
+        AdminGiftCardActionResponse, AdminGiftCardOrderDetailResponse,
+        AdminGiftCardOrderListResponse, AdminGiftCardOrderQuery, AdminGiftCardRevealRequest,
+        AdminGiftCardRevealResponse, CardOrderResponse, CreateGiftCardOrderRequest,
+        CreatePrepaidCardOrderRequest, GiftCardCatalogQuery, GiftCardCatalogResponse,
+        GiftCardErrorResponse, PrepaidCardsResponse,
     },
     service::{GiftCardService, GiftCardServiceError},
 };
 use crate::{
-    middleware::{client_identity::AnonymousClientId, user::OptionalUser},
+    middleware::{admin::Admin, client_identity::AnonymousClientId, user::OptionalUser},
     modules::swap::schema::TrocadorTradeResponse,
     services::trocador::{TrocadorError, TrocadorGateway},
     AppState,
@@ -429,6 +432,19 @@ pub async fn get_order_status(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/giftcards/webhooks/trocador",
+    tag = "Gift Cards",
+    request_body = String,
+    responses(
+        (status = 200, description = "Trocador gift card webhook accepted"),
+        (status = 400, description = "Invalid webhook payload", body = GiftCardErrorResponse),
+        (status = 401, description = "Invalid webhook key", body = GiftCardErrorResponse),
+        (status = 500, description = "Server error", body = GiftCardErrorResponse),
+        (status = 503, description = "Webhook not configured", body = GiftCardErrorResponse)
+    )
+)]
 pub async fn trocador_webhook(
     State(state): State<Arc<AppState>>,
     body: String,
@@ -468,4 +484,173 @@ pub async fn trocador_webhook(
         .map_err(map_service_error)?;
 
     Ok(StatusCode::OK)
+}
+
+#[utoipa::path(
+    get,
+    path = "/giftcards/ops/orders",
+    tag = "Gift Card Ops",
+    params(AdminGiftCardOrderQuery),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Admin gift card order list", body = AdminGiftCardOrderListResponse),
+        (status = 400, description = "Invalid order query", body = GiftCardErrorResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 500, description = "Server error", body = GiftCardErrorResponse)
+    )
+)]
+pub async fn admin_list_orders(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Query(query): Query<AdminGiftCardOrderQuery>,
+) -> Result<Json<AdminGiftCardOrderListResponse>, (StatusCode, Json<GiftCardErrorResponse>)> {
+    let service = giftcard_service(&state);
+    let response = service
+        .admin_list_orders(&query)
+        .await
+        .map_err(map_service_error)?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    get,
+    path = "/giftcards/ops/orders/{order_ref}",
+    tag = "Gift Card Ops",
+    params(
+        ("order_ref" = String, Path, description = "Local order id, local trade id, or provider trade id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Admin gift card order detail with sensitive fields masked", body = AdminGiftCardOrderDetailResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Order not found", body = GiftCardErrorResponse),
+        (status = 500, description = "Server error", body = GiftCardErrorResponse)
+    )
+)]
+pub async fn admin_get_order(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(order_ref): Path<String>,
+) -> Result<Json<AdminGiftCardOrderDetailResponse>, (StatusCode, Json<GiftCardErrorResponse>)> {
+    let service = giftcard_service(&state);
+    let response = service
+        .admin_get_order(&order_ref)
+        .await
+        .map_err(map_service_error)?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/giftcards/ops/orders/{order_ref}/retry",
+    tag = "Gift Card Ops",
+    params(
+        ("order_ref" = String, Path, description = "Local order id, local trade id, or provider trade id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Gift card order marked for retry", body = AdminGiftCardActionResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Order not found", body = GiftCardErrorResponse),
+        (status = 500, description = "Server error", body = GiftCardErrorResponse)
+    )
+)]
+pub async fn admin_retry_order(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(order_ref): Path<String>,
+) -> Result<Json<AdminGiftCardActionResponse>, (StatusCode, Json<GiftCardErrorResponse>)> {
+    let service = giftcard_service(&state);
+    let response = service
+        .admin_retry_order(&order_ref)
+        .await
+        .map_err(map_service_error)?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/giftcards/ops/orders/{order_ref}/reconcile",
+    tag = "Gift Card Ops",
+    params(
+        ("order_ref" = String, Path, description = "Local order id, local trade id, or provider trade id")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Gift card order reconciled against provider state", body = AdminGiftCardActionResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Order not found", body = GiftCardErrorResponse),
+        (status = 500, description = "Server error", body = GiftCardErrorResponse),
+        (status = 502, description = "Provider reconciliation error", body = GiftCardErrorResponse)
+    )
+)]
+pub async fn admin_reconcile_order(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+    Path(order_ref): Path<String>,
+) -> Result<Json<AdminGiftCardActionResponse>, (StatusCode, Json<GiftCardErrorResponse>)> {
+    let service = giftcard_service(&state);
+    let response = service
+        .admin_reconcile_order(&order_ref)
+        .await
+        .map_err(map_service_error)?;
+
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/giftcards/ops/orders/{order_ref}/reveal",
+    tag = "Gift Card Ops",
+    params(
+        ("order_ref" = String, Path, description = "Local order id, local trade id, or provider trade id")
+    ),
+    request_body = AdminGiftCardRevealRequest,
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Sensitive gift card fields revealed after audit reason is recorded", body = AdminGiftCardRevealResponse),
+        (status = 400, description = "Invalid reveal reason", body = GiftCardErrorResponse),
+        (status = 401, description = "Missing or invalid admin token", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = crate::modules::admin::schema::AdminErrorResponse),
+        (status = 404, description = "Order not found", body = GiftCardErrorResponse),
+        (status = 500, description = "Server error", body = GiftCardErrorResponse)
+    )
+)]
+pub async fn admin_reveal_order(
+    State(state): State<Arc<AppState>>,
+    admin: Admin,
+    Path(order_ref): Path<String>,
+    Json(req): Json<AdminGiftCardRevealRequest>,
+) -> Result<Json<AdminGiftCardRevealResponse>, (StatusCode, Json<GiftCardErrorResponse>)> {
+    if let Err(error) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(GiftCardErrorResponse::new(error.to_string())),
+        ));
+    }
+
+    let service = giftcard_service(&state);
+    let response = service
+        .admin_reveal_order(&order_ref, &admin.id, &admin.email, &req.reason)
+        .await
+        .map_err(map_service_error)?;
+
+    Ok(Json(response))
 }

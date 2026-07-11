@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use super::controller::{
     create_donation_swap, create_swap, get_admin_swap_history, get_admin_swap_status,
-    get_client_swap_history, get_currencies, get_donation_rates, get_donation_target, get_estimate,
-    get_pairs, get_providers, get_rates, get_swap_history, get_swap_status, trocador_webhook,
+    get_admin_swap_timeline, get_client_swap_history, get_currencies, get_donation_rates,
+    get_donation_target, get_estimate, get_pairs, get_providers, get_rates, get_swap_history,
+    get_swap_status, reconcile_admin_swap, refresh_admin_swap_status, trocador_webhook,
     validate_address,
 };
 use crate::AppState;
@@ -32,6 +33,9 @@ pub fn swap_routes() -> Router<Arc<AppState>> {
 
 pub fn swap_admin_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/swaps", get(get_admin_swap_history))
-        .route("/swaps/{id}", get(get_admin_swap_status))
+        .route("/ops", get(get_admin_swap_history))
+        .route("/ops/{id}", get(get_admin_swap_status))
+        .route("/ops/{id}/timeline", get(get_admin_swap_timeline))
+        .route("/ops/{id}/refresh", post(refresh_admin_swap_status))
+        .route("/ops/{id}/reconcile", post(reconcile_admin_swap))
 }

@@ -254,8 +254,8 @@ pub async fn receive_webhook(
 
 #[utoipa::path(
     get,
-    path = "/admin/whatsapp/conversations",
-    tag = "Admin",
+    path = "/whatsapp/ops/conversations",
+    tag = "Support Ops",
     params(AdminConversationQuery),
     security(
         ("bearer_auth" = [])
@@ -310,8 +310,8 @@ pub async fn list_admin_conversations(
 
 #[utoipa::path(
     get,
-    path = "/admin/whatsapp/conversations/{wa_id}",
-    tag = "Admin",
+    path = "/whatsapp/ops/conversations/{wa_id}",
+    tag = "Support Ops",
     params(
         ("wa_id" = String, Path, description = "WhatsApp user id")
     ),
@@ -441,8 +441,8 @@ pub async fn get_admin_conversation(
 
 #[utoipa::path(
     patch,
-    path = "/admin/whatsapp/conversations/{wa_id}",
-    tag = "Admin",
+    path = "/whatsapp/ops/conversations/{wa_id}",
+    tag = "Support Ops",
     params(
         ("wa_id" = String, Path, description = "WhatsApp user id")
     ),

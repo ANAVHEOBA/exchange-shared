@@ -1,0 +1,14 @@
+{
+  "name": "assetar-api-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Assetar API documentation and Postman generation tooling.",
+  "scripts": {
+    "postman:collection": "sh scripts/postman/generate-collection.sh",
+    "postman:collection:prod": "OPENAPI_URL=https://exchange-shared-production.up.railway.app/api-docs/openapi.json sh scripts/postman/generate-collection.sh",
+    "postman:validate": "node scripts/postman/validate-json.mjs"
+  },
+  "devDependencies": {
+    "openapi-to-postmanv2": "^6.3.0"
+  }
+}

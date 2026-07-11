@@ -23,7 +23,8 @@ use docs::ApiDoc;
 use modules::admin::admin_routes;
 use modules::auth::auth_routes;
 use modules::giftcard::{
-    giftcard_public_routes, giftcard_webhook_routes, worker::run_giftcard_worker,
+    giftcard_admin_routes, giftcard_public_routes, giftcard_webhook_routes,
+    worker::run_giftcard_worker,
 };
 use modules::swap::{swap_admin_routes, swap_routes};
 use modules::whatsapp::{whatsapp_admin_routes, whatsapp_routes, worker::run_whatsapp_worker};
@@ -145,9 +146,10 @@ pub async fn create_app(
         .route("/branding/assetar-logo.jpg", get(assetar_logo_legacy))
         .route("/branding/assetar-logo.png", get(assetar_logo))
         .route("/health", get(health_check))
-        .nest("/admin", admin_routes())
-        .nest("/admin", swap_admin_routes())
-        .nest("/admin", whatsapp_admin_routes())
+        .nest("/ops", admin_routes())
+        .nest("/swap", swap_admin_routes())
+        .nest("/giftcards", giftcard_admin_routes())
+        .nest("/whatsapp", whatsapp_admin_routes())
         .nest("/auth", auth_routes(state.clone()))
         .nest("/swap", swap_routes())
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -199,6 +201,14 @@ async fn ping() -> &'static str {
     "pong"
 }
 
+#[utoipa::path(
+    get,
+    path = "/branding/assetar-logo.png",
+    tag = "System",
+    responses(
+        (status = 200, description = "Assetar PNG logo", content_type = "image/png", body = String)
+    )
+)]
 async fn assetar_logo() -> impl IntoResponse {
     (
         [
@@ -209,6 +219,14 @@ async fn assetar_logo() -> impl IntoResponse {
     )
 }
 
+#[utoipa::path(
+    get,
+    path = "/branding/assetar-logo.jpg",
+    tag = "System",
+    responses(
+        (status = 200, description = "Legacy Assetar JPEG logo", content_type = "image/jpeg", body = String)
+    )
+)]
 async fn assetar_logo_legacy() -> impl IntoResponse {
     (
         [

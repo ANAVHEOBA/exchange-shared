@@ -13,9 +13,9 @@ pub fn whatsapp_routes() -> Router<Arc<AppState>> {
 
 pub fn whatsapp_admin_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/whatsapp/conversations", get(list_admin_conversations))
+        .route("/ops/conversations", get(list_admin_conversations))
         .route(
-            "/whatsapp/conversations/{wa_id}",
+            "/ops/conversations/{wa_id}",
             get(get_admin_conversation).patch(update_admin_conversation),
         )
 }

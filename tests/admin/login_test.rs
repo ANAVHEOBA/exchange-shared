@@ -10,7 +10,7 @@ async fn admin_login_with_valid_credentials_returns_tokens() {
 
     let response = ctx
         .server
-        .post("/admin/login")
+        .post("/ops/login")
         .json(&json!({
             "email": DEFAULT_ADMIN_EMAIL,
             "password": DEFAULT_ADMIN_PASSWORD
@@ -34,7 +34,7 @@ async fn admin_login_with_invalid_password_returns_unauthorized() {
 
     let response = ctx
         .server
-        .post("/admin/login")
+        .post("/ops/login")
         .json(&json!({
             "email": DEFAULT_ADMIN_EMAIL,
             "password": "wrong-password"

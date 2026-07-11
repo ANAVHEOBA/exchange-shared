@@ -660,6 +660,26 @@ pub struct SwapStatusResponse {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SwapTimelineEvent {
+    pub status: SwapStatus,
+    pub message: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SwapTimelineResponse {
+    pub swap_id: String,
+    pub timeline: Vec<SwapTimelineEvent>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SwapOpsActionResponse {
+    pub action: String,
+    pub message: String,
+    pub status: SwapStatusResponse,
+}
+
 // =============================================================================
 // SWAP HISTORY (Keyset Pagination)
 // =============================================================================

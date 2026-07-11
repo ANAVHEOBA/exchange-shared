@@ -2,8 +2,11 @@ use crate::{
     modules::giftcard::{
         crud::{new_order_id, GiftCardCrud, GiftCardOrderRecord, NewGiftCardOrder},
         schema::{
-            normalize_giftcard_currency_code, CardOrderDetailsResponse, CardOrderResponse,
-            CreateGiftCardOrderRequest, CreatePrepaidCardOrderRequest,
+            normalize_giftcard_currency_code, AdminGiftCardActionResponse,
+            AdminGiftCardOrderDetailResponse, AdminGiftCardOrderListResponse,
+            AdminGiftCardOrderQuery, AdminGiftCardOrderSummary, AdminGiftCardRevealResponse,
+            CardOrderDetailsResponse, CardOrderResponse, CreateGiftCardOrderRequest,
+            CreatePrepaidCardOrderRequest,
         },
     },
     modules::swap::schema::TrocadorTradeResponse,
@@ -366,6 +369,133 @@ impl GiftCardService {
             .map_err(|error| GiftCardServiceError::Database(error.to_string()))
     }
 
+    pub async fn admin_list_orders(
+        &self,
+        query: &AdminGiftCardOrderQuery,
+    ) -> Result<AdminGiftCardOrderListResponse, GiftCardServiceError> {
+        let orders = self
+            .crud
+            .admin_list_orders(query)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
+
+        Ok(AdminGiftCardOrderListResponse {
+            orders: orders.into_iter().map(admin_summary).collect(),
+        })
+    }
+
+    pub async fn admin_get_order(
+        &self,
+        order_ref: &str,
+    ) -> Result<AdminGiftCardOrderDetailResponse, GiftCardServiceError> {
+        let record = self
+            .crud
+            .get_order_by_reference(order_ref)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
+            .ok_or(GiftCardServiceError::NotFound)?;
+
+        Ok(admin_detail(record))
+    }
+
+    pub async fn admin_retry_order(
+        &self,
+        order_ref: &str,
+    ) -> Result<AdminGiftCardActionResponse, GiftCardServiceError> {
+        let record = self
+            .crud
+            .get_order_by_reference(order_ref)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
+            .ok_or(GiftCardServiceError::NotFound)?;
+
+        self.crud
+            .admin_mark_retry_now(&record.id)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
+
+        let _ = self.process_order(&record.id, None).await;
+        let updated = self
+            .crud
+            .get_order_by_id(&record.id)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
+            .ok_or(GiftCardServiceError::NotFound)?;
+
+        Ok(AdminGiftCardActionResponse {
+            action: "retry".to_string(),
+            message: "Retry requested".to_string(),
+            order: admin_detail(updated),
+        })
+    }
+
+    pub async fn admin_reconcile_order(
+        &self,
+        order_ref: &str,
+    ) -> Result<AdminGiftCardActionResponse, GiftCardServiceError> {
+        let record = self
+            .crud
+            .get_order_by_reference(order_ref)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
+            .ok_or(GiftCardServiceError::NotFound)?;
+
+        let Some(trade_id) = record.upstream_trade_id.clone() else {
+            return Err(GiftCardServiceError::Validation(
+                "Cannot reconcile a gift card order before provider trade id exists".to_string(),
+            ));
+        };
+
+        let updated = self
+            .refresh_from_trade_status(&record.id, &trade_id)
+            .await?;
+
+        Ok(AdminGiftCardActionResponse {
+            action: "reconcile".to_string(),
+            message: "Provider status refreshed".to_string(),
+            order: admin_detail(updated),
+        })
+    }
+
+    pub async fn admin_reveal_order(
+        &self,
+        order_ref: &str,
+        admin_id: &str,
+        admin_email: &str,
+        reason: &str,
+    ) -> Result<AdminGiftCardRevealResponse, GiftCardServiceError> {
+        let record = self
+            .crud
+            .get_order_by_reference(order_ref)
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?
+            .ok_or(GiftCardServiceError::NotFound)?;
+
+        self.crud
+            .audit_reveal(
+                &record.id,
+                "giftcard_sensitive_details",
+                reason,
+                admin_id,
+                admin_email,
+            )
+            .await
+            .map_err(|error| GiftCardServiceError::Database(error.to_string()))?;
+
+        let details = record.details.clone().map(CardOrderDetailsResponse::from);
+
+        Ok(AdminGiftCardRevealResponse {
+            order_id: record.id,
+            recipient_email: record.recipient_email,
+            provider_password: record.provider_password,
+            activation_link: details
+                .as_ref()
+                .and_then(|value| value.activation_link.clone()),
+            redeem_code: details.as_ref().and_then(|value| value.redeem_code.clone()),
+            details,
+        })
+    }
+
     pub async fn reconcile_active_batch(
         &self,
         limit: usize,
@@ -616,6 +746,86 @@ impl GiftCardService {
             details: record.details.map(CardOrderDetailsResponse::from),
         }
     }
+}
+
+fn admin_detail(record: GiftCardOrderRecord) -> AdminGiftCardOrderDetailResponse {
+    let risk_flags = giftcard_risk_flags(&record);
+    AdminGiftCardOrderDetailResponse {
+        order: admin_summary(record.clone()),
+        deposit_address: record.deposit_address,
+        deposit_extra_id: record.deposit_extra_id,
+        settlement_address: record.settlement_address,
+        settlement_extra_id: record.settlement_extra_id,
+        refund_address: record.refund_address,
+        refund_extra_id: record.refund_extra_id,
+        details_masked: record.details.is_some() || record.provider_password.is_some(),
+        risk_flags,
+    }
+}
+
+fn admin_summary(record: GiftCardOrderRecord) -> AdminGiftCardOrderSummary {
+    let queued = matches!(
+        record.status.as_str(),
+        "queued" | "creating" | "retry_pending"
+    );
+    let retryable = !matches!(record.status.as_str(), "completed" | "refunded" | "expired");
+
+    AdminGiftCardOrderSummary {
+        order_id: record.id,
+        trade_id: record.upstream_trade_id,
+        order_kind: record.order_kind,
+        product_id: record.product_id,
+        prepaid_provider: record.prepaid_provider,
+        currency_code: record.currency_code,
+        provider: record.provider,
+        provider_trade_id: record.provider_trade_id,
+        recipient_email_masked: mask_email(&record.recipient_email),
+        status: record.status,
+        provider_status: record.provider_status,
+        ticker_from: record.source_ticker,
+        network_from: record.source_network,
+        amount_from: record.amount,
+        amount_to: record.amount_to,
+        queued,
+        retryable,
+        last_error: record.last_error,
+        attempt_count: record.attempt_count,
+        next_retry_at: record.next_retry_at.map(|value| value.to_rfc3339()),
+        last_synced_at: record.last_synced_at.map(|value| value.to_rfc3339()),
+        created_at: record.created_at.to_rfc3339(),
+        updated_at: record.updated_at.to_rfc3339(),
+        completed_at: record.completed_at.map(|value| value.to_rfc3339()),
+    }
+}
+
+fn giftcard_risk_flags(record: &GiftCardOrderRecord) -> Vec<String> {
+    let mut flags = Vec::new();
+    if !matches!(record.source_ticker.as_str(), "USDT" | "USDC" | "DAI") {
+        if let Some(amount_to) = record.amount_to {
+            if (record.amount - amount_to).abs() < 0.00000001 {
+                flags.push("crypto_amount_equals_card_value".to_string());
+            }
+        }
+    }
+    if record.currency_code.is_none() {
+        flags.push("missing_currency_code".to_string());
+    }
+    if matches!(
+        record.status.as_str(),
+        "queued" | "creating" | "retry_pending"
+    ) && record.updated_at < Utc::now() - chrono::Duration::minutes(30)
+    {
+        flags.push("stale_active_order".to_string());
+    }
+    flags
+}
+
+fn mask_email(email: &str) -> String {
+    let Some((local, domain)) = email.split_once('@') else {
+        return "[masked]".to_string();
+    };
+    let prefix: String = local.chars().take(2).collect();
+    format!("{}***@{}", prefix, domain)
 }
 
 fn owner_key(user_id: Option<&str>, client_id: &str) -> String {

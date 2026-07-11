@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use super::crud::SwapError;
 use super::repository::{NewSwapRecord, SwapRepository, SwapStatusRecord};
-use super::schema::{CreateSwapRequest, CreateSwapResponse, SwapStatus, SwapStatusResponse};
+use super::schema::{
+    CreateSwapRequest, CreateSwapResponse, SwapStatus, SwapStatusResponse, SwapTimelineResponse,
+};
 use crate::modules::monitor::crud::MonitorCrud;
 use crate::modules::wallet::crud::WalletCrud;
 use crate::services::gas::GasEstimator;
@@ -698,6 +700,26 @@ impl SwapService {
         }
 
         self.build_status_response(swap_id, swap).await
+    }
+
+    pub async fn get_swap_timeline(
+        &self,
+        swap_id: &str,
+    ) -> Result<SwapTimelineResponse, SwapError> {
+        let exists = self
+            .repository
+            .get_swap_status_record(swap_id)
+            .await?
+            .is_some();
+        if !exists {
+            return Err(SwapError::SwapNotFound);
+        }
+
+        let timeline = self.repository.get_status_timeline(swap_id).await?;
+        Ok(SwapTimelineResponse {
+            swap_id: swap_id.to_string(),
+            timeline,
+        })
     }
 
     async fn build_status_response(

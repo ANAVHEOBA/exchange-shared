@@ -356,3 +356,84 @@ pub struct CardOrderResponse {
     pub completed_at: Option<String>,
     pub details: Option<CardOrderDetailsResponse>,
 }
+
+#[derive(Debug, Deserialize, Clone, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct AdminGiftCardOrderQuery {
+    pub status: Option<String>,
+    pub email: Option<String>,
+    pub trade_id: Option<String>,
+    pub client_id: Option<String>,
+    pub provider: Option<String>,
+    pub product_id: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Clone, ToSchema)]
+pub struct AdminGiftCardOrderSummary {
+    pub order_id: String,
+    pub trade_id: Option<String>,
+    pub order_kind: String,
+    pub product_id: Option<String>,
+    pub prepaid_provider: Option<String>,
+    pub currency_code: Option<String>,
+    pub provider: Option<String>,
+    pub provider_trade_id: Option<String>,
+    pub recipient_email_masked: String,
+    pub status: String,
+    pub provider_status: Option<String>,
+    pub ticker_from: String,
+    pub network_from: String,
+    pub amount_from: f64,
+    pub amount_to: Option<f64>,
+    pub queued: bool,
+    pub retryable: bool,
+    pub last_error: Option<String>,
+    pub attempt_count: i32,
+    pub next_retry_at: Option<String>,
+    pub last_synced_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminGiftCardOrderListResponse {
+    pub orders: Vec<AdminGiftCardOrderSummary>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminGiftCardOrderDetailResponse {
+    pub order: AdminGiftCardOrderSummary,
+    pub deposit_address: Option<String>,
+    pub deposit_extra_id: Option<String>,
+    pub settlement_address: Option<String>,
+    pub settlement_extra_id: Option<String>,
+    pub refund_address: Option<String>,
+    pub refund_extra_id: Option<String>,
+    pub details_masked: bool,
+    pub risk_flags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AdminGiftCardRevealRequest {
+    #[validate(length(min = 3, max = 1000))]
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminGiftCardRevealResponse {
+    pub order_id: String,
+    pub recipient_email: String,
+    pub provider_password: Option<String>,
+    pub activation_link: Option<String>,
+    pub redeem_code: Option<String>,
+    pub details: Option<CardOrderDetailsResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AdminGiftCardActionResponse {
+    pub action: String,
+    pub message: String,
+    pub order: AdminGiftCardOrderDetailResponse,
+}

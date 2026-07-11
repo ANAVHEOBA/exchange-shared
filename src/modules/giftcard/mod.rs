@@ -6,4 +6,4 @@ pub mod schema;
 pub mod service;
 pub mod worker;
 
-pub use routes::{giftcard_public_routes, giftcard_webhook_routes};
+pub use routes::{giftcard_admin_routes, giftcard_public_routes, giftcard_webhook_routes};
