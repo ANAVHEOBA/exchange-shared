@@ -1,5 +1,9 @@
 use utoipa::{
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+    openapi::{
+        security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+        server::ServerBuilder,
+        Server,
+    },
     Modify, OpenApi,
 };
 
@@ -104,10 +108,6 @@ use crate::{
         title = "Assetar API",
         version = env!("CARGO_PKG_VERSION"),
         description = "Assetar backend API for auth, swaps, gift cards, operations, webhooks, and support workflows."
-    ),
-    servers(
-        (url = "http://localhost:3000", description = "Local Rust backend"),
-        (url = "https://exchange-shared-production.up.railway.app", description = "Production")
     ),
     paths(
         root,
@@ -285,7 +285,7 @@ use crate::{
             UpdateAdminConversationRequest
         )
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&OpenApiAddon),
     tags(
         (name = "System", description = "Service root and health endpoints"),
         (name = "Admin", description = "Administrative authentication endpoints"),
@@ -301,10 +301,61 @@ use crate::{
 )]
 pub struct ApiDoc;
 
-struct SecurityAddon;
+struct OpenApiAddon;
 
-impl Modify for SecurityAddon {
+fn configured_public_base_url() -> Option<String> {
+    std::env::var("PUBLIC_BACKEND_URL")
+        .ok()
+        .or_else(|| std::env::var("RENDER_EXTERNAL_URL").ok())
+        .or_else(|| std::env::var("API_BASE_URL").ok())
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn configured_local_base_url() -> String {
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(3000);
+    format!("http://localhost:{}", port)
+}
+
+fn configured_servers() -> Vec<Server> {
+    let local = configured_local_base_url();
+    let mut servers = Vec::new();
+
+    if let Some(public) = configured_public_base_url() {
+        servers.push(
+            ServerBuilder::new()
+                .url(public.clone())
+                .description(Some("Public deployment"))
+                .build(),
+        );
+
+        if public != local {
+            servers.push(
+                ServerBuilder::new()
+                    .url(local)
+                    .description(Some("Local Rust backend"))
+                    .build(),
+            );
+        }
+    } else {
+        servers.push(
+            ServerBuilder::new()
+                .url(local)
+                .description(Some("Local Rust backend"))
+                .build(),
+        );
+    }
+
+    servers
+}
+
+impl Modify for OpenApiAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi.servers = Some(configured_servers());
+
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer_auth",
@@ -390,5 +441,13 @@ mod tests {
         let components = document.components.expect("components present");
 
         assert!(components.security_schemes.contains_key("bearer_auth"));
+    }
+
+    #[test]
+    fn generated_openapi_includes_server_entries() {
+        let document = ApiDoc::openapi();
+        let servers = document.servers.expect("servers present");
+
+        assert!(!servers.is_empty());
     }
 }
