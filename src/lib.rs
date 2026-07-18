@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
@@ -48,6 +48,14 @@ pub struct AppState {
     pub rpc_manager: Arc<RpcManager>,
     pub payout_policy: PayoutPolicyConfig,
 }
+
+const DEFAULT_CORS_ORIGINS: &[&str] = &[
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://exchange-frontend-sand.vercel.app",
+    "https://exchangefrontend-admin.vercel.app",
+];
 
 pub async fn create_app(
     db: DbPool,
@@ -498,10 +506,22 @@ fn overall_health_status(database: &str, redis: &str, trocador: &str, rpc: &str)
 }
 
 fn configured_cors_layer() -> Result<Option<CorsLayer>, String> {
-    let origins = parse_cors_origins(&std::env::var("CORS_ORIGINS").unwrap_or_default())?;
+    let configured_origins = std::env::var("CORS_ORIGINS").unwrap_or_default();
+    let raw_origins = if configured_origins.trim().is_empty() {
+        DEFAULT_CORS_ORIGINS.join(",")
+    } else {
+        format!(
+            "{},{}",
+            DEFAULT_CORS_ORIGINS.join(","),
+            configured_origins.trim()
+        )
+    };
+    let origins = parse_cors_origins(&raw_origins)?;
 
     if origins.is_empty() {
-        tracing::warn!("CORS_ORIGINS is empty. Cross-origin browser access is disabled.");
+        tracing::warn!(
+            "No valid CORS origins were configured. Cross-origin browser access is disabled."
+        );
         return Ok(None);
     }
 
@@ -522,14 +542,25 @@ fn configured_cors_layer() -> Result<Option<CorsLayer>, String> {
 }
 
 fn parse_cors_origins(raw: &str) -> Result<Vec<HeaderValue>, String> {
-    raw.split(',')
+    let mut seen = HashSet::new();
+    let mut parsed = Vec::new();
+
+    for origin in raw
+        .split(',')
         .map(str::trim)
         .filter(|origin| !origin.is_empty())
-        .map(|origin| {
+    {
+        if !seen.insert(origin.to_string()) {
+            continue;
+        }
+
+        parsed.push(
             HeaderValue::from_str(origin)
-                .map_err(|e| format!("Invalid CORS origin '{}': {}", origin, e))
-        })
-        .collect()
+                .map_err(|e| format!("Invalid CORS origin '{}': {}", origin, e))?,
+        );
+    }
+
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -549,6 +580,16 @@ mod tests {
     fn ignores_empty_cors_entries() {
         let origins =
             parse_cors_origins(" , https://app.example.com ,, ").expect("Origins should parse");
+
+        assert_eq!(origins.len(), 1);
+    }
+
+    #[test]
+    fn de_duplicates_repeated_cors_entries() {
+        let origins = parse_cors_origins(
+            "https://exchangefrontend-admin.vercel.app, https://exchangefrontend-admin.vercel.app",
+        )
+        .expect("Origins should parse");
 
         assert_eq!(origins.len(), 1);
     }
