@@ -400,7 +400,6 @@ impl<'a> AdminCrud<'a> {
             r#"
             SELECT CAST(COALESCE(SUM(amount), 0) AS DOUBLE)
             FROM swaps
-            WHERE status = 'completed'
             "#,
         )
         .fetch_one(&self.db)
@@ -410,9 +409,8 @@ impl<'a> AdminCrud<'a> {
 
         let total_giftcard_sales = sqlx::query_scalar::<_, Option<f64>>(
             r#"
-            SELECT CAST(COALESCE(SUM(amount), 0) AS DOUBLE)
+            SELECT CAST(COALESCE(SUM(COALESCE(amount_to, amount)), 0) AS DOUBLE)
             FROM giftcard_orders
-            WHERE status = 'completed'
             "#,
         )
         .fetch_one(&self.db)
@@ -544,7 +542,7 @@ impl<'a> AdminCrud<'a> {
                     COALESCE(currency_code, source_network) AS subtitle,
                     status,
                     provider,
-                    CAST(amount AS DOUBLE) AS amount,
+                    CAST(COALESCE(amount_to, amount) AS DOUBLE) AS amount,
                     COALESCE(currency_code, source_ticker) AS currency,
                     CONCAT('/giftcards/ops/orders/', id) AS detail_path,
                     created_at
@@ -576,19 +574,79 @@ impl<'a> AdminCrud<'a> {
     }
 
     async fn dashboard_volume_trend(&self) -> Result<Vec<OpsDashboardVolumePoint>, AdminError> {
-        let rows = self.finance_daily(None, None).await?;
+        let swap_rows = sqlx::query(
+            r#"
+            SELECT
+                DATE(created_at) AS activity_date,
+                CAST(COUNT(*) AS SIGNED) AS swap_count,
+                CAST(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS SIGNED) AS completed_swaps,
+                CAST(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS SIGNED) AS failed_swaps,
+                CAST(COALESCE(SUM(amount), 0) AS DOUBLE) AS swap_volume_input
+            FROM swaps
+            GROUP BY DATE(created_at)
+            ORDER BY activity_date DESC
+            LIMIT 30
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
 
-        Ok(rows
+        let giftcard_rows = sqlx::query(
+            r#"
+            SELECT
+                DATE(created_at) AS activity_date,
+                CAST(COUNT(*) AS SIGNED) AS giftcard_count,
+                CAST(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS SIGNED) AS giftcard_completed,
+                CAST(COALESCE(SUM(COALESCE(amount_to, amount)), 0) AS DOUBLE) AS giftcard_volume
+            FROM giftcard_orders
+            GROUP BY DATE(created_at)
+            ORDER BY activity_date DESC
+            LIMIT 30
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let mut by_date = std::collections::BTreeMap::new();
+
+        for row in swap_rows {
+            let date: String = row.get("activity_date");
+            by_date.insert(
+                date,
+                OpsDashboardVolumePoint {
+                    date: String::new(),
+                    completed_swaps: int_field_to_u64(&row, "completed_swaps"),
+                    failed_swaps: int_field_to_u64(&row, "failed_swaps"),
+                    swap_volume_input: float_field(&row, "swap_volume_input"),
+                    giftcard_completed: 0,
+                    giftcard_volume: 0.0,
+                },
+            );
+        }
+
+        for row in giftcard_rows {
+            let date: String = row.get("activity_date");
+            let entry = by_date.entry(date).or_insert_with(|| OpsDashboardVolumePoint {
+                date: String::new(),
+                completed_swaps: 0,
+                failed_swaps: 0,
+                swap_volume_input: 0.0,
+                giftcard_completed: 0,
+                giftcard_volume: 0.0,
+            });
+            entry.giftcard_completed = int_field_to_u64(&row, "giftcard_completed");
+            entry.giftcard_volume = float_field(&row, "giftcard_volume");
+        }
+
+        Ok(by_date
             .into_iter()
-            .take(30)
-            .map(|row| OpsDashboardVolumePoint {
-                date: row.date,
-                completed_swaps: row.completed_swaps,
-                failed_swaps: row.failed_swaps,
-                swap_volume_input: row.swap_volume_input,
-                giftcard_completed: row.giftcard_completed,
-                giftcard_volume: row.giftcard_volume,
+            .map(|(date, mut point)| {
+                point.date = date;
+                point
             })
+            .rev()
             .collect())
     }
 
