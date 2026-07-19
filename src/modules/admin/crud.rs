@@ -8,8 +8,8 @@ use super::{
     schema::{
         AdminLoginResponse, AdminOverviewResponse, AdminOverviewSwapMetrics,
         AdminOverviewWhatsAppMetrics, AdminSwapExportQuery, AdminUserResponse,
-        OpsCreateNoteRequest, OpsFinanceDailyRow, OpsFinanceProviderRow, OpsFinanceQuery,
-        OpsFinanceResponse, OpsFinanceTotals, OpsHealthResponse, OpsNoteResponse,
+        OpsCreateNoteRequest, OpsDashboardResponse, OpsFinanceDailyRow, OpsFinanceProviderRow,
+        OpsFinanceQuery, OpsFinanceResponse, OpsFinanceTotals, OpsHealthResponse, OpsNoteResponse,
         OpsProviderHealthRow, OpsRiskFlag, OpsSearchGiftCardResult, OpsSearchQuery,
         OpsSearchResponse, OpsSearchSupportResult, OpsSearchSwapResult, OpsWebhookDeliveryRow,
         OpsWebhookMonitorResponse, OpsWorkerHealth,
@@ -335,6 +335,18 @@ impl<'a> AdminCrud<'a> {
                 giftcard_sell_leads: giftcard_sell_leads.max(0) as u64,
                 waiting_user: waiting_user.max(0) as u64,
             },
+        })
+    }
+
+    pub async fn dashboard(&self) -> Result<OpsDashboardResponse, AdminError> {
+        let (summary, health) = tokio::try_join!(self.overview(), self.ops_health())?;
+
+        Ok(OpsDashboardResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            summary,
+            worker: health.worker,
+            providers: health.providers,
+            risk_flags: health.risk_flags,
         })
     }
 

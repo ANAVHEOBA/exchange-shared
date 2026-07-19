@@ -83,6 +83,15 @@ pub struct AdminOverviewResponse {
     pub whatsapp: AdminOverviewWhatsAppMetrics,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardResponse {
+    pub generated_at: String,
+    pub summary: AdminOverviewResponse,
+    pub worker: OpsWorkerHealth,
+    pub providers: Vec<OpsProviderHealthRow>,
+    pub risk_flags: Vec<OpsRiskFlag>,
+}
+
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[into_params(parameter_in = Query)]
 pub struct OpsSearchQuery {

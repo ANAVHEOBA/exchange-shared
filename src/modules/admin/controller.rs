@@ -14,8 +14,8 @@ use super::{
     crud::{AdminCrud, AdminError},
     schema::{
         AdminErrorResponse, AdminLoginRequest, AdminLoginResponse, AdminOverviewResponse,
-        AdminSwapExportQuery, OpsCreateNoteRequest, OpsFinanceQuery, OpsFinanceResponse,
-        OpsHealthResponse, OpsNoteResponse, OpsSearchQuery, OpsSearchResponse,
+        AdminSwapExportQuery, OpsCreateNoteRequest, OpsDashboardResponse, OpsFinanceQuery,
+        OpsFinanceResponse, OpsHealthResponse, OpsNoteResponse, OpsSearchQuery, OpsSearchResponse,
         OpsWebhookMonitorResponse,
     },
 };
@@ -93,6 +93,29 @@ pub async fn overview(
         (status, Json(AdminErrorResponse::new(error.to_string())))
     })?;
 
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    get,
+    path = "/ops/dashboard",
+    tag = "Operations",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Overview snapshot for the admin dashboard", body = OpsDashboardResponse),
+        (status = 401, description = "Missing or invalid admin token", body = AdminErrorResponse),
+        (status = 403, description = "Admin access required", body = AdminErrorResponse),
+        (status = 500, description = "Server error", body = AdminErrorResponse)
+    )
+)]
+pub async fn dashboard(
+    State(state): State<Arc<AppState>>,
+    _admin: Admin,
+) -> Result<Json<OpsDashboardResponse>, (StatusCode, Json<AdminErrorResponse>)> {
+    let crud = AdminCrud::new(state.db.clone(), &state.jwt_service);
+    let response = crud.dashboard().await.map_err(map_admin_error)?;
     Ok(Json(response))
 }
 
