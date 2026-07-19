@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use csv::Writer;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -612,7 +612,7 @@ impl<'a> AdminCrud<'a> {
         let mut by_date = std::collections::BTreeMap::new();
 
         for row in swap_rows {
-            let date: String = row.get("activity_date");
+            let date = row.get::<NaiveDate, _>("activity_date").to_string();
             by_date.insert(
                 date,
                 OpsDashboardVolumePoint {
@@ -627,7 +627,7 @@ impl<'a> AdminCrud<'a> {
         }
 
         for row in giftcard_rows {
-            let date: String = row.get("activity_date");
+            let date = row.get::<NaiveDate, _>("activity_date").to_string();
             let entry = by_date.entry(date).or_insert_with(|| OpsDashboardVolumePoint {
                 date: String::new(),
                 completed_swaps: 0,
