@@ -638,6 +638,10 @@ pub struct SwapStatusResponse {
     pub recipient_address: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient_extra_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_extra_id: Option<String>,
     pub rate: f64,
     pub estimated_receive: f64,
     #[serde(skip_serializing_if = "Option::is_none")]

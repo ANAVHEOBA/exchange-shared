@@ -1,3 +1,4 @@
+use crate::modules::giftcard::schema::GiftCardProductResponse;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use validator::{Validate, ValidationError};
@@ -87,9 +88,84 @@ pub struct AdminOverviewResponse {
 pub struct OpsDashboardResponse {
     pub generated_at: String,
     pub summary: AdminOverviewResponse,
+    pub kpis: OpsDashboardKpis,
+    pub status_breakdown: OpsDashboardStatusBreakdown,
+    pub quick_access: Vec<OpsDashboardQuickAccessItem>,
+    pub recent_activity: Vec<OpsDashboardRecentActivityItem>,
+    pub volume_trend: Vec<OpsDashboardVolumePoint>,
+    pub top_pairs: Vec<OpsDashboardTopPair>,
+    pub top_giftcards: Vec<OpsDashboardTopGiftCard>,
     pub worker: OpsWorkerHealth,
     pub providers: Vec<OpsProviderHealthRow>,
     pub risk_flags: Vec<OpsRiskFlag>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardKpis {
+    pub total_swap_volume: f64,
+    pub total_giftcard_sales: f64,
+    pub total_platform_revenue: f64,
+    pub total_transactions: u64,
+    pub active_users: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardStatusBreakdown {
+    pub completed: u64,
+    pub failed: u64,
+    pub expired: u64,
+    pub refunded: u64,
+    pub open: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardQuickAccessItem {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardRecentActivityItem {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub status: String,
+    pub provider: Option<String>,
+    pub amount: Option<f64>,
+    pub currency: Option<String>,
+    pub detail_path: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardVolumePoint {
+    pub date: String,
+    pub completed_swaps: u64,
+    pub failed_swaps: u64,
+    pub swap_volume_input: f64,
+    pub giftcard_completed: u64,
+    pub giftcard_volume: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardTopPair {
+    pub from_currency: String,
+    pub from_network: String,
+    pub to_currency: String,
+    pub to_network: String,
+    pub trades: u64,
+    pub volume_input: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsDashboardTopGiftCard {
+    pub product: String,
+    pub currency: Option<String>,
+    pub orders: u64,
+    pub volume: f64,
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -269,6 +345,202 @@ pub struct OpsWebhookDeliveryRow {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OpsWebhookMonitorResponse {
     pub deliveries: Vec<OpsWebhookDeliveryRow>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct OpsWebhookQuery {
+    pub include_delivered: Option<bool>,
+    pub swap_id: Option<String>,
+    pub event_type: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsWebhookDetailResponse {
+    pub delivery: OpsWebhookDeliveryRow,
+    pub webhook_id: String,
+    pub signature: String,
+    #[schema(value_type = Object)]
+    pub payload: serde_json::Value,
+    pub response_body: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct OpsAssetQuery {
+    pub search: Option<String>,
+    pub ticker: Option<String>,
+    pub network: Option<String>,
+    pub memo_required: Option<bool>,
+    pub active_only: Option<bool>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct OpsAssetDetailQuery {
+    pub network: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsAssetRow {
+    pub ticker: String,
+    pub name: String,
+    pub network: String,
+    pub memo_required: bool,
+    pub extra_id_name: Option<String>,
+    pub image: Option<String>,
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+    pub is_active: bool,
+    pub last_synced_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsAssetListResponse {
+    pub generated_at: String,
+    pub assets: Vec<OpsAssetRow>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsAssetDetailResponse {
+    pub generated_at: String,
+    pub asset: OpsAssetRow,
+    pub provider_count: u64,
+    pub source_pair_count: u64,
+    pub destination_pair_count: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsSyncResponse {
+    pub generated_at: String,
+    pub synced_count: usize,
+    pub target: String,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct OpsAssetValidateRequest {
+    #[validate(length(min = 1, max = 20), custom(function = "validate_non_empty"))]
+    pub ticker: String,
+    #[validate(length(min = 1, max = 50), custom(function = "validate_non_empty"))]
+    pub network: String,
+    #[validate(length(min = 1, max = 255), custom(function = "validate_non_empty"))]
+    pub address: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsAssetValidateResponse {
+    pub valid: bool,
+    pub ticker: String,
+    pub network: String,
+    pub address: String,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct OpsGiftCardCatalogQuery {
+    pub country: Option<String>,
+    pub search: Option<String>,
+    pub category: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct OpsGiftCardCatalogDetailQuery {
+    pub country: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsGiftCardCatalogResponse {
+    pub generated_at: String,
+    pub country: Option<String>,
+    pub source: String,
+    pub cards: Vec<GiftCardProductResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsGiftCardCatalogDetailResponse {
+    pub generated_at: String,
+    pub source: String,
+    pub card: GiftCardProductResponse,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct OpsProviderListQuery {
+    pub search: Option<String>,
+    pub rating: Option<String>,
+    pub markup_enabled: Option<bool>,
+    pub active_only: Option<bool>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsProviderSummary {
+    pub id: String,
+    pub name: String,
+    pub kyc_rating: String,
+    pub insurance_percentage: Option<f64>,
+    pub markup_enabled: bool,
+    pub eta_minutes: Option<i32>,
+    pub is_active: bool,
+    pub last_synced_at: Option<String>,
+    pub open_swaps: u64,
+    pub failed_swaps_24h: u64,
+    pub completed_swaps_30d: u64,
+    pub volume_input_30d: f64,
+    pub platform_fees_30d: f64,
+    pub last_activity_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsProviderListResponse {
+    pub generated_at: String,
+    pub providers: Vec<OpsProviderSummary>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsProviderDetailResponse {
+    pub generated_at: String,
+    pub provider: OpsProviderSummary,
+    pub top_pairs: Vec<OpsDashboardTopPair>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsPayoutPolicySettings {
+    pub local_certified_chains: Vec<String>,
+    pub trocador_only_chains: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsSettingsResponse {
+    pub generated_at: String,
+    pub admin_email: String,
+    pub trocador_api_key_configured: bool,
+    pub trocador_webhook_enabled: bool,
+    pub trocador_webhook_key_configured: bool,
+    pub public_base_url: Option<String>,
+    pub swap_webhook_url: Option<String>,
+    pub giftcard_webhook_url: Option<String>,
+    pub swap_markup: Option<String>,
+    pub allowed_swap_markups: Vec<String>,
+    pub allowed_card_markups: Vec<String>,
+    pub payout_policy: OpsPayoutPolicySettings,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpsSettingsDiagnosticsResponse {
+    pub generated_at: String,
+    pub api_key_valid: bool,
+    pub providers_fetch_ok: bool,
+    pub currencies_fetch_ok: bool,
+    pub giftcards_fetch_ok: bool,
+    pub webhook_base_url_present: bool,
+    pub swap_webhook_config_complete: bool,
+    pub giftcard_webhook_config_complete: bool,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

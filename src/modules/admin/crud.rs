@@ -1,29 +1,46 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use csv::Writer;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 use sqlx::{MySql, QueryBuilder, Row};
 
 use super::{
     model::AdminAccount,
     schema::{
         AdminLoginResponse, AdminOverviewResponse, AdminOverviewSwapMetrics,
-        AdminOverviewWhatsAppMetrics, AdminSwapExportQuery, AdminUserResponse,
-        OpsCreateNoteRequest, OpsDashboardResponse, OpsFinanceDailyRow, OpsFinanceProviderRow,
-        OpsFinanceQuery, OpsFinanceResponse, OpsFinanceTotals, OpsHealthResponse, OpsNoteResponse,
-        OpsProviderHealthRow, OpsRiskFlag, OpsSearchGiftCardResult, OpsSearchQuery,
-        OpsSearchResponse, OpsSearchSupportResult, OpsSearchSwapResult, OpsWebhookDeliveryRow,
-        OpsWebhookMonitorResponse, OpsWorkerHealth,
+        AdminOverviewWhatsAppMetrics, AdminSwapExportQuery, AdminUserResponse, OpsAssetDetailQuery,
+        OpsAssetDetailResponse, OpsAssetListResponse, OpsAssetQuery, OpsAssetRow,
+        OpsCreateNoteRequest, OpsDashboardKpis, OpsDashboardQuickAccessItem,
+        OpsDashboardRecentActivityItem, OpsDashboardResponse, OpsDashboardStatusBreakdown,
+        OpsDashboardTopGiftCard, OpsDashboardTopPair, OpsDashboardVolumePoint,
+        OpsFinanceDailyRow, OpsFinanceProviderRow, OpsFinanceQuery, OpsFinanceResponse,
+        OpsFinanceTotals, OpsGiftCardCatalogDetailQuery, OpsGiftCardCatalogDetailResponse,
+        OpsGiftCardCatalogQuery, OpsGiftCardCatalogResponse, OpsHealthResponse,
+        OpsNoteResponse, OpsPayoutPolicySettings, OpsProviderDetailResponse,
+        OpsProviderHealthRow, OpsProviderListQuery, OpsProviderListResponse, OpsProviderSummary,
+        OpsRiskFlag, OpsSearchGiftCardResult, OpsSearchQuery, OpsSearchResponse,
+        OpsSearchSupportResult, OpsSearchSwapResult, OpsSettingsDiagnosticsResponse,
+        OpsSettingsResponse, OpsWebhookDeliveryRow, OpsWebhookDetailResponse,
+        OpsWebhookMonitorResponse, OpsWebhookQuery, OpsWorkerHealth,
     },
 };
 use crate::config::DbPool;
+use crate::modules::giftcard::{
+    fallback_catalog::fallback_catalog, schema::GiftCardProductResponse,
+};
 use crate::services::jwt::JwtService;
+use crate::services::payout_policy::PayoutPolicyConfig;
+use crate::services::trocador::{swap_markup_from_env, TrocadorGateway};
 
 #[derive(Debug)]
 pub enum AdminError {
     InvalidCredentials,
     InvalidRequest(String),
+    NotFound(String),
     TokenCreation(String),
+    Config(String),
     Database(String),
+    External(String),
     Csv(String),
 }
 
@@ -31,9 +48,12 @@ impl std::fmt::Display for AdminError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidCredentials => write!(f, "Invalid admin email or password"),
-            Self::InvalidRequest(error) => write!(f, "Invalid export request: {}", error),
+            Self::InvalidRequest(error) => write!(f, "Invalid request: {}", error),
+            Self::NotFound(error) => write!(f, "Not found: {}", error),
             Self::TokenCreation(error) => write!(f, "Failed to create admin token: {}", error),
+            Self::Config(error) => write!(f, "Configuration error: {}", error),
             Self::Database(error) => write!(f, "Database error: {}", error),
+            Self::External(error) => write!(f, "External service error: {}", error),
             Self::Csv(error) => write!(f, "CSV export error: {}", error),
         }
     }
@@ -339,15 +359,345 @@ impl<'a> AdminCrud<'a> {
     }
 
     pub async fn dashboard(&self) -> Result<OpsDashboardResponse, AdminError> {
-        let (summary, health) = tokio::try_join!(self.overview(), self.ops_health())?;
+        let (
+            summary,
+            health,
+            kpis,
+            status_breakdown,
+            recent_activity,
+            volume_trend,
+            top_pairs,
+            top_giftcards,
+        ) = tokio::try_join!(
+            self.overview(),
+            self.ops_health(),
+            self.dashboard_kpis(),
+            self.dashboard_status_breakdown(),
+            self.dashboard_recent_activity(),
+            self.dashboard_volume_trend(),
+            self.dashboard_top_pairs(),
+            self.dashboard_top_giftcards()
+        )?;
 
         Ok(OpsDashboardResponse {
             generated_at: Utc::now().to_rfc3339(),
             summary,
+            kpis,
+            status_breakdown,
+            quick_access: Self::dashboard_quick_access(),
+            recent_activity,
+            volume_trend,
+            top_pairs,
+            top_giftcards,
             worker: health.worker,
             providers: health.providers,
             risk_flags: health.risk_flags,
         })
+    }
+
+    async fn dashboard_kpis(&self) -> Result<OpsDashboardKpis, AdminError> {
+        let total_swap_volume = sqlx::query_scalar::<_, Option<f64>>(
+            r#"
+            SELECT CAST(COALESCE(SUM(amount), 0) AS DOUBLE)
+            FROM swaps
+            WHERE status = 'completed'
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?
+        .unwrap_or(0.0);
+
+        let total_giftcard_sales = sqlx::query_scalar::<_, Option<f64>>(
+            r#"
+            SELECT CAST(COALESCE(SUM(amount), 0) AS DOUBLE)
+            FROM giftcard_orders
+            WHERE status = 'completed'
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?
+        .unwrap_or(0.0);
+
+        let total_platform_revenue = sqlx::query_scalar::<_, Option<f64>>(
+            r#"
+            SELECT CAST(COALESCE(SUM(platform_fee), 0) AS DOUBLE)
+            FROM swaps
+            WHERE status = 'completed'
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?
+        .unwrap_or(0.0);
+
+        let total_transactions = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM swaps) +
+                (SELECT COUNT(*) FROM giftcard_orders)
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let active_users = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.db)
+            .await
+            .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(OpsDashboardKpis {
+            total_swap_volume,
+            total_giftcard_sales,
+            total_platform_revenue,
+            total_transactions: total_transactions.max(0) as u64,
+            active_users: active_users.max(0) as u64,
+        })
+    }
+
+    async fn dashboard_status_breakdown(&self) -> Result<OpsDashboardStatusBreakdown, AdminError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT status_group, CAST(SUM(total_count) AS SIGNED) AS total_count
+            FROM (
+                SELECT
+                    CASE
+                        WHEN status = 'completed' THEN 'completed'
+                        WHEN status = 'failed' THEN 'failed'
+                        WHEN status = 'expired' THEN 'expired'
+                        WHEN status = 'refunded' THEN 'refunded'
+                        ELSE 'open'
+                    END AS status_group,
+                    COUNT(*) AS total_count
+                FROM swaps
+                GROUP BY status_group
+
+                UNION ALL
+
+                SELECT
+                    CASE
+                        WHEN status = 'completed' THEN 'completed'
+                        WHEN status = 'failed' THEN 'failed'
+                        WHEN status = 'expired' THEN 'expired'
+                        WHEN status = 'refunded' THEN 'refunded'
+                        ELSE 'open'
+                    END AS status_group,
+                    COUNT(*) AS total_count
+                FROM giftcard_orders
+                GROUP BY status_group
+            ) status_rows
+            GROUP BY status_group
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        let mut breakdown = OpsDashboardStatusBreakdown {
+            completed: 0,
+            failed: 0,
+            expired: 0,
+            refunded: 0,
+            open: 0,
+        };
+
+        for row in rows {
+            let total = int_field_to_u64(&row, "total_count");
+            match row.get::<String, _>("status_group").as_str() {
+                "completed" => breakdown.completed = total,
+                "failed" => breakdown.failed = total,
+                "expired" => breakdown.expired = total,
+                "refunded" => breakdown.refunded = total,
+                _ => breakdown.open = total,
+            }
+        }
+
+        Ok(breakdown)
+    }
+
+    async fn dashboard_recent_activity(
+        &self,
+    ) -> Result<Vec<OpsDashboardRecentActivityItem>, AdminError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT *
+            FROM (
+                SELECT
+                    'swap' AS entity_type,
+                    id AS entity_id,
+                    CONCAT(from_currency, ' -> ', to_currency) AS title,
+                    CONCAT(from_network, ' to ', to_network) AS subtitle,
+                    CAST(status AS CHAR) AS status,
+                    provider_id AS provider,
+                    CAST(amount AS DOUBLE) AS amount,
+                    from_currency AS currency,
+                    CONCAT('/swap/ops/', id) AS detail_path,
+                    created_at
+                FROM swaps
+                UNION ALL
+                SELECT
+                    'giftcard_order' AS entity_type,
+                    id AS entity_id,
+                    COALESCE(product_id, prepaid_provider, 'giftcard') AS title,
+                    COALESCE(currency_code, source_network) AS subtitle,
+                    status,
+                    provider,
+                    CAST(amount AS DOUBLE) AS amount,
+                    COALESCE(currency_code, source_ticker) AS currency,
+                    CONCAT('/giftcards/ops/orders/', id) AS detail_path,
+                    created_at
+                FROM giftcard_orders
+            ) activity
+            ORDER BY created_at DESC
+            LIMIT 10
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| OpsDashboardRecentActivityItem {
+                entity_type: row.get("entity_type"),
+                entity_id: row.get("entity_id"),
+                title: row.get("title"),
+                subtitle: row.try_get("subtitle").ok(),
+                status: row.get("status"),
+                provider: row.try_get("provider").ok(),
+                amount: row.try_get("amount").ok(),
+                currency: row.try_get("currency").ok(),
+                detail_path: row.get("detail_path"),
+                created_at: format_datetime(row.get("created_at")),
+            })
+            .collect())
+    }
+
+    async fn dashboard_volume_trend(&self) -> Result<Vec<OpsDashboardVolumePoint>, AdminError> {
+        let rows = self.finance_daily(None, None).await?;
+
+        Ok(rows
+            .into_iter()
+            .take(30)
+            .map(|row| OpsDashboardVolumePoint {
+                date: row.date,
+                completed_swaps: row.completed_swaps,
+                failed_swaps: row.failed_swaps,
+                swap_volume_input: row.swap_volume_input,
+                giftcard_completed: row.giftcard_completed,
+                giftcard_volume: row.giftcard_volume,
+            })
+            .collect())
+    }
+
+    async fn dashboard_top_pairs(&self) -> Result<Vec<OpsDashboardTopPair>, AdminError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                from_currency,
+                from_network,
+                to_currency,
+                to_network,
+                CAST(COUNT(*) AS SIGNED) AS trades,
+                CAST(COALESCE(SUM(amount), 0) AS DOUBLE) AS volume_input
+            FROM swaps
+            GROUP BY from_currency, from_network, to_currency, to_network
+            ORDER BY trades DESC, volume_input DESC
+            LIMIT 10
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| OpsDashboardTopPair {
+                from_currency: row.get("from_currency"),
+                from_network: row.get("from_network"),
+                to_currency: row.get("to_currency"),
+                to_network: row.get("to_network"),
+                trades: int_field_to_u64(&row, "trades"),
+                volume_input: float_field(&row, "volume_input"),
+            })
+            .collect())
+    }
+
+    async fn dashboard_top_giftcards(&self) -> Result<Vec<OpsDashboardTopGiftCard>, AdminError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(NULLIF(TRIM(prepaid_provider), ''), NULLIF(TRIM(product_id), ''), 'giftcard') AS product,
+                COALESCE(currency_code, source_ticker) AS currency,
+                CAST(COUNT(*) AS SIGNED) AS orders,
+                CAST(COALESCE(SUM(COALESCE(amount_to, amount)), 0) AS DOUBLE) AS volume
+            FROM giftcard_orders
+            GROUP BY product, currency
+            ORDER BY orders DESC, volume DESC
+            LIMIT 5
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| OpsDashboardTopGiftCard {
+                product: row.get("product"),
+                currency: row.try_get("currency").ok(),
+                orders: int_field_to_u64(&row, "orders"),
+                volume: float_field(&row, "volume"),
+            })
+            .collect())
+    }
+
+    fn dashboard_quick_access() -> Vec<OpsDashboardQuickAccessItem> {
+        vec![
+            OpsDashboardQuickAccessItem {
+                key: "search".to_string(),
+                label: "Global Search".to_string(),
+                description: "Find by Assetar ID, provider ID, email, wallet, or tx hash."
+                    .to_string(),
+                path: "/ops/search".to_string(),
+            },
+            OpsDashboardQuickAccessItem {
+                key: "giftcards".to_string(),
+                label: "Gift Cards".to_string(),
+                description: "Review queue state, retries, delivery, and reconcile failures."
+                    .to_string(),
+                path: "/giftcards/ops/orders".to_string(),
+            },
+            OpsDashboardQuickAccessItem {
+                key: "swaps".to_string(),
+                label: "Swaps".to_string(),
+                description: "Inspect deposit status, provider timelines, and payout state."
+                    .to_string(),
+                path: "/swap/ops".to_string(),
+            },
+            OpsDashboardQuickAccessItem {
+                key: "whatsapp".to_string(),
+                label: "WhatsApp".to_string(),
+                description: "Handle support conversations, assignments, and internal notes."
+                    .to_string(),
+                path: "/whatsapp/ops/conversations".to_string(),
+            },
+            OpsDashboardQuickAccessItem {
+                key: "providers".to_string(),
+                label: "Provider Health".to_string(),
+                description: "Review failure hotspots, stale queues, and risk flags.".to_string(),
+                path: "/ops/providers".to_string(),
+            },
+            OpsDashboardQuickAccessItem {
+                key: "finance".to_string(),
+                label: "Finance".to_string(),
+                description: "Track completed volume, fees, and daily reporting slices."
+                    .to_string(),
+                path: "/ops/finance/summary".to_string(),
+            },
+        ]
     }
 
     pub async fn global_search(
@@ -731,8 +1081,475 @@ impl<'a> AdminCrud<'a> {
         })
     }
 
-    pub async fn webhook_monitor(&self) -> Result<OpsWebhookMonitorResponse, AdminError> {
-        let rows = sqlx::query(
+    pub async fn list_assets(
+        &self,
+        query: &OpsAssetQuery,
+    ) -> Result<OpsAssetListResponse, AdminError> {
+        let limit = query.limit.unwrap_or(250).clamp(1, 500) as i64;
+        let search = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        let mut query_builder = QueryBuilder::<MySql>::new(
+            r#"
+            SELECT
+                symbol,
+                name,
+                network,
+                requires_extra_id,
+                extra_id_name,
+                logo_url,
+                CAST(min_amount AS DOUBLE) AS min_amount,
+                CAST(max_amount AS DOUBLE) AS max_amount,
+                is_active,
+                last_synced_at
+            FROM currencies
+            WHERE 1 = 1
+            "#,
+        );
+
+        if let Some(ticker) = query.ticker.as_deref() {
+            query_builder
+                .push(" AND symbol = ")
+                .push_bind(ticker.trim().to_ascii_uppercase());
+        }
+        if let Some(network) = query.network.as_deref() {
+            query_builder
+                .push(" AND network = ")
+                .push_bind(network.trim());
+        }
+        if let Some(memo_required) = query.memo_required {
+            query_builder
+                .push(" AND requires_extra_id = ")
+                .push_bind(memo_required);
+        }
+        if query.active_only.unwrap_or(false) {
+            query_builder.push(" AND is_active = TRUE");
+        }
+        if let Some(search) = search {
+            let like = format!("%{}%", search);
+            query_builder.push(" AND (symbol LIKE ");
+            query_builder.push_bind(like.clone());
+            query_builder.push(" OR name LIKE ");
+            query_builder.push_bind(like.clone());
+            query_builder.push(" OR network LIKE ");
+            query_builder.push_bind(like);
+            query_builder.push(")");
+        }
+
+        query_builder.push(" ORDER BY symbol ASC, network ASC LIMIT ");
+        query_builder.push_bind(limit);
+
+        let rows = query_builder
+            .build()
+            .fetch_all(&self.db)
+            .await
+            .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(OpsAssetListResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            assets: rows.into_iter().map(map_asset_row).collect(),
+        })
+    }
+
+    pub async fn get_asset_detail(
+        &self,
+        ticker: &str,
+        query: &OpsAssetDetailQuery,
+    ) -> Result<OpsAssetDetailResponse, AdminError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                symbol,
+                name,
+                network,
+                requires_extra_id,
+                extra_id_name,
+                logo_url,
+                CAST(min_amount AS DOUBLE) AS min_amount,
+                CAST(max_amount AS DOUBLE) AS max_amount,
+                is_active,
+                last_synced_at
+            FROM currencies
+            WHERE symbol = ? AND network = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(ticker.trim().to_ascii_uppercase())
+        .bind(query.network.trim())
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?
+        .ok_or_else(|| {
+            AdminError::NotFound(format!(
+                "asset {} on {} was not found",
+                ticker.trim(),
+                query.network.trim()
+            ))
+        })?;
+
+        let provider_count = count_query_pair(
+            &self.db,
+            r#"
+            SELECT COUNT(DISTINCT pc.provider_id)
+            FROM provider_currencies pc
+            INNER JOIN currencies c ON c.id = pc.currency_id
+            WHERE c.symbol = ? AND c.network = ?
+            "#,
+            ticker.trim(),
+            query.network.trim(),
+        )
+        .await?;
+
+        let source_pair_count = count_query_pair(
+            &self.db,
+            r#"
+            SELECT COUNT(*)
+            FROM trading_pairs tp
+            INNER JOIN currencies c ON c.id = tp.from_currency_id
+            WHERE c.symbol = ? AND c.network = ?
+            "#,
+            ticker.trim(),
+            query.network.trim(),
+        )
+        .await?;
+
+        let destination_pair_count = count_query_pair(
+            &self.db,
+            r#"
+            SELECT COUNT(*)
+            FROM trading_pairs tp
+            INNER JOIN currencies c ON c.id = tp.to_currency_id
+            WHERE c.symbol = ? AND c.network = ?
+            "#,
+            ticker.trim(),
+            query.network.trim(),
+        )
+        .await?;
+
+        Ok(OpsAssetDetailResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            asset: map_asset_row(row),
+            provider_count,
+            source_pair_count,
+            destination_pair_count,
+        })
+    }
+
+    pub async fn list_giftcard_catalog(
+        &self,
+        query: &OpsGiftCardCatalogQuery,
+    ) -> Result<OpsGiftCardCatalogResponse, AdminError> {
+        let (source, cards) = self.fetch_catalog_cards(query.country.as_deref()).await?;
+        let search = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let category = query
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let limit = query.limit.unwrap_or(500).clamp(1, 1000) as usize;
+
+        let mut cards: Vec<GiftCardProductResponse> = cards
+            .into_iter()
+            .filter(|card| {
+                let search_match = match search {
+                    Some(search) => {
+                        let lowered = search.to_ascii_lowercase();
+                        card.name.to_ascii_lowercase().contains(&lowered)
+                            || card.product_id.to_ascii_lowercase().contains(&lowered)
+                            || card
+                                .category
+                                .as_deref()
+                                .unwrap_or_default()
+                                .to_ascii_lowercase()
+                                .contains(&lowered)
+                    }
+                    None => true,
+                };
+                let category_match = match category {
+                    Some(category) => card
+                        .category
+                        .as_deref()
+                        .map(|value| value.eq_ignore_ascii_case(category))
+                        .unwrap_or(false),
+                    None => true,
+                };
+                search_match && category_match
+            })
+            .collect();
+
+        cards.truncate(limit);
+
+        Ok(OpsGiftCardCatalogResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            country: query.country.clone(),
+            source,
+            cards,
+        })
+    }
+
+    pub async fn get_giftcard_catalog_item(
+        &self,
+        product_id: &str,
+        query: &OpsGiftCardCatalogDetailQuery,
+    ) -> Result<OpsGiftCardCatalogDetailResponse, AdminError> {
+        let (source, cards) = self.fetch_catalog_cards(query.country.as_deref()).await?;
+        let product_id = product_id.trim();
+        let card = cards
+            .into_iter()
+            .find(|card| card.product_id == product_id)
+            .ok_or_else(|| {
+                AdminError::NotFound(format!("gift card product {} was not found", product_id))
+            })?;
+
+        Ok(OpsGiftCardCatalogDetailResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            source,
+            card,
+        })
+    }
+
+    pub async fn list_providers(
+        &self,
+        query: &OpsProviderListQuery,
+    ) -> Result<OpsProviderListResponse, AdminError> {
+        let limit = query.limit.unwrap_or(100).clamp(1, 250) as i64;
+        let search = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        let mut query_builder = QueryBuilder::<MySql>::new(
+            r#"
+            SELECT
+                p.id,
+                p.name,
+                p.kyc_rating,
+                CAST(p.insurance_percentage AS DOUBLE) AS insurance_percentage,
+                p.markup_enabled,
+                p.eta_minutes,
+                p.is_active,
+                p.last_synced_at,
+                CAST(SUM(CASE WHEN s.status NOT IN ('completed','failed','refunded','expired') THEN 1 ELSE 0 END) AS SIGNED) AS open_swaps,
+                CAST(SUM(CASE WHEN s.status = 'failed' AND s.updated_at >= (UTC_TIMESTAMP() - INTERVAL 1 DAY) THEN 1 ELSE 0 END) AS SIGNED) AS failed_swaps_24h,
+                CAST(SUM(CASE WHEN s.status = 'completed' AND s.created_at >= (UTC_TIMESTAMP() - INTERVAL 30 DAY) THEN 1 ELSE 0 END) AS SIGNED) AS completed_swaps_30d,
+                CAST(COALESCE(SUM(CASE WHEN s.status = 'completed' AND s.created_at >= (UTC_TIMESTAMP() - INTERVAL 30 DAY) THEN s.amount ELSE 0 END), 0) AS DOUBLE) AS volume_input_30d,
+                CAST(COALESCE(SUM(CASE WHEN s.status = 'completed' AND s.created_at >= (UTC_TIMESTAMP() - INTERVAL 30 DAY) THEN s.platform_fee ELSE 0 END), 0) AS DOUBLE) AS platform_fees_30d,
+                MAX(s.updated_at) AS last_activity_at
+            FROM providers p
+            LEFT JOIN swaps s ON s.provider_id = p.id
+            WHERE 1 = 1
+            "#,
+        );
+
+        if let Some(search) = search {
+            let like = format!("%{}%", search);
+            query_builder.push(" AND (p.id LIKE ");
+            query_builder.push_bind(like.clone());
+            query_builder.push(" OR p.name LIKE ");
+            query_builder.push_bind(like);
+            query_builder.push(")");
+        }
+        if let Some(rating) = query.rating.as_deref() {
+            query_builder
+                .push(" AND p.kyc_rating = ")
+                .push_bind(rating.trim());
+        }
+        if let Some(markup_enabled) = query.markup_enabled {
+            query_builder
+                .push(" AND p.markup_enabled = ")
+                .push_bind(markup_enabled);
+        }
+        if query.active_only.unwrap_or(false) {
+            query_builder.push(" AND p.is_active = TRUE");
+        }
+
+        query_builder.push(
+            " GROUP BY p.id, p.name, p.kyc_rating, p.insurance_percentage, p.markup_enabled, p.eta_minutes, p.is_active, p.last_synced_at",
+        );
+        query_builder.push(" ORDER BY failed_swaps_24h DESC, open_swaps DESC, p.name ASC LIMIT ");
+        query_builder.push_bind(limit);
+
+        let rows = query_builder
+            .build()
+            .fetch_all(&self.db)
+            .await
+            .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(OpsProviderListResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            providers: rows.into_iter().map(map_provider_summary).collect(),
+        })
+    }
+
+    pub async fn get_provider_detail(
+        &self,
+        provider_id: &str,
+    ) -> Result<OpsProviderDetailResponse, AdminError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                p.id,
+                p.name,
+                p.kyc_rating,
+                CAST(p.insurance_percentage AS DOUBLE) AS insurance_percentage,
+                p.markup_enabled,
+                p.eta_minutes,
+                p.is_active,
+                p.last_synced_at,
+                CAST(SUM(CASE WHEN s.status NOT IN ('completed','failed','refunded','expired') THEN 1 ELSE 0 END) AS SIGNED) AS open_swaps,
+                CAST(SUM(CASE WHEN s.status = 'failed' AND s.updated_at >= (UTC_TIMESTAMP() - INTERVAL 1 DAY) THEN 1 ELSE 0 END) AS SIGNED) AS failed_swaps_24h,
+                CAST(SUM(CASE WHEN s.status = 'completed' AND s.created_at >= (UTC_TIMESTAMP() - INTERVAL 30 DAY) THEN 1 ELSE 0 END) AS SIGNED) AS completed_swaps_30d,
+                CAST(COALESCE(SUM(CASE WHEN s.status = 'completed' AND s.created_at >= (UTC_TIMESTAMP() - INTERVAL 30 DAY) THEN s.amount ELSE 0 END), 0) AS DOUBLE) AS volume_input_30d,
+                CAST(COALESCE(SUM(CASE WHEN s.status = 'completed' AND s.created_at >= (UTC_TIMESTAMP() - INTERVAL 30 DAY) THEN s.platform_fee ELSE 0 END), 0) AS DOUBLE) AS platform_fees_30d,
+                MAX(s.updated_at) AS last_activity_at
+            FROM providers p
+            LEFT JOIN swaps s ON s.provider_id = p.id
+            WHERE p.id = ?
+            GROUP BY p.id, p.name, p.kyc_rating, p.insurance_percentage, p.markup_enabled, p.eta_minutes, p.is_active, p.last_synced_at
+            LIMIT 1
+            "#,
+        )
+        .bind(provider_id.trim())
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?
+        .ok_or_else(|| {
+            AdminError::NotFound(format!("provider {} was not found", provider_id.trim()))
+        })?;
+
+        let pair_rows = sqlx::query(
+            r#"
+            SELECT
+                from_currency,
+                from_network,
+                to_currency,
+                to_network,
+                CAST(COUNT(*) AS SIGNED) AS trades,
+                CAST(COALESCE(SUM(amount), 0) AS DOUBLE) AS volume_input
+            FROM swaps
+            WHERE provider_id = ?
+            GROUP BY from_currency, from_network, to_currency, to_network
+            ORDER BY trades DESC, volume_input DESC
+            LIMIT 10
+            "#,
+        )
+        .bind(provider_id.trim())
+        .fetch_all(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+
+        Ok(OpsProviderDetailResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            provider: map_provider_summary(row),
+            top_pairs: pair_rows
+                .into_iter()
+                .map(|row| OpsDashboardTopPair {
+                    from_currency: row.get("from_currency"),
+                    from_network: row.get("from_network"),
+                    to_currency: row.get("to_currency"),
+                    to_network: row.get("to_network"),
+                    trades: int_field_to_u64(&row, "trades"),
+                    volume_input: float_field(&row, "volume_input"),
+                })
+                .collect(),
+        })
+    }
+
+    pub async fn settings(&self) -> Result<OpsSettingsResponse, AdminError> {
+        let public_base_url = public_base_url();
+        let webhook_key_configured = env_present("TROCADOR_WEBHOOK_KEY");
+        let trocador_webhook_enabled = std::env::var("TROCADOR_WEBHOOK_ENABLED")
+            .ok()
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(true);
+        let payout_policy = PayoutPolicyConfig::from_env();
+        let swap_markup = swap_markup_from_env().map_err(AdminError::Config)?;
+
+        Ok(OpsSettingsResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            admin_email: self.account.email.clone(),
+            trocador_api_key_configured: env_present("TROCADOR_API_KEY"),
+            trocador_webhook_enabled,
+            trocador_webhook_key_configured: webhook_key_configured,
+            public_base_url: public_base_url.clone(),
+            swap_webhook_url: swap_webhook_url(),
+            giftcard_webhook_url: giftcard_webhook_url(),
+            swap_markup,
+            allowed_swap_markups: vec!["0", "1", "1.65", "3"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            allowed_card_markups: vec!["1", "2", "3"].into_iter().map(String::from).collect(),
+            payout_policy: OpsPayoutPolicySettings {
+                local_certified_chains: payout_policy.local_certified_chain_keys(),
+                trocador_only_chains: payout_policy.trocador_only_chain_keys(),
+            },
+        })
+    }
+
+    pub async fn settings_diagnostics(&self) -> Result<OpsSettingsDiagnosticsResponse, AdminError> {
+        let mut errors = Vec::new();
+        let mut api_key_valid = false;
+        let mut providers_fetch_ok = false;
+        let mut currencies_fetch_ok = false;
+        let mut giftcards_fetch_ok = false;
+
+        match TrocadorGateway::from_env() {
+            Ok(gateway) => {
+                match gateway.fetch_providers().await {
+                    Ok(_) => providers_fetch_ok = true,
+                    Err(error) => errors.push(format!("providers_fetch_failed: {}", error)),
+                }
+
+                match gateway.fetch_currencies().await {
+                    Ok(_) => currencies_fetch_ok = true,
+                    Err(error) => errors.push(format!("currencies_fetch_failed: {}", error)),
+                }
+
+                match gateway.fetch_giftcards(None).await {
+                    Ok(_) => giftcards_fetch_ok = true,
+                    Err(error) => errors.push(format!("giftcards_fetch_failed: {}", error)),
+                }
+
+                api_key_valid = providers_fetch_ok || currencies_fetch_ok || giftcards_fetch_ok;
+            }
+            Err(_) => {
+                errors.push("TROCADOR_API_KEY is not configured".to_string());
+            }
+        }
+
+        let webhook_base_url_present = public_base_url().is_some();
+        let webhook_key_configured = env_present("TROCADOR_WEBHOOK_KEY");
+
+        Ok(OpsSettingsDiagnosticsResponse {
+            generated_at: Utc::now().to_rfc3339(),
+            api_key_valid,
+            providers_fetch_ok,
+            currencies_fetch_ok,
+            giftcards_fetch_ok,
+            webhook_base_url_present,
+            swap_webhook_config_complete: swap_webhook_url().is_some(),
+            giftcard_webhook_config_complete: webhook_base_url_present && webhook_key_configured,
+            errors,
+        })
+    }
+
+    pub async fn webhook_monitor(
+        &self,
+        query: &OpsWebhookQuery,
+    ) -> Result<OpsWebhookMonitorResponse, AdminError> {
+        let include_delivered = query.include_delivered.unwrap_or(true);
+        let limit = query.limit.unwrap_or(100).clamp(1, 500) as i64;
+
+        let mut query_builder = QueryBuilder::<MySql>::new(
             r#"
             SELECT
                 id,
@@ -749,43 +1566,164 @@ impl<'a> AdminCrud<'a> {
                 created_at,
                 updated_at
             FROM webhook_deliveries
-            WHERE delivered_at IS NULL OR is_dlq = TRUE
-            ORDER BY is_dlq DESC, COALESCE(next_retry_at, created_at) ASC
-            LIMIT 100
+            WHERE 1 = 1
             "#,
-        )
-        .fetch_all(&self.db)
-        .await
-        .map_err(|error| AdminError::Database(error.to_string()))?;
+        );
+
+        if !include_delivered {
+            query_builder.push(" AND (delivered_at IS NULL OR is_dlq = TRUE)");
+        }
+        if let Some(swap_id) = query.swap_id.as_deref() {
+            query_builder
+                .push(" AND swap_id = ")
+                .push_bind(swap_id.trim());
+        }
+        if let Some(event_type) = query.event_type.as_deref() {
+            query_builder
+                .push(" AND event_type = ")
+                .push_bind(event_type.trim());
+        }
+
+        query_builder.push(" ORDER BY created_at DESC LIMIT ");
+        query_builder.push_bind(limit);
+
+        let rows = query_builder
+            .build()
+            .fetch_all(&self.db)
+            .await
+            .map_err(|error| AdminError::Database(error.to_string()))?;
 
         Ok(OpsWebhookMonitorResponse {
-            deliveries: rows
-                .into_iter()
-                .map(|row| OpsWebhookDeliveryRow {
-                    id: row.get("id"),
-                    swap_id: row.get("swap_id"),
-                    event_type: row.get("event_type"),
-                    attempt_number: row.get("attempt_number"),
-                    max_attempts: row.get("max_attempts"),
-                    next_retry_at: row
-                        .try_get::<Option<NaiveDateTime>, _>("next_retry_at")
-                        .ok()
-                        .flatten()
-                        .map(format_datetime),
-                    delivered_at: row
-                        .try_get::<Option<NaiveDateTime>, _>("delivered_at")
-                        .ok()
-                        .flatten()
-                        .map(format_datetime),
-                    response_status: row.try_get("response_status").ok(),
-                    response_time_ms: row.try_get("response_time_ms").ok(),
-                    error_message: row.try_get("error_message").ok(),
-                    is_dlq: row.get::<u8, _>("is_dlq") != 0,
-                    created_at: format_datetime(row.get("created_at")),
-                    updated_at: format_datetime(row.get("updated_at")),
-                })
-                .collect(),
+            deliveries: rows.into_iter().map(map_webhook_delivery_row).collect(),
         })
+    }
+
+    pub async fn webhook_detail(
+        &self,
+        delivery_id: &str,
+    ) -> Result<OpsWebhookDetailResponse, AdminError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                id,
+                webhook_id,
+                swap_id,
+                event_type,
+                attempt_number,
+                max_attempts,
+                next_retry_at,
+                delivered_at,
+                response_status,
+                response_body,
+                response_time_ms,
+                error_message,
+                is_dlq,
+                signature,
+                CAST(payload AS CHAR) AS payload_json,
+                created_at,
+                updated_at
+            FROM webhook_deliveries
+            WHERE id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(delivery_id.trim())
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?
+        .ok_or_else(|| {
+            AdminError::NotFound(format!(
+                "webhook delivery {} was not found",
+                delivery_id.trim()
+            ))
+        })?;
+
+        let payload = row
+            .try_get::<Option<String>, _>("payload_json")
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<JsonValue>(&raw).ok())
+            .unwrap_or(JsonValue::Null);
+
+        Ok(OpsWebhookDetailResponse {
+            delivery: OpsWebhookDeliveryRow {
+                id: row.get("id"),
+                swap_id: row.get("swap_id"),
+                event_type: row.get("event_type"),
+                attempt_number: row.get("attempt_number"),
+                max_attempts: row.get("max_attempts"),
+                next_retry_at: row
+                    .try_get::<Option<NaiveDateTime>, _>("next_retry_at")
+                    .ok()
+                    .flatten()
+                    .map(format_datetime),
+                delivered_at: row
+                    .try_get::<Option<NaiveDateTime>, _>("delivered_at")
+                    .ok()
+                    .flatten()
+                    .map(format_datetime),
+                response_status: row.try_get("response_status").ok(),
+                response_time_ms: row.try_get("response_time_ms").ok(),
+                error_message: row.try_get("error_message").ok(),
+                is_dlq: row.get::<u8, _>("is_dlq") != 0,
+                created_at: format_datetime(row.get("created_at")),
+                updated_at: format_datetime(row.get("updated_at")),
+            },
+            webhook_id: row.get("webhook_id"),
+            signature: row.get("signature"),
+            payload,
+            response_body: row.try_get("response_body").ok(),
+        })
+    }
+
+    async fn fetch_catalog_cards(
+        &self,
+        country: Option<&str>,
+    ) -> Result<(String, Vec<GiftCardProductResponse>), AdminError> {
+        let gateway = TrocadorGateway::from_env()
+            .map_err(|_| AdminError::Config("TROCADOR_API_KEY not set".to_string()))?;
+        let fallback_cards = fallback_catalog(country);
+        let mut last_error = None;
+
+        let country_values = country
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default();
+
+        if country_values.is_empty() {
+            match gateway.fetch_giftcards(None).await {
+                Ok(cards) if !cards.is_empty() => {
+                    return Ok((
+                        "trocador".to_string(),
+                        cards.into_iter().map(Into::into).collect(),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        } else {
+            for country_value in country_values {
+                match gateway.fetch_giftcards(Some(country_value.as_str())).await {
+                    Ok(cards) if !cards.is_empty() => {
+                        return Ok((
+                            "trocador".to_string(),
+                            cards.into_iter().map(Into::into).collect(),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(error) => last_error = Some(error.to_string()),
+                }
+            }
+        }
+
+        if !fallback_cards.is_empty() {
+            return Ok(("fallback".to_string(), fallback_cards));
+        }
+
+        Err(AdminError::External(last_error.unwrap_or_else(|| {
+            "gift card catalog fetch returned no data".to_string()
+        })))
     }
 
     pub async fn create_note(
@@ -1002,8 +1940,95 @@ impl<'a> AdminCrud<'a> {
     }
 }
 
+fn map_asset_row(row: sqlx::mysql::MySqlRow) -> OpsAssetRow {
+    OpsAssetRow {
+        ticker: row.get("symbol"),
+        name: row.get("name"),
+        network: row.get("network"),
+        memo_required: row.get::<bool, _>("requires_extra_id"),
+        extra_id_name: row.try_get("extra_id_name").ok(),
+        image: row.try_get("logo_url").ok(),
+        minimum: row.try_get("min_amount").ok(),
+        maximum: row.try_get("max_amount").ok(),
+        is_active: row.get::<bool, _>("is_active"),
+        last_synced_at: row
+            .try_get::<Option<NaiveDateTime>, _>("last_synced_at")
+            .ok()
+            .flatten()
+            .map(format_datetime),
+    }
+}
+
+fn map_provider_summary(row: sqlx::mysql::MySqlRow) -> OpsProviderSummary {
+    OpsProviderSummary {
+        id: row.get("id"),
+        name: row.get("name"),
+        kyc_rating: row.get("kyc_rating"),
+        insurance_percentage: row.try_get("insurance_percentage").ok(),
+        markup_enabled: row.get::<bool, _>("markup_enabled"),
+        eta_minutes: row.try_get("eta_minutes").ok(),
+        is_active: row.get::<bool, _>("is_active"),
+        last_synced_at: row
+            .try_get::<Option<NaiveDateTime>, _>("last_synced_at")
+            .ok()
+            .flatten()
+            .map(format_datetime),
+        open_swaps: int_field_to_u64(&row, "open_swaps"),
+        failed_swaps_24h: int_field_to_u64(&row, "failed_swaps_24h"),
+        completed_swaps_30d: int_field_to_u64(&row, "completed_swaps_30d"),
+        volume_input_30d: float_field(&row, "volume_input_30d"),
+        platform_fees_30d: float_field(&row, "platform_fees_30d"),
+        last_activity_at: row
+            .try_get::<Option<NaiveDateTime>, _>("last_activity_at")
+            .ok()
+            .flatten()
+            .map(format_datetime),
+    }
+}
+
+fn map_webhook_delivery_row(row: sqlx::mysql::MySqlRow) -> OpsWebhookDeliveryRow {
+    OpsWebhookDeliveryRow {
+        id: row.get("id"),
+        swap_id: row.get("swap_id"),
+        event_type: row.get("event_type"),
+        attempt_number: row.get("attempt_number"),
+        max_attempts: row.get("max_attempts"),
+        next_retry_at: row
+            .try_get::<Option<NaiveDateTime>, _>("next_retry_at")
+            .ok()
+            .flatten()
+            .map(format_datetime),
+        delivered_at: row
+            .try_get::<Option<NaiveDateTime>, _>("delivered_at")
+            .ok()
+            .flatten()
+            .map(format_datetime),
+        response_status: row.try_get("response_status").ok(),
+        response_time_ms: row.try_get("response_time_ms").ok(),
+        error_message: row.try_get("error_message").ok(),
+        is_dlq: row.get::<u8, _>("is_dlq") != 0,
+        created_at: format_datetime(row.get("created_at")),
+        updated_at: format_datetime(row.get("updated_at")),
+    }
+}
+
 async fn count_query(db: &DbPool, sql: &str) -> Result<u64, AdminError> {
     let count = sqlx::query_scalar::<_, i64>(sql)
+        .fetch_one(db)
+        .await
+        .map_err(|error| AdminError::Database(error.to_string()))?;
+    Ok(count.max(0) as u64)
+}
+
+async fn count_query_pair(
+    db: &DbPool,
+    sql: &str,
+    first: &str,
+    second: &str,
+) -> Result<u64, AdminError> {
+    let count = sqlx::query_scalar::<_, i64>(sql)
+        .bind(first)
+        .bind(second)
         .fetch_one(db)
         .await
         .map_err(|error| AdminError::Database(error.to_string()))?;
@@ -1053,6 +2078,43 @@ fn float_field(row: &sqlx::mysql::MySqlRow, field: &str) -> f64 {
         .ok()
         .flatten()
         .unwrap_or(0.0)
+}
+
+fn env_present(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn public_base_url() -> Option<String> {
+    std::env::var("PUBLIC_BACKEND_URL")
+        .ok()
+        .or_else(|| std::env::var("RENDER_EXTERNAL_URL").ok())
+        .or_else(|| std::env::var("API_BASE_URL").ok())
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn swap_webhook_url() -> Option<String> {
+    let enabled = std::env::var("TROCADOR_WEBHOOK_ENABLED")
+        .ok()
+        .and_then(|value| value.parse::<bool>().ok())
+        .unwrap_or(true);
+
+    if !enabled || !env_present("TROCADOR_WEBHOOK_KEY") {
+        return None;
+    }
+
+    public_base_url().map(|base| format!("{}/swap/webhooks/trocador", base))
+}
+
+fn giftcard_webhook_url() -> Option<String> {
+    if !env_present("TROCADOR_WEBHOOK_KEY") {
+        return None;
+    }
+
+    public_base_url().map(|base| format!("{}/giftcards/webhooks/trocador", base))
 }
 
 fn parse_optional_rfc3339(
