@@ -2050,13 +2050,19 @@ impl WhatsAppFlowService {
         };
 
         if rates.rates.is_empty() {
+            let message = amount_out_of_range_message(
+                &from.ticker,
+                amount,
+                rates.min_deposit,
+                rates.max_deposit,
+            )
+            .unwrap_or_else(|| {
+                "No live routes are available for that pair right now. Try another amount or network."
+                    .to_string()
+            });
+
             return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id,
-                    "No live routes are available for that pair right now. Try another amount or network.",
-                )
+                .reply(wa_id, phone_number_id, session_id, &message)
                 .await;
         }
 
@@ -2978,6 +2984,40 @@ fn humanize_minutes(minutes: u32) -> String {
     }
 }
 
+/// Explains why no routes came back when Trocador's response tells us the
+/// requested amount fell outside the pair's min/max deposit bounds, instead of
+/// showing a generic "no routes available" message that hides the real reason.
+fn amount_out_of_range_message(
+    from_ticker: &str,
+    amount: f64,
+    min_deposit: Option<f64>,
+    max_deposit: Option<f64>,
+) -> Option<String> {
+    let ticker = from_ticker.to_uppercase();
+
+    if let Some(min_deposit) = min_deposit.filter(|value| *value > 0.0) {
+        if amount < min_deposit {
+            return Some(format!(
+                "That amount is below the minimum for this pair. Minimum is {} {}. Reply with a new amount to try again.",
+                trim_f64(min_deposit),
+                ticker
+            ));
+        }
+    }
+
+    if let Some(max_deposit) = max_deposit.filter(|value| *value > 0.0) {
+        if amount > max_deposit {
+            return Some(format!(
+                "That amount is above the maximum for this pair. Maximum is {} {}. Reply with a new amount to try again.",
+                trim_f64(max_deposit),
+                ticker
+            ));
+        }
+    }
+
+    None
+}
+
 fn normalize_quick_action_command(input: &str) -> String {
     let trimmed = input.trim();
     let lowered = trimmed.to_ascii_lowercase();
@@ -3851,9 +3891,9 @@ fn truncate_whatsapp_text(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_amount_mode, parse_asset_selection_id, parse_usd_amount, resolve_currency_phrase,
-        should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
-        CurrencySelection,
+        amount_out_of_range_message, parse_amount_mode, parse_asset_selection_id, parse_usd_amount,
+        resolve_currency_phrase, should_restart_asset_search_from_network_choice, AmountInputMode,
+        AssetFamilySelection, CurrencySelection,
     };
     use crate::modules::swap::schema::CurrencyResponse;
 
@@ -3987,5 +4027,35 @@ mod tests {
             Some(AmountInputMode::SourceAsset)
         );
         assert_eq!(parse_amount_mode("usd", &from), Some(AmountInputMode::Usd));
+    }
+
+    #[test]
+    fn flags_amount_below_minimum_deposit() {
+        let message = amount_out_of_range_message("xlm", 24.0, Some(21.902860 * 2.0), None)
+            .expect("amount below minimum should produce a message");
+
+        assert!(message.contains("below the minimum"));
+        assert!(message.contains("XLM"));
+    }
+
+    #[test]
+    fn flags_amount_above_maximum_deposit() {
+        let message = amount_out_of_range_message("xlm", 5000.0, None, Some(1000.0))
+            .expect("amount above maximum should produce a message");
+
+        assert!(message.contains("above the maximum"));
+    }
+
+    #[test]
+    fn no_message_when_amount_is_within_bounds() {
+        assert_eq!(
+            amount_out_of_range_message("xlm", 50.0, Some(20.0), Some(1000.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn no_message_when_bounds_are_unknown() {
+        assert_eq!(amount_out_of_range_message("xlm", 50.0, None, None), None);
     }
 }
