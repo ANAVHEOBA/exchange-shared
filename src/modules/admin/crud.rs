@@ -12,16 +12,15 @@ use super::{
         OpsAssetDetailResponse, OpsAssetListResponse, OpsAssetQuery, OpsAssetRow,
         OpsCreateNoteRequest, OpsDashboardKpis, OpsDashboardQuickAccessItem,
         OpsDashboardRecentActivityItem, OpsDashboardResponse, OpsDashboardStatusBreakdown,
-        OpsDashboardTopGiftCard, OpsDashboardTopPair, OpsDashboardVolumePoint,
-        OpsFinanceDailyRow, OpsFinanceProviderRow, OpsFinanceQuery, OpsFinanceResponse,
-        OpsFinanceTotals, OpsGiftCardCatalogDetailQuery, OpsGiftCardCatalogDetailResponse,
-        OpsGiftCardCatalogQuery, OpsGiftCardCatalogResponse, OpsHealthResponse,
-        OpsNoteResponse, OpsPayoutPolicySettings, OpsProviderDetailResponse,
-        OpsProviderHealthRow, OpsProviderListQuery, OpsProviderListResponse, OpsProviderSummary,
-        OpsRiskFlag, OpsSearchGiftCardResult, OpsSearchQuery, OpsSearchResponse,
-        OpsSearchSupportResult, OpsSearchSwapResult, OpsSettingsDiagnosticsResponse,
-        OpsSettingsResponse, OpsWebhookDeliveryRow, OpsWebhookDetailResponse,
-        OpsWebhookMonitorResponse, OpsWebhookQuery, OpsWorkerHealth,
+        OpsDashboardTopGiftCard, OpsDashboardTopPair, OpsDashboardVolumePoint, OpsFinanceDailyRow,
+        OpsFinanceProviderRow, OpsFinanceQuery, OpsFinanceResponse, OpsFinanceTotals,
+        OpsGiftCardCatalogDetailQuery, OpsGiftCardCatalogDetailResponse, OpsGiftCardCatalogQuery,
+        OpsGiftCardCatalogResponse, OpsHealthResponse, OpsNoteResponse, OpsPayoutPolicySettings,
+        OpsProviderDetailResponse, OpsProviderHealthRow, OpsProviderListQuery,
+        OpsProviderListResponse, OpsProviderSummary, OpsRiskFlag, OpsSearchGiftCardResult,
+        OpsSearchQuery, OpsSearchResponse, OpsSearchSupportResult, OpsSearchSwapResult,
+        OpsSettingsDiagnosticsResponse, OpsSettingsResponse, OpsWebhookDeliveryRow,
+        OpsWebhookDetailResponse, OpsWebhookMonitorResponse, OpsWebhookQuery, OpsWorkerHealth,
     },
 };
 use crate::config::DbPool;
@@ -628,14 +627,16 @@ impl<'a> AdminCrud<'a> {
 
         for row in giftcard_rows {
             let date = row.get::<NaiveDate, _>("activity_date").to_string();
-            let entry = by_date.entry(date).or_insert_with(|| OpsDashboardVolumePoint {
-                date: String::new(),
-                completed_swaps: 0,
-                failed_swaps: 0,
-                swap_volume_input: 0.0,
-                giftcard_completed: 0,
-                giftcard_volume: 0.0,
-            });
+            let entry = by_date
+                .entry(date)
+                .or_insert_with(|| OpsDashboardVolumePoint {
+                    date: String::new(),
+                    completed_swaps: 0,
+                    failed_swaps: 0,
+                    swap_volume_input: 0.0,
+                    giftcard_completed: 0,
+                    giftcard_volume: 0.0,
+                });
             entry.giftcard_completed = int_field_to_u64(&row, "giftcard_completed");
             entry.giftcard_volume = float_field(&row, "giftcard_volume");
         }

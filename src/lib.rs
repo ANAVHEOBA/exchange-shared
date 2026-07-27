@@ -29,6 +29,7 @@ use modules::giftcard::{
 use modules::swap::{swap_admin_routes, swap_routes};
 use modules::whatsapp::{whatsapp_admin_routes, whatsapp_routes, worker::run_whatsapp_worker};
 use services::jwt::JwtService;
+use services::kimi::KimiClient;
 use services::payout_policy::PayoutPolicyConfig;
 use services::rate_limit::{create_rate_limiter, RateLimitLayer};
 use services::redis_cache::RedisService;
@@ -47,6 +48,7 @@ pub struct AppState {
     pub whatsapp_service: Option<Arc<WhatsAppService>>,
     pub rpc_manager: Arc<RpcManager>,
     pub payout_policy: PayoutPolicyConfig,
+    pub kimi_client: Option<Arc<KimiClient>>,
 }
 
 const DEFAULT_CORS_ORIGINS: &[&str] = &[
@@ -105,6 +107,13 @@ pub async fn create_app(
         }
     };
 
+    let kimi_client = KimiClient::from_env().map(Arc::new);
+    if kimi_client.is_some() {
+        tracing::info!("🤖 Kimi conversational layer configured for WhatsApp");
+    } else {
+        tracing::info!("Kimi conversational layer not configured - WhatsApp falls back to the deterministic menu only");
+    }
+
     let state = Arc::new(AppState {
         db,
         redis,
@@ -113,6 +122,7 @@ pub async fn create_app(
         wallet_mnemonic,
         email_service,
         whatsapp_service,
+        kimi_client,
         rpc_manager,
         payout_policy,
     });

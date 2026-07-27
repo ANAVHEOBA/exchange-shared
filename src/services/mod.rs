@@ -3,6 +3,7 @@ pub mod email;
 pub mod gas;
 pub mod hashing;
 pub mod jwt;
+pub mod kimi;
 pub mod metrics;
 pub mod monitor;
 pub mod payout_policy;

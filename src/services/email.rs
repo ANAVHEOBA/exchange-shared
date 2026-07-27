@@ -3,11 +3,15 @@ use std::{env, time::Duration};
 use reqwest::Client;
 use serde::Serialize;
 
-const BREVO_API_BASE_URL: &str = "https://api.brevo.com/v3";
+const ZOHO_ACCOUNTS_TOKEN_URL: &str = "https://accounts.zoho.com/oauth/v2/token";
+const ZOHO_MAIL_API_BASE_URL: &str = "https://mail.zoho.com/api";
 
 enum EmailProvider {
-    Brevo {
-        api_key: String,
+    Zoho {
+        client_id: String,
+        client_secret: String,
+        refresh_token: String,
+        account_id: String,
         client: Client,
     },
     Smtp {
@@ -44,24 +48,17 @@ impl std::error::Error for EmailError {}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BrevoSendEmailRequest<'a> {
-    sender: BrevoSender<'a>,
-    to: Vec<BrevoRecipient<'a>>,
+struct ZohoSendEmailRequest<'a> {
+    from_address: &'a str,
+    to_address: &'a str,
     subject: &'a str,
-    html_content: &'a str,
-    text_content: &'a str,
+    content: &'a str,
+    mail_format: &'a str,
 }
 
-#[derive(Serialize)]
-struct BrevoSender<'a> {
-    email: &'a str,
-    name: &'a str,
-}
-
-#[derive(Serialize)]
-struct BrevoRecipient<'a> {
-    email: &'a str,
-    name: &'a str,
+#[derive(serde::Deserialize)]
+struct ZohoTokenResponse {
+    access_token: String,
 }
 
 impl EmailService {
@@ -76,33 +73,45 @@ impl EmailService {
             .or_else(|_| env::var("BASE_URL"))
             .unwrap_or_else(|_| "http://localhost:5173".to_string());
 
-        let provider = if let Ok(api_key) = env::var("BREVO_API_KEY") {
-            let client = Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .map_err(|e| {
-                    EmailError::ConfigError(format!("Failed to build Brevo HTTP client: {}", e))
-                })?;
+        let provider =
+            if let (Ok(client_id), Ok(client_secret), Ok(refresh_token), Ok(account_id)) = (
+                env::var("ZOHO_CLIENT_ID"),
+                env::var("ZOHO_CLIENT_SECRET"),
+                env::var("ZOHO_REFRESH_TOKEN"),
+                env::var("ZOHO_ACCOUNT_ID"),
+            ) {
+                let client = Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .map_err(|e| {
+                        EmailError::ConfigError(format!("Failed to build Zoho HTTP client: {}", e))
+                    })?;
 
-            EmailProvider::Brevo { api_key, client }
-        } else {
-            let host = env::var("SMTP_HOST").unwrap_or_else(|_| "smtp.gmail.com".to_string());
-            let port = env::var("SMTP_PORT")
-                .unwrap_or_else(|_| "587".to_string())
-                .parse()
-                .map_err(|e| EmailError::ConfigError(format!("Invalid SMTP_PORT: {}", e)))?;
-            let username = env::var("SMTP_USERNAME")
-                .map_err(|_| EmailError::ConfigError("SMTP_USERNAME not set".to_string()))?;
-            let password = env::var("SMTP_PASSWORD")
-                .map_err(|_| EmailError::ConfigError("SMTP_PASSWORD not set".to_string()))?;
+                EmailProvider::Zoho {
+                    client_id,
+                    client_secret,
+                    refresh_token,
+                    account_id,
+                    client,
+                }
+            } else {
+                let host = env::var("SMTP_HOST").unwrap_or_else(|_| "smtp.gmail.com".to_string());
+                let port = env::var("SMTP_PORT")
+                    .unwrap_or_else(|_| "587".to_string())
+                    .parse()
+                    .map_err(|e| EmailError::ConfigError(format!("Invalid SMTP_PORT: {}", e)))?;
+                let username = env::var("SMTP_USERNAME")
+                    .map_err(|_| EmailError::ConfigError("SMTP_USERNAME not set".to_string()))?;
+                let password = env::var("SMTP_PASSWORD")
+                    .map_err(|_| EmailError::ConfigError("SMTP_PASSWORD not set".to_string()))?;
 
-            EmailProvider::Smtp {
-                host,
-                port,
-                username,
-                password,
-            }
-        };
+                EmailProvider::Smtp {
+                    host,
+                    port,
+                    username,
+                    password,
+                }
+            };
 
         Ok(Self {
             provider,
@@ -114,7 +123,7 @@ impl EmailService {
 
     pub fn provider_name(&self) -> &'static str {
         match &self.provider {
-            EmailProvider::Brevo { .. } => "brevo",
+            EmailProvider::Zoho { .. } => "zoho",
             EmailProvider::Smtp { .. } => "smtp",
         }
     }
@@ -156,7 +165,7 @@ impl EmailService {
             username, verification_link, verification_link
         );
 
-        self.send_email(to_email, username, subject, &html_body, &text_body)
+        self.send_email(to_email, subject, &html_body, &text_body)
             .await
     }
 
@@ -198,22 +207,34 @@ impl EmailService {
             username, reset_link, reset_link
         );
 
-        self.send_email(to_email, username, subject, &html_body, &text_body)
+        self.send_email(to_email, subject, &html_body, &text_body)
             .await
     }
 
     async fn send_email(
         &self,
         to: &str,
-        to_name: &str,
         subject: &str,
         html_body: &str,
         text_body: &str,
     ) -> Result<(), EmailError> {
         match &self.provider {
-            EmailProvider::Brevo { api_key, client } => {
-                self.send_email_via_brevo(
-                    client, api_key, to, to_name, subject, html_body, text_body,
+            EmailProvider::Zoho {
+                client_id,
+                client_secret,
+                refresh_token,
+                account_id,
+                client,
+            } => {
+                self.send_email_via_zoho(
+                    client,
+                    client_id,
+                    client_secret,
+                    refresh_token,
+                    account_id,
+                    to,
+                    subject,
+                    html_body,
                 )
                 .await
             }
@@ -231,49 +252,86 @@ impl EmailService {
         }
     }
 
-    async fn send_email_via_brevo(
+    async fn zoho_access_token(
         &self,
         client: &Client,
-        api_key: &str,
-        to: &str,
-        to_name: &str,
-        subject: &str,
-        html_body: &str,
-        text_body: &str,
-    ) -> Result<(), EmailError> {
-        let payload = BrevoSendEmailRequest {
-            sender: BrevoSender {
-                email: &self.from_email,
-                name: &self.from_name,
-            },
-            to: vec![BrevoRecipient {
-                email: to,
-                name: to_name,
-            }],
-            subject,
-            html_content: html_body,
-            text_content: text_body,
-        };
-
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> Result<String, EmailError> {
         let response = client
-            .post(format!("{}/smtp/email", BREVO_API_BASE_URL))
-            .header("accept", "application/json")
-            .header("api-key", api_key)
-            .json(&payload)
+            .post(ZOHO_ACCOUNTS_TOKEN_URL)
+            .form(&[
+                ("refresh_token", refresh_token),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("grant_type", "refresh_token"),
+            ])
             .send()
             .await
-            .map_err(|e| EmailError::SendError(format!("Brevo request failed: {}", e)))?;
+            .map_err(|e| EmailError::SendError(format!("Zoho token refresh failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(EmailError::SendError(format!(
-                "Brevo send failed with status {}: {}",
+                "Zoho token refresh failed with status {}: {}",
                 status, body
             )));
         }
 
-        tracing::info!("✉️  Verification email sent to: {} via Brevo", to);
+        let token: ZohoTokenResponse = response
+            .json()
+            .await
+            .map_err(|e| EmailError::SendError(format!("Invalid Zoho token response: {}", e)))?;
+
+        Ok(token.access_token)
+    }
+
+    async fn send_email_via_zoho(
+        &self,
+        client: &Client,
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+        account_id: &str,
+        to: &str,
+        subject: &str,
+        html_body: &str,
+    ) -> Result<(), EmailError> {
+        let access_token = self
+            .zoho_access_token(client, client_id, client_secret, refresh_token)
+            .await?;
+
+        let payload = ZohoSendEmailRequest {
+            from_address: &self.from_email,
+            to_address: to,
+            subject,
+            content: html_body,
+            mail_format: "html",
+        };
+
+        let response = client
+            .post(format!(
+                "{}/accounts/{}/messages",
+                ZOHO_MAIL_API_BASE_URL, account_id
+            ))
+            .header("Authorization", format!("Zoho-oauthtoken {}", access_token))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| EmailError::SendError(format!("Zoho request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(EmailError::SendError(format!(
+                "Zoho send failed with status {}: {}",
+                status, body
+            )));
+        }
+
+        tracing::info!("✉️  Verification email sent to: {} via Zoho", to);
         Ok(())
     }
 
