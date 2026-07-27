@@ -590,7 +590,12 @@ impl WhatsAppFlowService {
 
                 let amount = match amount_mode {
                     AmountInputMode::SourceAsset => {
-                        let Some(amount) = parse_amount(trimmed) else {
+                        let parsed = match parse_amount(trimmed) {
+                            Some(amount) => Some(amount),
+                            None => self.extract_amount_via_kimi(trimmed).await,
+                        };
+
+                        let Some(amount) = parsed else {
                             return self
                                 .reply(
                                     wa_id,
@@ -607,7 +612,12 @@ impl WhatsAppFlowService {
                         amount
                     }
                     AmountInputMode::Usd => {
-                        let Some(usd_amount) = parse_usd_amount(trimmed) else {
+                        let parsed = match parse_usd_amount(trimmed) {
+                            Some(amount) => Some(amount),
+                            None => self.extract_amount_via_kimi(trimmed).await,
+                        };
+
+                        let Some(usd_amount) = parsed else {
                             return self
                                 .reply(
                                     wa_id,
@@ -1932,6 +1942,22 @@ impl WhatsAppFlowService {
             rows,
         )
         .await
+    }
+
+    /// Falls back to Kimi when the deterministic amount parser can't make sense of the
+    /// message (e.g. "just send 100 bucks"). Returns `None` if Kimi isn't configured,
+    /// errors, or isn't confident - callers then show the same "not recognized" reply
+    /// as before this fallback existed.
+    async fn extract_amount_via_kimi(&self, text: &str) -> Option<f64> {
+        let kimi = self.state.kimi_client.as_ref()?;
+
+        match kimi.extract_amount(text).await {
+            Ok(amount) => amount,
+            Err(error) => {
+                tracing::warn!("Kimi amount extraction failed: {}", error);
+                None
+            }
+        }
     }
 
     async fn resolve_source_amount_from_usd(
