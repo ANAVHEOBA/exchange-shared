@@ -13,6 +13,7 @@ use crate::modules::swap::schema::{
     ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
+use crate::services::kimi::KimiIntent;
 use crate::services::pricing::CommissionService;
 use crate::services::trocador::TrocadorGateway;
 use crate::services::whatsapp::{
@@ -310,7 +311,7 @@ impl WhatsAppFlowService {
                     wa_id,
                     phone_number_id,
                     None,
-                    "Type swap to start a new swap. Type status and then your swap ID to check progress.",
+                    "🔄 Type swap to start a new swap. 🔎 Type status and then your swap ID to check progress.",
                 )
                 .await;
         }
@@ -363,7 +364,7 @@ impl WhatsAppFlowService {
                     wa_id,
                     phone_number_id,
                     session_id.as_deref(),
-                    "Swap flow reset. Type swap to start again.",
+                    "♻️ Swap flow reset. Type swap to start again.",
                 )
                 .await;
         }
@@ -429,206 +430,53 @@ impl WhatsAppFlowService {
                 }
 
                 if let Some(intent) = parse_swap_intent(trimmed) {
-                    if let Some(amount) = intent.amount {
-                        draft.amount = Some(amount);
-                    }
+                    return self
+                        .handle_parsed_swap_intent(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            &locale,
+                            draft,
+                            inbound_message_id,
+                            intent,
+                        )
+                        .await;
+                }
 
-                    let catalog = self.fetch_currency_catalog().await?;
-                    let from_plan = match intent.from_phrase.as_deref() {
-                        Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
-                        None => None,
-                    };
-                    let to_plan = match intent.to_phrase.as_deref() {
-                        Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
-                        None => None,
-                    };
-
-                    if let Some(AssetInputPlan::Selected(selection)) = from_plan.as_ref() {
-                        draft.from = Some(selection.clone());
-                        draft.pending_from_family = None;
-                    }
-
-                    if let Some(AssetInputPlan::Selected(selection)) = to_plan.as_ref() {
-                        draft.to = Some(selection.clone());
-                        draft.pending_to_family = None;
-                    }
-
-                    if let Some(plan) = from_plan {
-                        match plan {
-                            AssetInputPlan::Selected(_) => {}
-                            AssetInputPlan::ChooseResults { prompt, options } => {
-                                crud.upsert_session_state(
+                if let Some(kimi) = self.state.kimi_client.clone() {
+                    match kimi.classify_swap_message(trimmed).await {
+                        Ok(KimiIntent::SwapRequest {
+                            amount,
+                            from_asset,
+                            to_asset,
+                        }) => {
+                            return self
+                                .handle_parsed_swap_intent(
                                     wa_id,
                                     phone_number_id,
-                                    &ConversationState::AwaitingFromAssetChoice,
+                                    session_id.as_deref(),
                                     &locale,
-                                    &draft,
+                                    draft,
                                     inbound_message_id,
+                                    ParsedSwapIntent {
+                                        amount,
+                                        from_phrase: from_asset,
+                                        to_phrase: to_asset,
+                                    },
                                 )
-                                .await
-                                .map_err(|error| error.to_string())?;
-
-                                return self
-                                    .reply_currency_options(
-                                        wa_id,
-                                        phone_number_id,
-                                        session_id.as_deref(),
-                                        &prompt,
-                                        "Choose coin",
-                                        &options,
-                                    )
-                                    .await;
-                            }
-                            AssetInputPlan::ChooseAsset(families) => {
-                                crud.upsert_session_state(
-                                    wa_id,
-                                    phone_number_id,
-                                    &ConversationState::AwaitingFromAssetChoice,
-                                    &locale,
-                                    &draft,
-                                    inbound_message_id,
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?;
-
-                                return self
-                                    .reply_asset_family_options(
-                                        wa_id,
-                                        phone_number_id,
-                                        session_id.as_deref(),
-                                        &AssetSide::From.family_prompt(families.len()),
-                                        &families,
-                                    )
-                                    .await;
-                            }
-                            AssetInputPlan::ChooseNetwork { family, options } => {
-                                draft.pending_from_family = Some(family.clone());
-                                crud.upsert_session_state(
-                                    wa_id,
-                                    phone_number_id,
-                                    &ConversationState::AwaitingFromNetworkChoice,
-                                    &locale,
-                                    &draft,
-                                    inbound_message_id,
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?;
-
-                                return self
-                                    .reply_network_options(
-                                        wa_id,
-                                        phone_number_id,
-                                        session_id.as_deref(),
-                                        &AssetSide::From.network_prompt(&family),
-                                        &options,
-                                    )
-                                    .await;
-                            }
-                            AssetInputPlan::Error(message) => {
-                                return self
-                                    .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
-                                    .await;
-                            }
+                                .await;
                         }
-                    }
-
-                    if let Some(plan) = to_plan {
-                        match plan {
-                            AssetInputPlan::Selected(_) => {}
-                            AssetInputPlan::ChooseResults { prompt, options } => {
-                                crud.upsert_session_state(
-                                    wa_id,
-                                    phone_number_id,
-                                    &ConversationState::AwaitingToAssetChoice,
-                                    &locale,
-                                    &draft,
-                                    inbound_message_id,
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?;
-
-                                return self
-                                    .reply_currency_options(
-                                        wa_id,
-                                        phone_number_id,
-                                        session_id.as_deref(),
-                                        &prompt,
-                                        "Choose coin",
-                                        &options,
-                                    )
-                                    .await;
-                            }
-                            AssetInputPlan::ChooseAsset(families) => {
-                                crud.upsert_session_state(
-                                    wa_id,
-                                    phone_number_id,
-                                    &ConversationState::AwaitingToAssetChoice,
-                                    &locale,
-                                    &draft,
-                                    inbound_message_id,
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?;
-
-                                return self
-                                    .reply_asset_family_options(
-                                        wa_id,
-                                        phone_number_id,
-                                        session_id.as_deref(),
-                                        &AssetSide::To.family_prompt(families.len()),
-                                        &families,
-                                    )
-                                    .await;
-                            }
-                            AssetInputPlan::ChooseNetwork { family, options } => {
-                                draft.pending_to_family = Some(family.clone());
-                                crud.upsert_session_state(
-                                    wa_id,
-                                    phone_number_id,
-                                    &ConversationState::AwaitingToNetworkChoice,
-                                    &locale,
-                                    &draft,
-                                    inbound_message_id,
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?;
-
-                                return self
-                                    .reply_network_options(
-                                        wa_id,
-                                        phone_number_id,
-                                        session_id.as_deref(),
-                                        &AssetSide::To.network_prompt(&family),
-                                        &options,
-                                    )
-                                    .await;
-                            }
-                            AssetInputPlan::Error(message) => {
-                                return self
-                                    .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
-                                    .await;
-                            }
+                        Ok(KimiIntent::FriendlyReply(message)) => {
+                            return self
+                                .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
+                                .await;
                         }
-                    }
-
-                    if draft.from.is_some() && draft.to.is_some() && draft.amount.is_some() {
-                        return match self
-                            .fetch_and_prompt_quotes(
-                                wa_id,
-                                phone_number_id,
-                                session_id.as_deref(),
-                                &locale,
-                                draft,
-                                inbound_message_id,
-                            )
-                            .await
-                        {
-                            Ok(()) => Ok(()),
-                            Err(error) => {
-                                self.reply(wa_id, phone_number_id, session_id.as_deref(), &error)
-                                    .await
-                            }
-                        };
+                        Err(error) => {
+                            tracing::warn!(
+                                "Kimi classification failed, falling back to the menu: {}",
+                                error
+                            );
+                        }
                     }
                 }
 
@@ -1695,6 +1543,276 @@ impl WhatsAppFlowService {
         }
     }
 
+    /// Resolves a swap intent - however it was parsed (regex or Kimi) - against the currency
+    /// catalog and advances the session to whichever state the resolved fields call for.
+    /// Shared by the deterministic `parse_swap_intent` path and the Kimi fallback so both
+    /// funnel through the exact same asset-resolution and state-transition logic.
+    async fn handle_parsed_swap_intent(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+        intent: ParsedSwapIntent,
+    ) -> Result<(), String> {
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+
+        if let Some(amount) = intent.amount {
+            draft.amount = Some(amount);
+        }
+
+        let catalog = self.fetch_currency_catalog().await?;
+        let from_plan = match intent.from_phrase.as_deref() {
+            Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
+            None => None,
+        };
+        let to_plan = match intent.to_phrase.as_deref() {
+            Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
+            None => None,
+        };
+
+        if let Some(AssetInputPlan::Selected(selection)) = from_plan.as_ref() {
+            draft.from = Some(selection.clone());
+            draft.pending_from_family = None;
+        }
+
+        if let Some(AssetInputPlan::Selected(selection)) = to_plan.as_ref() {
+            draft.to = Some(selection.clone());
+            draft.pending_to_family = None;
+        }
+
+        if let Some(plan) = from_plan {
+            match plan {
+                AssetInputPlan::Selected(_) => {}
+                AssetInputPlan::ChooseResults { prompt, options } => {
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingFromAssetChoice,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_currency_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            &prompt,
+                            "Choose coin",
+                            &options,
+                        )
+                        .await;
+                }
+                AssetInputPlan::ChooseAsset(families) => {
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingFromAssetChoice,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_asset_family_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            &AssetSide::From.family_prompt(families.len()),
+                            &families,
+                        )
+                        .await;
+                }
+                AssetInputPlan::ChooseNetwork { family, options } => {
+                    draft.pending_from_family = Some(family.clone());
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingFromNetworkChoice,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_network_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            &AssetSide::From.network_prompt(&family),
+                            &options,
+                        )
+                        .await;
+                }
+                AssetInputPlan::Error(message) => {
+                    return self
+                        .reply(wa_id, phone_number_id, session_id, &message)
+                        .await;
+                }
+            }
+        }
+
+        if let Some(plan) = to_plan {
+            match plan {
+                AssetInputPlan::Selected(_) => {}
+                AssetInputPlan::ChooseResults { prompt, options } => {
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingToAssetChoice,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_currency_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            &prompt,
+                            "Choose coin",
+                            &options,
+                        )
+                        .await;
+                }
+                AssetInputPlan::ChooseAsset(families) => {
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingToAssetChoice,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_asset_family_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            &AssetSide::To.family_prompt(families.len()),
+                            &families,
+                        )
+                        .await;
+                }
+                AssetInputPlan::ChooseNetwork { family, options } => {
+                    draft.pending_to_family = Some(family.clone());
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingToNetworkChoice,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_network_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            &AssetSide::To.network_prompt(&family),
+                            &options,
+                        )
+                        .await;
+                }
+                AssetInputPlan::Error(message) => {
+                    return self
+                        .reply(wa_id, phone_number_id, session_id, &message)
+                        .await;
+                }
+            }
+        }
+
+        if draft.from.is_some() && draft.to.is_some() && draft.amount.is_some() {
+            return match self
+                .fetch_and_prompt_quotes(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                )
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(error) => self.reply(wa_id, phone_number_id, session_id, &error).await,
+            };
+        }
+
+        if draft.from.is_some() && draft.to.is_some() {
+            return self
+                .prompt_amount_mode(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                )
+                .await;
+        }
+
+        if draft.from.is_some() {
+            crud.upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::AwaitingToAssetSearch,
+                locale,
+                &draft,
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    AssetSide::To.asset_prompt(),
+                )
+                .await;
+        }
+
+        crud.upsert_session_state(
+            wa_id,
+            phone_number_id,
+            &ConversationState::AwaitingFromAssetSearch,
+            locale,
+            &draft,
+            inbound_message_id,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+        self.reply(
+            wa_id,
+            phone_number_id,
+            session_id,
+            AssetSide::From.asset_prompt(),
+        )
+        .await
+    }
+
     async fn handle_amount_mode_input(
         &self,
         wa_id: &str,
@@ -2682,11 +2800,11 @@ impl WhatsAppFlowService {
 
     fn help_message() -> String {
         [
-            "Assetar menu:",
-            "- Type swap to start a guided swap",
-            "- Type status and then your swap ID to check a swap",
-            "- Type cancel to reset the current flow",
-            "- Type help to see this menu again",
+            "Assetar menu 📋",
+            "🔄 Type swap to start a guided swap",
+            "🔎 Type status and then your swap ID to check a swap",
+            "♻️ Type cancel to reset the current flow",
+            "ℹ️ Type help to see this menu again",
         ]
         .join("\n")
     }
@@ -2695,16 +2813,16 @@ impl WhatsAppFlowService {
         [
             "Hi 👋 Welcome to Assetar.",
             "Assetar helps you compare live crypto swap routes and complete swaps easily in chat.",
-            "Type swap to begin.",
-            "Type status and then your swap ID to check progress later.",
-            "Type cancel any time to reset the current flow.",
+            "🔄 Type swap to begin.",
+            "🔎 Type status and then your swap ID to check progress later.",
+            "♻️ Type cancel any time to reset the current flow.",
         ]
         .join("\n\n")
     }
 
     fn examples_message() -> String {
         [
-            "Swap examples:",
+            "Swap examples 💡",
             "- swap",
             "- swap 100 usdc on stellar to bitcoin",
             "- swap 0.5 btc to xmr",
@@ -2714,7 +2832,7 @@ impl WhatsAppFlowService {
     }
 
     fn status_help_message() -> String {
-        "Type status and then your swap ID to check a swap. Example: status 4fd0c0e1-1234-5678-9abc-1234567890ab."
+        "🔎 Type status and then your swap ID to check a swap. Example: status 4fd0c0e1-1234-5678-9abc-1234567890ab."
             .to_string()
     }
 }

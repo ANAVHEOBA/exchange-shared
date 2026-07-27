@@ -248,8 +248,8 @@ impl KimiClient {
         if let Some(call) = message.tool_calls.into_iter().next() {
             return match call.function.name.as_str() {
                 "extract_swap_request" => {
-                    let args: SwapRequestArgs = serde_json::from_str(&call.function.arguments)
-                        .unwrap_or_default();
+                    let args: SwapRequestArgs =
+                        serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
                     Ok(KimiIntent::SwapRequest {
                         amount: args.amount,
@@ -268,7 +268,10 @@ impl KimiClient {
 
                     Ok(KimiIntent::FriendlyReply(args.message))
                 }
-                other => Err(KimiError::ParseError(format!("Unexpected tool call: {}", other))),
+                other => Err(KimiError::ParseError(format!(
+                    "Unexpected tool call: {}",
+                    other
+                ))),
             };
         }
 
