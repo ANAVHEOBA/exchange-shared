@@ -405,7 +405,8 @@ impl WhatsAppFlowService {
                 .await;
         }
 
-        if matches!(lowered.as_str(), "cancel" | "restart" | "reset") {
+        if is_cancel_request(trimmed) {
+            let had_active_swap = state != ConversationState::Idle;
             crud.upsert_session_state(
                 wa_id,
                 phone_number_id,
@@ -418,10 +419,15 @@ impl WhatsAppFlowService {
             .map_err(|error| error.to_string())?;
 
             let message = self
-                .narrate_or(
-                    "Tell the user the current swap setup has been reset and ask what they want to do next. Do not mention commands or menus.",
-                    "I've reset that swap setup. What do you want to do next?",
-                )
+                .narrate_or(if had_active_swap {
+                    "Tell the user the current swap setup has been cancelled and ask what they want to do next. Do not mention commands or menus."
+                } else {
+                    "Tell the user there is no active swap running anymore and they can message again whenever they want to start one. Keep it short and natural."
+                }, if had_active_swap {
+                    "Alright, I cancelled that swap setup. What do you want to do next?"
+                } else {
+                    "Alright. Nothing is running on my side now. Message me whenever you want to start a swap."
+                })
                 .await;
 
             return self
@@ -537,6 +543,17 @@ impl WhatsAppFlowService {
                                     recipient_address,
                                     refund_address,
                                 },
+                            )
+                            .await;
+                    }
+                    Ok(KimiIntent::FriendlyReply(message)) => {
+                        return self
+                            .reply_to_inbound(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                inbound_message_id,
+                                &message,
                             )
                             .await;
                     }
@@ -2593,9 +2610,14 @@ impl WhatsAppFlowService {
                     .reply(wa_id, phone_number_id, session_id, NO_ROUTE_EXPLANATION)
                     .await;
             }
-            Err(error @ SwapError::AmountOutOfRange { .. }) => {
+            Err(SwapError::AmountOutOfRange { min, max }) => {
+                let message = amount_out_of_range_message(&from.ticker, amount, min, max)
+                    .unwrap_or_else(|| {
+                        "That amount will not work for this pair. Send another amount and I'll try again."
+                            .to_string()
+                    });
                 return self
-                    .reply(wa_id, phone_number_id, session_id, &error.to_string())
+                    .reply(wa_id, phone_number_id, session_id, &message)
                     .await;
             }
             Err(error) => {
@@ -3458,7 +3480,15 @@ fn has_swap_fields(
 }
 
 fn build_swap_context_summary(draft: &SwapDraft, state: &ConversationState) -> String {
-    let mut lines = vec![format!("Current step: {}", conversation_state_label(state))];
+    let mut lines = vec![
+        "Conversation objective: help the user finish the current swap in as few messages as possible, unless they want to cancel it."
+            .to_string(),
+        format!("Current step: {}", conversation_state_label(state)),
+    ];
+
+    if let Some(next_needed) = next_needed_user_input(state, draft) {
+        lines.push(format!("Still needed right now: {}", next_needed));
+    }
 
     if let Some(from) = draft.from.as_ref() {
         lines.push(format!(
@@ -3563,6 +3593,43 @@ fn conversation_state_label(state: &ConversationState) -> &'static str {
     }
 }
 
+fn next_needed_user_input(state: &ConversationState, draft: &SwapDraft) -> Option<String> {
+    match state {
+        ConversationState::AwaitingFromAssetSearch | ConversationState::AwaitingFromAssetChoice => {
+            Some("the source coin or network".to_string())
+        }
+        ConversationState::AwaitingFromNetworkChoice => Some("the source network".to_string()),
+        ConversationState::AwaitingToAssetSearch | ConversationState::AwaitingToAssetChoice => {
+            Some("the destination coin or network".to_string())
+        }
+        ConversationState::AwaitingToNetworkChoice => Some("the destination network".to_string()),
+        ConversationState::AwaitingAmountMode | ConversationState::AwaitingAmount => {
+            Some("the amount to swap".to_string())
+        }
+        ConversationState::AwaitingQuoteSelection => {
+            Some("which provider to use, or a message to keep the recommended route".to_string())
+        }
+        ConversationState::AwaitingRecipientAddress => draft.to.as_ref().map(|asset| {
+            format!(
+                "the {} receiving address on {}",
+                asset.ticker.to_uppercase(),
+                asset.network
+            )
+        }),
+        ConversationState::AwaitingRecipientExtraId => {
+            Some("the destination extra ID or memo".to_string())
+        }
+        ConversationState::AwaitingRefundAddress => {
+            Some("the refund address, or they can say skip".to_string())
+        }
+        ConversationState::AwaitingRefundExtraId => Some("the refund extra ID or memo".to_string()),
+        ConversationState::AwaitingConfirmation => {
+            Some("a final confirm or cancel decision".to_string())
+        }
+        ConversationState::Idle => None,
+    }
+}
+
 fn to_quote_choice(index: usize, rate: &RateResponse, trade_id: &str) -> QuoteChoice {
     QuoteChoice {
         index,
@@ -3662,7 +3729,8 @@ fn humanize_minutes(minutes: u32) -> String {
 /// Same reasoning Trocador's own site gives for a genuinely unavailable pair
 /// (as opposed to an amount that's simply out of bounds) - used instead of a
 /// bare "pair not available" so users understand why and what to try next.
-const NO_ROUTE_EXPLANATION: &str = "We couldn't find any live routes for that pair and amount right now. Very small amounts sometimes don't cover network fees, and some pairs have limited liquidity. Try a different amount, or split it into two swaps using a more liquid coin as a stop.";
+const NO_ROUTE_EXPLANATION: &str =
+    "I couldn't get a live route for that pair right now. Try another amount or a different pair.";
 
 /// Explains why no routes came back when Trocador's response tells us the
 /// requested amount fell outside the pair's min/max deposit bounds, instead of
@@ -3762,6 +3830,66 @@ fn parse_status_lookup_input(input: &str) -> Option<String> {
             .find(input.trim())
             .map(|matched| matched.as_str().to_string())
     })
+}
+
+fn is_cancel_request(input: &str) -> bool {
+    let normalized = normalize_phrase(input);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "cancel"
+            | "restart"
+            | "reset"
+            | "stop"
+            | "abort"
+            | "not now"
+            | "nevermind"
+            | "never mind"
+            | "forget it"
+            | "forget about it"
+            | "leave it"
+            | "drop it"
+    ) {
+        return true;
+    }
+
+    if normalized.contains("dont cancel") || normalized.contains("do not cancel") {
+        return false;
+    }
+
+    let has_cancel_signal = normalized.contains("cancel")
+        || normalized.contains("restart")
+        || normalized.contains("reset")
+        || normalized.contains("abort")
+        || normalized.contains("never mind")
+        || normalized.contains("forget it")
+        || normalized.contains("forget about it")
+        || normalized.contains("stop this")
+        || normalized.contains("end this")
+        || normalized.contains("close this")
+        || normalized.contains("leave this")
+        || normalized.contains("leave am")
+        || normalized.contains("drop this")
+        || normalized.contains("change my mind");
+
+    if !has_cancel_signal {
+        return false;
+    }
+
+    normalized.contains("conversation")
+        || normalized.contains("swap")
+        || normalized.contains("trade")
+        || normalized.contains("setup")
+        || normalized.contains("request")
+        || normalized.contains("this")
+        || normalized.contains("am")
+        || normalized.contains("it")
+        || normalized.contains("that")
+        || normalized == "stop"
+        || normalized == "abort"
 }
 
 fn normalize_optional_text(value: Option<&str>) -> Option<&str> {
@@ -3919,15 +4047,17 @@ fn parse_quote_selection_by_provider(input: &str, quotes: &[QuoteChoice]) -> Opt
 }
 
 fn parse_confirmation_decision(input: &str) -> Option<KimiConfirmation> {
+    if is_cancel_request(input) {
+        return Some(KimiConfirmation::Cancel);
+    }
+
     match normalize_phrase(input).as_str() {
         "confirm" | "yes" | "yes please" | "yesplease" | "y" | "yeah" | "yep" | "sure" | "ok"
         | "okay" | "proceed" | "goahead" | "createit" | "doit" | "sendit" | "letsgo"
         | "continue" | "looks good" | "looksgood" | "all good" | "allgood" | "thats fine"
         | "thatsfine" => Some(KimiConfirmation::Confirm),
-        "no" | "n" | "nope" | "nah" | "cancel" | "cancelit" | "stop" | "abort" | "notnow"
-        | "dont" | "donot" | "dont do it" | "dontdoit" | "never mind" | "nevermind" | "wait" => {
-            Some(KimiConfirmation::Cancel)
-        }
+        "no" | "n" | "nope" | "nah" | "cancelit" | "notnow" | "dont" | "donot" | "dont do it"
+        | "dontdoit" | "wait" => Some(KimiConfirmation::Cancel),
         _ => None,
     }
 }
@@ -5049,6 +5179,15 @@ mod tests {
             Some(KimiConfirmation::Cancel)
         );
         assert_eq!(parse_confirmation_decision("what is the rate again?"), None);
+    }
+
+    #[test]
+    fn detects_freeform_cancel_requests() {
+        assert!(is_cancel_request("baba i wan cancel this conversation"));
+        assert!(is_cancel_request("never mind this swap"));
+        assert!(is_cancel_request("forget about it"));
+        assert!(!is_cancel_request("do not cancel this"));
+        assert!(!is_cancel_request("what happens if i cancel later?"));
     }
 
     #[test]
