@@ -108,8 +108,11 @@ pub async fn create_app(
     };
 
     let kimi_client = KimiClient::from_env().map(Arc::new);
-    if kimi_client.is_some() {
-        tracing::info!("🤖 Kimi conversational layer configured for WhatsApp");
+    if let Some(kimi_client) = kimi_client.as_ref() {
+        tracing::info!(
+            "🤖 Kimi conversational layer configured for WhatsApp (model={})",
+            kimi_client.model()
+        );
     } else {
         tracing::info!("Kimi conversational layer not configured - WhatsApp falls back to the deterministic menu only");
     }

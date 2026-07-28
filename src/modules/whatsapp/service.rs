@@ -13,7 +13,7 @@ use crate::modules::swap::schema::{
     ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
-use crate::services::kimi::KimiIntent;
+use crate::services::kimi::{KimiAmountMode, KimiConfirmation, KimiIntent};
 use crate::services::pricing::CommissionService;
 use crate::services::trocador::TrocadorGateway;
 use crate::services::whatsapp::{
@@ -695,9 +695,18 @@ impl WhatsAppFlowService {
                 }
             }
             ConversationState::AwaitingQuoteSelection => {
-                let Some(choice_index) =
-                    parse_quote_selection_id(trimmed).or_else(|| parse_quote_selection(trimmed))
-                else {
+                let choice_index = parse_quote_selection_id(trimmed)
+                    .or_else(|| parse_quote_selection(trimmed))
+                    .or_else(|| parse_quote_selection_by_provider(trimmed, &draft.quotes));
+                let choice_index = match choice_index {
+                    Some(index) => Some(index),
+                    None => {
+                        self.extract_quote_selection_via_kimi(trimmed, draft.quotes.len())
+                            .await
+                    }
+                };
+
+                let Some(choice_index) = choice_index else {
                     return self
                         .reply(
                             wa_id,
@@ -979,15 +988,45 @@ impl WhatsAppFlowService {
                 }
             }
             ConversationState::AwaitingConfirmation => {
-                if !matches!(lowered.as_str(), "confirm" | "yes" | "y") {
-                    return self
-                        .reply(
+                // Deterministic only, deliberately: this is the step that
+                // actually creates the swap, so it must never depend on an AI
+                // interpretation of ambiguous text. Unclear input falls
+                // straight to "reply confirm or cancel" below.
+                let decision = parse_confirmation_decision(trimmed);
+
+                match decision {
+                    Some(KimiConfirmation::Cancel) => {
+                        crud.upsert_session_state(
                             wa_id,
                             phone_number_id,
-                            session_id.as_deref(),
-                            "Reply confirm to create the swap, or cancel to reset.",
+                            &ConversationState::Idle,
+                            &locale,
+                            &SwapDraft::default(),
+                            inbound_message_id,
                         )
-                        .await;
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                        return self
+                            .reply(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                "No problem. I cancelled that swap setup. Type swap whenever you want to start again.",
+                            )
+                            .await;
+                    }
+                    Some(KimiConfirmation::Confirm) => {}
+                    None => {
+                        return self
+                            .reply(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                "Reply confirm to create the swap, or cancel to reset.",
+                            )
+                            .await;
+                    }
                 }
 
                 let response = match self
@@ -1884,11 +1923,17 @@ impl WhatsAppFlowService {
         let from = draft
             .from
             .as_ref()
-            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
+            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?
+            .clone();
 
-        let Some(mode) =
-            parse_amount_mode_selection_id(trimmed).or_else(|| parse_amount_mode(trimmed, from))
-        else {
+        let mode =
+            parse_amount_mode_selection_id(trimmed).or_else(|| parse_amount_mode(trimmed, &from));
+        let mode = match mode {
+            Some(mode) => Some(mode),
+            None => self.extract_amount_mode_via_kimi(trimmed, &from).await,
+        };
+
+        let Some(mode) = mode else {
             return self
                 .reply(
                     wa_id,
@@ -1904,6 +1949,46 @@ impl WhatsAppFlowService {
 
         draft.amount_input_mode = Some(mode.clone());
         draft.requested_amount_usd = None;
+
+        let direct_amount = match mode {
+            AmountInputMode::SourceAsset => match parse_amount(trimmed) {
+                Some(amount) => Some(amount),
+                None => self.extract_amount_via_kimi(trimmed).await,
+            },
+            AmountInputMode::Usd => match parse_usd_amount(trimmed) {
+                Some(amount) => Some(amount),
+                None => self.extract_amount_via_kimi(trimmed).await,
+            },
+        };
+
+        if let Some(input_amount) = direct_amount {
+            let amount = match mode {
+                AmountInputMode::SourceAsset => input_amount,
+                AmountInputMode::Usd => {
+                    draft.requested_amount_usd = Some(input_amount);
+                    self.resolve_source_amount_from_usd(&from, input_amount)
+                        .await
+                        .map_err(|error| error.to_string())?
+                }
+            };
+            draft.amount = Some(amount);
+
+            return match self
+                .fetch_and_prompt_quotes(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                )
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(error) => self.reply(wa_id, phone_number_id, session_id, &error).await,
+            };
+        }
+
         WhatsAppCrud::new(self.state.db.clone())
             .upsert_session_state(
                 wa_id,
@@ -2019,6 +2104,43 @@ impl WhatsAppFlowService {
             Ok(amount) => amount,
             Err(error) => {
                 tracing::warn!("Kimi amount extraction failed: {}", error);
+                None
+            }
+        }
+    }
+
+    async fn extract_amount_mode_via_kimi(
+        &self,
+        text: &str,
+        from: &CurrencySelection,
+    ) -> Option<AmountInputMode> {
+        let kimi = self.state.kimi_client.as_ref()?;
+
+        match kimi
+            .choose_amount_mode(text, &from.ticker, &from.network)
+            .await
+        {
+            Ok(Some(KimiAmountMode::SourceAsset)) => Some(AmountInputMode::SourceAsset),
+            Ok(Some(KimiAmountMode::Usd)) => Some(AmountInputMode::Usd),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!("Kimi amount-mode extraction failed: {}", error);
+                None
+            }
+        }
+    }
+
+    async fn extract_quote_selection_via_kimi(
+        &self,
+        text: &str,
+        route_count: usize,
+    ) -> Option<usize> {
+        let kimi = self.state.kimi_client.as_ref()?;
+
+        match kimi.choose_quote_index(text, route_count).await {
+            Ok(index) => index,
+            Err(error) => {
+                tracing::warn!("Kimi quote selection failed: {}", error);
                 None
             }
         }
@@ -3175,7 +3297,41 @@ fn parse_status_command(input: &str) -> Option<String> {
 }
 
 fn parse_quote_selection(input: &str) -> Option<usize> {
-    input.trim().parse::<usize>().ok()
+    let trimmed = input.trim();
+    if let Ok(index) = trimmed.parse::<usize>() {
+        return Some(index);
+    }
+
+    match normalize_phrase(trimmed).as_str() {
+        "first"
+        | "first one"
+        | "one"
+        | "1st"
+        | "route one"
+        | "routeone"
+        | "option one"
+        | "optionone"
+        | "top"
+        | "best"
+        | "recommended"
+        | "use first"
+        | "usefirst"
+        | "use top"
+        | "usetop"
+        | "use best"
+        | "usebest"
+        | "the recommended one"
+        | "therecommendedone" => Some(1),
+        "second" | "second one" | "two" | "2nd" | "route two" | "routetwo" | "option two"
+        | "optiontwo" => Some(2),
+        "third" | "third one" | "three" | "3rd" | "route three" | "routethree" | "option three"
+        | "optionthree" => Some(3),
+        "fourth" | "fourth one" | "four" | "4th" | "route four" | "routefour" | "option four"
+        | "optionfour" => Some(4),
+        "fifth" | "fifth one" | "five" | "5th" | "route five" | "routefive" | "option five"
+        | "optionfive" => Some(5),
+        _ => None,
+    }
 }
 
 fn parse_quote_selection_id(input: &str) -> Option<usize> {
@@ -3188,6 +3344,39 @@ fn parse_quote_selection_id(input: &str) -> Option<usize> {
 
 fn build_quote_selection_id(index: usize) -> String {
     format!("quote:{}", index)
+}
+
+fn parse_quote_selection_by_provider(input: &str, quotes: &[QuoteChoice]) -> Option<usize> {
+    let normalized = normalize_phrase(input);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    quotes.iter().find_map(|quote| {
+        let provider = normalize_phrase(&quote.provider);
+        let provider_name = normalize_phrase(&quote.provider_name);
+
+        let matches_provider =
+            !provider.is_empty() && (normalized == provider || normalized.contains(&provider));
+        let matches_provider_name = !provider_name.is_empty()
+            && (normalized == provider_name || normalized.contains(&provider_name));
+
+        (matches_provider || matches_provider_name).then_some(quote.index)
+    })
+}
+
+fn parse_confirmation_decision(input: &str) -> Option<KimiConfirmation> {
+    match normalize_phrase(input).as_str() {
+        "confirm" | "yes" | "yes please" | "yesplease" | "y" | "yeah" | "yep" | "sure" | "ok"
+        | "okay" | "proceed" | "goahead" | "createit" | "doit" | "sendit" | "letsgo"
+        | "continue" | "looks good" | "looksgood" | "all good" | "allgood" | "thats fine"
+        | "thatsfine" => Some(KimiConfirmation::Confirm),
+        "no" | "n" | "nope" | "nah" | "cancel" | "cancelit" | "stop" | "abort" | "notnow"
+        | "dont" | "donot" | "dont do it" | "dontdoit" | "never mind" | "nevermind" | "wait" => {
+            Some(KimiConfirmation::Cancel)
+        }
+        _ => None,
+    }
 }
 
 fn parse_amount_mode_selection_id(input: &str) -> Option<AmountInputMode> {
@@ -3995,11 +4184,13 @@ fn truncate_whatsapp_text(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        amount_out_of_range_message, parse_amount_mode, parse_asset_selection_id, parse_usd_amount,
+        amount_out_of_range_message, parse_amount_mode, parse_asset_selection_id,
+        parse_confirmation_decision, parse_quote_selection, parse_usd_amount,
         resolve_currency_phrase, should_restart_asset_search_from_network_choice, AmountInputMode,
         AssetFamilySelection, CurrencySelection,
     };
     use crate::modules::swap::schema::CurrencyResponse;
+    use crate::services::kimi::KimiConfirmation;
 
     fn currency(name: &str, ticker: &str, network: &str) -> CurrencyResponse {
         CurrencyResponse {
@@ -4131,6 +4322,35 @@ mod tests {
             Some(AmountInputMode::SourceAsset)
         );
         assert_eq!(parse_amount_mode("usd", &from), Some(AmountInputMode::Usd));
+    }
+
+    #[test]
+    fn parses_natural_quote_selection_aliases() {
+        assert_eq!(parse_quote_selection("first one"), Some(1));
+        assert_eq!(parse_quote_selection("use best"), Some(1));
+        assert_eq!(parse_quote_selection("second"), Some(2));
+        assert_eq!(parse_quote_selection("route five"), Some(5));
+    }
+
+    #[test]
+    fn parses_confirmation_and_cancel_aliases() {
+        assert_eq!(
+            parse_confirmation_decision("looks good"),
+            Some(KimiConfirmation::Confirm)
+        );
+        assert_eq!(
+            parse_confirmation_decision("yes please"),
+            Some(KimiConfirmation::Confirm)
+        );
+        assert_eq!(
+            parse_confirmation_decision("never mind"),
+            Some(KimiConfirmation::Cancel)
+        );
+        assert_eq!(
+            parse_confirmation_decision("wait"),
+            Some(KimiConfirmation::Cancel)
+        );
+        assert_eq!(parse_confirmation_decision("what is the rate again?"), None);
     }
 
     #[test]

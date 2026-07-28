@@ -4,8 +4,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const MOONSHOT_API_BASE_URL: &str = "https://api.moonshot.ai/v1";
-const KIMI_MODEL: &str = "kimi-k2.6";
+const DEFAULT_MOONSHOT_API_BASE_URL: &str = "https://api.moonshot.ai/v1";
+const DEFAULT_KIMI_MODEL: &str = "kimi-k2.7-code-highspeed";
+/// K2.6/K2.5 only accept 0.6 in non-thinking mode. K2.7 Code and K3 have
+/// different fixed temperature constraints, so the request builder omits the
+/// temperature field for those models.
+const KIMI_NON_THINKING_TEMPERATURE: f32 = 0.6;
 
 /// Shared grounding prepended to every Kimi call so the model always knows
 /// what Assetar is and how it should sound, instead of relying on a bare
@@ -42,6 +46,19 @@ numeric amount they mean, call extract_amount with that number. If there is no c
 the message is about something else entirely, do not call any tool. Never guess a number that \
 isn't clearly implied by the message.";
 
+const AMOUNT_MODE_INSTRUCTIONS: &str = "\
+The user is replying to a prompt asking whether they want to enter the send amount in the source \
+coin or in USD. Call choose_amount_mode only when the user's wording clearly chooses one. If they \
+mention dollars, usd, bucks, or use a dollar sign, choose usd. If they mention the source ticker, \
+source coin, token amount, or coin amount, choose source_asset. If the message is unclear, do not \
+call any tool.";
+
+const QUOTE_SELECTION_INSTRUCTIONS: &str = "\
+The user is replying to a list of numbered exchange routes. Call select_quote only when the user \
+clearly selects a route. If they say first, top, recommended, best, cheapest, most private, or use \
+route 1 language, choose index 1. If they give a number or ordinal, use that route number. If the \
+message is unclear or not a route selection, do not call any tool. Never invent route numbers.";
+
 const NARRATE_INSTRUCTIONS: &str = "\
 You'll be given a short description of a fact or step to convey to the user right now. Rephrase it \
 into a single short WhatsApp message in your own natural words. Never invent, alter, round, or omit \
@@ -49,13 +66,15 @@ any number, ticker, network name, or address mentioned in the description - repe
 as given. Don't add extra options, steps, or questions beyond what's described. Reply with the \
 message text only - no preamble, no quotes around it, no meta commentary.";
 
-/// Client for Moonshot's Kimi K2.6 chat completions API.
+/// Client for Moonshot's Kimi chat completions API.
 /// Used as an optional pre-processor and phrasing layer in front of the
 /// deterministic WhatsApp swap flow - it never decides an amount, address, or
 /// network, only extracts/rephrases what the flow already has.
 pub struct KimiClient {
     client: Client,
     api_key: String,
+    base_url: String,
+    model: String,
 }
 
 #[derive(Debug)]
@@ -90,6 +109,18 @@ pub enum KimiIntent {
     FriendlyReply(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KimiAmountMode {
+    SourceAsset,
+    Usd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KimiConfirmation {
+    Confirm,
+    Cancel,
+}
+
 #[derive(Serialize)]
 struct ChatMessage<'a> {
     role: &'a str,
@@ -120,12 +151,14 @@ struct ToolDef<'a> {
 struct ChatCompletionRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
-    thinking: ThinkingConfig<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDef<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
-    temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -178,17 +211,59 @@ struct AmountArgs {
     amount: f64,
 }
 
+#[derive(Deserialize)]
+struct AmountModeArgs {
+    mode: String,
+}
+
+#[derive(Deserialize)]
+struct QuoteSelectionArgs {
+    index: usize,
+}
+
 impl KimiClient {
-    /// Returns `None` when `KIMI_API_KEY` is not configured, matching the other
-    /// optional integrations in this codebase (Redis, email, WhatsApp).
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Returns `None` when no Kimi/Moonshot key is configured, matching the
+    /// other optional integrations in this codebase (Redis, email, WhatsApp).
     pub fn from_env() -> Option<Self> {
-        let api_key = std::env::var("KIMI_API_KEY").ok()?;
+        if std::env::var("KIMI_ENABLED")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no"
+                )
+            })
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        let api_key = std::env::var("KIMI_API_KEY")
+            .or_else(|_| std::env::var("MOONSHOT_API_KEY"))
+            .ok()?;
+        let base_url = std::env::var("KIMI_API_BASE_URL")
+            .unwrap_or_else(|_| DEFAULT_MOONSHOT_API_BASE_URL.to_string());
+        let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| DEFAULT_KIMI_MODEL.to_string());
+        let timeout_seconds = std::env::var("KIMI_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(8)
+            .clamp(1, 30);
         let client = Client::builder()
-            .timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(timeout_seconds))
             .build()
             .ok()?;
 
-        Some(Self { client, api_key })
+        Some(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model,
+        })
     }
 
     pub async fn classify_swap_message(&self, user_text: &str) -> Result<KimiIntent, KimiError> {
@@ -238,7 +313,7 @@ impl KimiClient {
 
         let system_prompt = Self::system_prompt(SWAP_INTENT_INSTRUCTIONS);
         let message = self
-            .send_chat_completion(&system_prompt, user_text, Some(tools), 0.4)
+            .send_chat_completion(&system_prompt, user_text, Some(tools))
             .await?;
 
         if let Some(call) = message.tool_calls.into_iter().next() {
@@ -304,7 +379,7 @@ impl KimiClient {
 
         let system_prompt = Self::system_prompt(AMOUNT_INSTRUCTIONS);
         let message = self
-            .send_chat_completion(&system_prompt, user_text, Some(tools), 0.4)
+            .send_chat_completion(&system_prompt, user_text, Some(tools))
             .await?;
 
         let Some(call) = message.tool_calls.into_iter().next() else {
@@ -326,6 +401,123 @@ impl KimiClient {
         }
     }
 
+    /// Interprets a user's natural-language choice between entering the amount
+    /// in the source asset or in USD. This never extracts the amount itself;
+    /// callers still parse/validate the numeric amount separately.
+    pub async fn choose_amount_mode(
+        &self,
+        user_text: &str,
+        source_ticker: &str,
+        source_network: &str,
+    ) -> Result<Option<KimiAmountMode>, KimiError> {
+        let tools = vec![ToolDef {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "choose_amount_mode",
+                description:
+                    "Choose whether the user wants to enter the amount in the source asset or USD.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["source_asset", "usd"],
+                            "description": "source_asset when the user wants to enter the coin amount; usd when they want to enter a dollar value."
+                        }
+                    },
+                    "required": ["mode"]
+                }),
+            },
+        }];
+
+        let system_prompt = Self::system_prompt(AMOUNT_MODE_INSTRUCTIONS);
+        let prompt = format!(
+            "Source asset: {} on {}\nUser message: {}",
+            source_ticker.to_uppercase(),
+            source_network,
+            user_text
+        );
+        let message = self
+            .send_chat_completion(&system_prompt, &prompt, Some(tools))
+            .await?;
+
+        let Some(call) = message.tool_calls.into_iter().next() else {
+            return Ok(None);
+        };
+
+        if call.function.name != "choose_amount_mode" {
+            return Ok(None);
+        }
+
+        let args: AmountModeArgs = serde_json::from_str(&call.function.arguments).map_err(|e| {
+            KimiError::ParseError(format!("Invalid choose_amount_mode arguments: {}", e))
+        })?;
+
+        match args.mode.trim() {
+            "source_asset" => Ok(Some(KimiAmountMode::SourceAsset)),
+            "usd" => Ok(Some(KimiAmountMode::Usd)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Interprets natural route selection wording like "first one", "best",
+    /// or "route 2". The selected number is bounded by the caller's route
+    /// count before being returned.
+    pub async fn choose_quote_index(
+        &self,
+        user_text: &str,
+        route_count: usize,
+    ) -> Result<Option<usize>, KimiError> {
+        if route_count == 0 {
+            return Ok(None);
+        }
+
+        let tools = vec![ToolDef {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "select_quote",
+                description: "Select one numbered exchange route from the displayed quote list.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "The route number the user selected."
+                        }
+                    },
+                    "required": ["index"]
+                }),
+            },
+        }];
+
+        let system_prompt = Self::system_prompt(QUOTE_SELECTION_INSTRUCTIONS);
+        let prompt = format!(
+            "Available route count: {}\nUser message: {}",
+            route_count, user_text
+        );
+        let message = self
+            .send_chat_completion(&system_prompt, &prompt, Some(tools))
+            .await?;
+
+        let Some(call) = message.tool_calls.into_iter().next() else {
+            return Ok(None);
+        };
+
+        if call.function.name != "select_quote" {
+            return Ok(None);
+        }
+
+        let args: QuoteSelectionArgs = serde_json::from_str(&call.function.arguments)
+            .map_err(|e| KimiError::ParseError(format!("Invalid select_quote arguments: {}", e)))?;
+
+        if (1..=route_count).contains(&args.index) {
+            Ok(Some(args.index))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Rephrases a plain description of a step/fact into a short, natural
     /// WhatsApp message that matches the user's own language/tone. This is a
     /// pure phrasing pass with no tool calls and no external I/O beyond the
@@ -337,7 +529,7 @@ impl KimiClient {
     pub async fn narrate(&self, situation: &str) -> Result<String, KimiError> {
         let system_prompt = Self::system_prompt(NARRATE_INSTRUCTIONS);
         let message = self
-            .send_chat_completion(&system_prompt, situation, None, 0.7)
+            .send_chat_completion(&system_prompt, situation, None)
             .await?;
 
         message
@@ -350,16 +542,27 @@ impl KimiClient {
         format!("{}\n\n{}", PROJECT_CONTEXT, instructions)
     }
 
+    fn request_overrides(&self) -> (Option<ThinkingConfig<'static>>, Option<f32>) {
+        if self.model.starts_with("kimi-k2.6") || self.model.starts_with("kimi-k2.5") {
+            return (
+                Some(ThinkingConfig { kind: "disabled" }),
+                Some(KIMI_NON_THINKING_TEMPERATURE),
+            );
+        }
+
+        (None, None)
+    }
+
     async fn send_chat_completion(
         &self,
         system_prompt: &str,
         user_text: &str,
         tools: Option<Vec<ToolDef<'_>>>,
-        temperature: f32,
     ) -> Result<ChatResponseMessage, KimiError> {
         let tool_choice = tools.is_some().then_some("auto");
+        let (thinking, temperature) = self.request_overrides();
         let request = ChatCompletionRequest {
-            model: KIMI_MODEL,
+            model: &self.model,
             messages: vec![
                 ChatMessage {
                     role: "system",
@@ -370,15 +573,17 @@ impl KimiClient {
                     content: user_text,
                 },
             ],
-            thinking: ThinkingConfig { kind: "disabled" },
+            thinking,
             tools,
             tool_choice,
+            // Kimi rejects unsupported fixed values outright, so model-specific
+            // fields are omitted unless the chosen model accepts them.
             temperature,
         };
 
         let response = self
             .client
-            .post(format!("{}/chat/completions", MOONSHOT_API_BASE_URL))
+            .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             .json(&request)
             .send()
