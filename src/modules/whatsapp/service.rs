@@ -17,9 +17,7 @@ use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
 use crate::services::kimi::{KimiAmountMode, KimiConfirmation, KimiIntent};
 use crate::services::pricing::CommissionService;
 use crate::services::trocador::TrocadorGateway;
-use crate::services::whatsapp::{
-    derive_whatsapp_client_id, InteractiveListOption, InteractiveListSection,
-};
+use crate::services::whatsapp::derive_whatsapp_client_id;
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,6 +136,14 @@ struct SwapDraft {
     to: Option<CurrencySelection>,
     pending_from_family: Option<AssetFamilySelection>,
     pending_to_family: Option<AssetFamilySelection>,
+    #[serde(default)]
+    pending_from_family_options: Vec<AssetFamilySelection>,
+    #[serde(default)]
+    pending_to_family_options: Vec<AssetFamilySelection>,
+    #[serde(default)]
+    pending_from_currency_options: Vec<CurrencySelection>,
+    #[serde(default)]
+    pending_to_currency_options: Vec<CurrencySelection>,
     amount: Option<f64>,
     amount_input_mode: Option<AmountInputMode>,
     requested_amount_usd: Option<f64>,
@@ -334,13 +340,14 @@ impl WhatsAppFlowService {
         wa_id: &str,
         phone_number_id: &str,
     ) -> Result<(), String> {
-        self.reply(
-            wa_id,
-            phone_number_id,
-            None,
-            "⚠️ Sorry, something went wrong on our end processing that. Please try again, or type swap to restart.",
-        )
-        .await
+        let message = self
+            .narrate_or(
+                "Tell the user something went wrong processing their WhatsApp message and ask them to try again. Keep it short and do not mention commands or menus.",
+                "Something went wrong processing that. Send it again and I'll pick it up from there.",
+            )
+            .await;
+
+        self.reply(wa_id, phone_number_id, None, &message).await
     }
 
     async fn process_message_event_locked(
@@ -355,14 +362,14 @@ impl WhatsAppFlowService {
         self.acknowledge_inbound_message(inbound_message_id).await;
 
         if raw_trimmed.is_empty() {
-            return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    None,
-                    "🔄 Type swap to start a new swap. 🔎 Type status and then your swap ID to check progress.",
+            let message = self
+                .narrate_or(
+                    "The user sent an empty WhatsApp message. Ask what swap or status check they need. Do not mention commands or menus.",
+                    "What do you want to swap or check?",
                 )
                 .await;
+
+            return self.reply(wa_id, phone_number_id, None, &message).await;
         }
 
         let normalized_command = normalize_quick_action_command(raw_trimmed);
@@ -386,13 +393,15 @@ impl WhatsAppFlowService {
 
         let lowered = trimmed.to_ascii_lowercase();
         if lowered == "status_help" {
-            return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    &Self::status_help_message(),
+            let message = self
+                .narrate_or(
+                    "Tell the user they can paste their Assetar swap ID if they want a status check. Keep it conversational and do not show a menu.",
+                    "Paste your Assetar swap ID and I'll check it.",
                 )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                 .await;
         }
 
@@ -408,13 +417,15 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-            return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    "♻️ Swap flow reset. Type swap to start again.",
+            let message = self
+                .narrate_or(
+                    "Tell the user the current swap setup has been reset and ask what they want to do next. Do not mention commands or menus.",
+                    "I've reset that swap setup. What do you want to do next?",
                 )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                 .await;
         }
 
@@ -443,29 +454,32 @@ impl WhatsAppFlowService {
         }
 
         if lowered == "examples" {
-            return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    &Self::examples_message(),
+            let examples = self
+                .narrate_or(
+                    "Give the user two short examples of natural WhatsApp swap messages: one crypto amount example and one USD amount example. Mention they can include the receiving address if they have it. Do not show a menu.",
+                    "You can say: swap 100 USDT to XMR, or swap $250 of BTC to Monero. If you already have the receiving address, add it in the same message.",
                 )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id.as_deref(), &examples)
                 .await;
         }
 
         if lowered == "help" || lowered == "menu" || lowered == "start" {
-            return self
-                .send_welcome_sequence(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    &locale,
-                    inbound_message_id,
+            let message = self
+                .narrate_or(
+                    "Welcome the user to Assetar as a conversational WhatsApp swap assistant. Tell them they can write what they want naturally, like swap 100 USDT to XMR or paste a swap ID to check status. Do not show commands or a menu.",
+                    "I'm here. Tell me the swap you want, like: swap 100 USDT to XMR. Or paste a swap ID and I'll check it.",
                 )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                 .await;
         }
 
-        if let Some(swap_id) = parse_status_command(trimmed) {
+        if let Some(swap_id) = parse_status_lookup_input(trimmed) {
             return match self
                 .send_status(wa_id, phone_number_id, session_id.as_deref(), &swap_id)
                 .await
@@ -556,24 +570,15 @@ impl WhatsAppFlowService {
                         .await;
                 }
 
-                if is_greeting(&lowered) {
-                    return self
-                        .reply(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            "Hey, I'm here. Tell me what you want to swap, like: swap 100 USDT to XMR.",
-                        )
-                        .await;
-                }
+                let message = self
+                    .narrate_or(
+                        "The user's message was not enough to start a swap or check status. Reply naturally and ask what they want to swap or which swap ID they want checked. Do not show commands or a menu.",
+                        "I'm here. Tell me what you want to swap, or paste a swap ID for me to check.",
+                    )
+                    .await;
 
-                self.reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    &Self::help_message(),
-                )
-                .await
+                self.reply(wa_id, phone_number_id, session_id.as_deref(), &message)
+                    .await
             }
             ConversationState::AwaitingFromAssetSearch => {
                 self.handle_asset_search_input(
@@ -654,7 +659,7 @@ impl WhatsAppFlowService {
                 .await
             }
             ConversationState::AwaitingAmountMode => {
-                self.handle_amount_mode_input(
+                self.handle_amount_input(
                     wa_id,
                     phone_number_id,
                     session_id.as_deref(),
@@ -666,82 +671,16 @@ impl WhatsAppFlowService {
                 .await
             }
             ConversationState::AwaitingAmount => {
-                let from = draft
-                    .from
-                    .as_ref()
-                    .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
-                let amount_mode = draft
-                    .amount_input_mode
-                    .clone()
-                    .unwrap_or(AmountInputMode::SourceAsset);
-
-                let amount = match amount_mode {
-                    AmountInputMode::SourceAsset => {
-                        let parsed = match parse_amount(trimmed) {
-                            Some(amount) => Some(amount),
-                            None => self.extract_amount_via_kimi(trimmed).await,
-                        };
-
-                        let Some(amount) = parsed else {
-                            return self
-                                .reply(
-                                    wa_id,
-                                    phone_number_id,
-                                    session_id.as_deref(),
-                                    &format!(
-                                        "Amount not recognized. Reply with the {} amount, for example 0.25.",
-                                        from.ticker.to_uppercase()
-                                    ),
-                                )
-                                .await;
-                        };
-                        draft.requested_amount_usd = None;
-                        amount
-                    }
-                    AmountInputMode::Usd => {
-                        let parsed = match parse_usd_amount(trimmed) {
-                            Some(amount) => Some(amount),
-                            None => self.extract_amount_via_kimi(trimmed).await,
-                        };
-
-                        let Some(usd_amount) = parsed else {
-                            return self
-                                .reply(
-                                    wa_id,
-                                    phone_number_id,
-                                    session_id.as_deref(),
-                                    "Dollar amount not recognized. Reply with a USD value like 1000 or $1000.",
-                                )
-                                .await;
-                        };
-
-                        let amount = self
-                            .resolve_source_amount_from_usd(from, usd_amount)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        draft.requested_amount_usd = Some(usd_amount);
-                        amount
-                    }
-                };
-                draft.amount = Some(amount);
-
-                match self
-                    .fetch_and_prompt_quotes(
-                        wa_id,
-                        phone_number_id,
-                        session_id.as_deref(),
-                        &locale,
-                        draft,
-                        inbound_message_id,
-                    )
-                    .await
-                {
-                    Ok(()) => Ok(()),
-                    Err(error) => {
-                        self.reply(wa_id, phone_number_id, session_id.as_deref(), &error)
-                            .await
-                    }
-                }
+                self.handle_amount_input(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                )
+                .await
             }
             ConversationState::AwaitingQuoteSelection => {
                 let choice_index = parse_quote_selection_id(trimmed)
@@ -761,7 +700,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Choose an exchange from the list, or reply with the route number you want, for example 1.",
+                            "I need the route number or provider name from the list above.",
                         )
                         .await;
                 };
@@ -825,7 +764,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Destination asset missing. Type swap to restart.",
+                            "I lost the destination asset for this swap. Send the swap details again.",
                         )
                         .await;
                 };
@@ -994,7 +933,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Source asset missing. Type swap to restart.",
+                            "I lost the source asset for this swap. Send the swap details again.",
                         )
                         .await;
                 };
@@ -1118,19 +1057,21 @@ impl WhatsAppFlowService {
                                 wa_id,
                                 phone_number_id,
                                 session_id.as_deref(),
-                                "No problem. I cancelled that swap setup. Type swap whenever you want to start again.",
+                                "No problem. I cancelled that swap setup. Send the next one whenever you're ready.",
                             )
                             .await;
                     }
                     Some(KimiConfirmation::Confirm) => {}
                     None => {
-                        return self
-                            .reply(
-                                wa_id,
-                                phone_number_id,
-                                session_id.as_deref(),
-                                "Reply confirm to create the swap, or cancel to reset.",
+                        let message = self
+                            .narrate_or(
+                                "Tell the user this is the final confirmation step. Ask them to reply with the exact word confirm to create the swap, or cancel to stop. Keep it short.",
+                                "If this looks right, reply confirm. If not, reply cancel.",
                             )
+                            .await;
+
+                        return self
+                            .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                             .await;
                     }
                 }
@@ -1178,7 +1119,7 @@ impl WhatsAppFlowService {
                         .unwrap_or_else(|| "ETA: unavailable".to_string()),
                     format_expiry_line("Deposit window left", response.expires_at)
                         .unwrap_or_else(|| "Deposit window left: unavailable".to_string()),
-                    "To check progress later, type status and then paste the swap ID.".to_string(),
+                    "Paste this swap ID later if you want me to check progress.".to_string(),
                 ]
                 .join("\n");
 
@@ -1284,6 +1225,8 @@ impl WhatsAppFlowService {
             }
             AssetInputPlan::ChooseResults { prompt, options } => {
                 set_pending_family(&mut draft, side, None);
+                set_pending_family_options(&mut draft, side, Vec::new());
+                set_pending_currency_options(&mut draft, side, options.clone());
                 WhatsAppCrud::new(self.state.db.clone())
                     .upsert_session_state(
                         wa_id,
@@ -1319,6 +1262,8 @@ impl WhatsAppFlowService {
                 };
 
                 set_pending_family(&mut draft, side, None);
+                set_pending_family_options(&mut draft, side, families.clone());
+                set_pending_currency_options(&mut draft, side, Vec::new());
                 WhatsAppCrud::new(self.state.db.clone())
                     .upsert_session_state(
                         wa_id,
@@ -1349,6 +1294,7 @@ impl WhatsAppFlowService {
                     inbound_message_id,
                     side,
                     family.clone(),
+                    options.clone(),
                 )
                 .await?;
 
@@ -1374,12 +1320,52 @@ impl WhatsAppFlowService {
         phone_number_id: &str,
         session_id: Option<&str>,
         locale: &str,
-        draft: SwapDraft,
+        mut draft: SwapDraft,
         inbound_message_id: Option<&str>,
         input: &str,
         side: AssetSide,
     ) -> Result<(), String> {
         let catalog = self.fetch_currency_catalog().await?;
+
+        if let Some(index) = parse_quote_selection(input) {
+            if let Some(selection) = pending_currency_options(&draft, side)
+                .get(index - 1)
+                .cloned()
+            {
+                return self
+                    .continue_after_asset_selected(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        locale,
+                        draft,
+                        inbound_message_id,
+                        side,
+                        selection,
+                    )
+                    .await;
+            }
+
+            if let Some(family) = pending_family_options(&draft, side).get(index - 1).cloned() {
+                set_pending_family_options(&mut draft, side, Vec::new());
+                return self
+                    .handle_asset_family_choice(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        locale,
+                        draft,
+                        inbound_message_id,
+                        side,
+                        AssetFamilyKey {
+                            ticker: normalize_phrase(&family.ticker).replace(' ', "_"),
+                            name: normalize_phrase(&family.name).replace(' ', "_"),
+                        },
+                        &catalog,
+                    )
+                    .await;
+            }
+        }
 
         if let Some(family_key) = parse_family_selection_id(input) {
             return self
@@ -1423,6 +1409,26 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let catalog = self.fetch_currency_catalog().await?;
 
+        if let Some(index) = parse_quote_selection(input) {
+            if let Some(selection) = pending_currency_options(&draft, side)
+                .get(index - 1)
+                .cloned()
+            {
+                return self
+                    .continue_after_asset_selected(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        locale,
+                        draft,
+                        inbound_message_id,
+                        side,
+                        selection,
+                    )
+                    .await;
+            }
+        }
+
         if let Some(selection) = parse_asset_selection_id(&catalog, input) {
             return self
                 .continue_after_asset_selected(
@@ -1456,6 +1462,7 @@ impl WhatsAppFlowService {
         if should_restart_asset_search_from_network_choice(&family, input) {
             let mut next_draft = draft.clone();
             set_pending_family(&mut next_draft, side, None);
+            set_pending_currency_options(&mut next_draft, side, Vec::new());
 
             return self
                 .handle_asset_search_input(
@@ -1475,6 +1482,7 @@ impl WhatsAppFlowService {
         if family_catalog.is_empty() {
             let mut next_draft = draft.clone();
             set_pending_family(&mut next_draft, side, None);
+            set_pending_currency_options(&mut next_draft, side, Vec::new());
             WhatsAppCrud::new(self.state.db.clone())
                 .upsert_session_state(
                     wa_id,
@@ -1526,6 +1534,7 @@ impl WhatsAppFlowService {
                     inbound_message_id,
                     side,
                     family.clone(),
+                    network_options.clone(),
                 )
                 .await?;
 
@@ -1544,7 +1553,7 @@ impl WhatsAppFlowService {
                     phone_number_id,
                     session_id,
                     resolution.error.as_deref().unwrap_or(
-                        "I could not match that network. Tap one of the listed networks or type it more clearly.",
+                        "I could not match that network. Reply with the network name or the number from the list.",
                     ),
                 )
                 .await
@@ -1615,6 +1624,7 @@ impl WhatsAppFlowService {
             inbound_message_id,
             side,
             family.clone(),
+            options.clone(),
         )
         .await?;
 
@@ -1637,8 +1647,11 @@ impl WhatsAppFlowService {
         inbound_message_id: Option<&str>,
         side: AssetSide,
         family: AssetFamilySelection,
+        options: Vec<CurrencySelection>,
     ) -> Result<(), String> {
         set_pending_family(&mut draft, side, Some(family));
+        set_pending_family_options(&mut draft, side, Vec::new());
+        set_pending_currency_options(&mut draft, side, options);
         WhatsAppCrud::new(self.state.db.clone())
             .upsert_session_state(
                 wa_id,
@@ -1669,6 +1682,8 @@ impl WhatsAppFlowService {
             AssetSide::To => draft.to = Some(selection),
         }
         set_pending_family(&mut draft, side, None);
+        set_pending_family_options(&mut draft, side, Vec::new());
+        set_pending_currency_options(&mut draft, side, Vec::new());
 
         match side {
             AssetSide::From => {
@@ -1683,7 +1698,7 @@ impl WhatsAppFlowService {
                     )
                     .await
                 } else if draft.to.is_some() {
-                    self.prompt_amount_mode(
+                    self.prompt_amount(
                         wa_id,
                         phone_number_id,
                         session_id,
@@ -1728,7 +1743,7 @@ impl WhatsAppFlowService {
                     )
                     .await
                 } else {
-                    self.prompt_amount_mode(
+                    self.prompt_amount(
                         wa_id,
                         phone_number_id,
                         session_id,
@@ -1899,6 +1914,8 @@ impl WhatsAppFlowService {
             match plan {
                 AssetInputPlan::Selected(_) => {}
                 AssetInputPlan::ChooseResults { prompt, options } => {
+                    set_pending_family_options(&mut draft, AssetSide::From, Vec::new());
+                    set_pending_currency_options(&mut draft, AssetSide::From, options.clone());
                     crud.upsert_session_state(
                         wa_id,
                         phone_number_id,
@@ -1922,6 +1939,8 @@ impl WhatsAppFlowService {
                         .await;
                 }
                 AssetInputPlan::ChooseAsset(families) => {
+                    set_pending_family_options(&mut draft, AssetSide::From, families.clone());
+                    set_pending_currency_options(&mut draft, AssetSide::From, Vec::new());
                     crud.upsert_session_state(
                         wa_id,
                         phone_number_id,
@@ -1944,17 +1963,17 @@ impl WhatsAppFlowService {
                         .await;
                 }
                 AssetInputPlan::ChooseNetwork { family, options } => {
-                    draft.pending_from_family = Some(family.clone());
-                    crud.upsert_session_state(
+                    self.persist_network_choice_state(
                         wa_id,
                         phone_number_id,
-                        &ConversationState::AwaitingFromNetworkChoice,
                         locale,
-                        &draft,
+                        draft,
                         inbound_message_id,
+                        AssetSide::From,
+                        family.clone(),
+                        options.clone(),
                     )
-                    .await
-                    .map_err(|error| error.to_string())?;
+                    .await?;
 
                     return self
                         .reply_network_options(
@@ -1978,6 +1997,8 @@ impl WhatsAppFlowService {
             match plan {
                 AssetInputPlan::Selected(_) => {}
                 AssetInputPlan::ChooseResults { prompt, options } => {
+                    set_pending_family_options(&mut draft, AssetSide::To, Vec::new());
+                    set_pending_currency_options(&mut draft, AssetSide::To, options.clone());
                     crud.upsert_session_state(
                         wa_id,
                         phone_number_id,
@@ -2001,6 +2022,8 @@ impl WhatsAppFlowService {
                         .await;
                 }
                 AssetInputPlan::ChooseAsset(families) => {
+                    set_pending_family_options(&mut draft, AssetSide::To, families.clone());
+                    set_pending_currency_options(&mut draft, AssetSide::To, Vec::new());
                     crud.upsert_session_state(
                         wa_id,
                         phone_number_id,
@@ -2023,17 +2046,17 @@ impl WhatsAppFlowService {
                         .await;
                 }
                 AssetInputPlan::ChooseNetwork { family, options } => {
-                    draft.pending_to_family = Some(family.clone());
-                    crud.upsert_session_state(
+                    self.persist_network_choice_state(
                         wa_id,
                         phone_number_id,
-                        &ConversationState::AwaitingToNetworkChoice,
                         locale,
-                        &draft,
+                        draft,
                         inbound_message_id,
+                        AssetSide::To,
+                        family.clone(),
+                        options.clone(),
                     )
-                    .await
-                    .map_err(|error| error.to_string())?;
+                    .await?;
 
                     return self
                         .reply_network_options(
@@ -2072,7 +2095,7 @@ impl WhatsAppFlowService {
 
         if draft.from.is_some() && draft.to.is_some() {
             return self
-                .prompt_amount_mode(
+                .prompt_amount(
                     wa_id,
                     phone_number_id,
                     session_id,
@@ -2129,7 +2152,7 @@ impl WhatsAppFlowService {
             .await
     }
 
-    async fn handle_amount_mode_input(
+    async fn handle_amount_input(
         &self,
         wa_id: &str,
         phone_number_id: &str,
@@ -2142,71 +2165,123 @@ impl WhatsAppFlowService {
         let from = draft
             .from
             .as_ref()
-            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?
+            .ok_or_else(|| {
+                "I lost the source asset for this swap. Send the swap details again.".to_string()
+            })?
             .clone();
 
-        let mode =
-            parse_amount_mode_selection_id(trimmed).or_else(|| parse_amount_mode(trimmed, &from));
+        let mode = if looks_like_usd_amount(trimmed) {
+            Some(AmountInputMode::Usd)
+        } else {
+            parse_amount_mode(trimmed, &from).or_else(|| draft.amount_input_mode.clone())
+        }
+        .or_else(|| {
+            if parse_amount_from_text(trimmed).is_some() {
+                Some(AmountInputMode::SourceAsset)
+            } else {
+                None
+            }
+        });
+
         let mode = match mode {
-            Some(mode) => Some(mode),
-            None => self.extract_amount_mode_via_kimi(trimmed, &from).await,
+            Some(mode) => mode,
+            None => self
+                .extract_amount_mode_via_kimi(trimmed, &from)
+                .await
+                .unwrap_or(AmountInputMode::SourceAsset),
         };
 
-        let Some(mode) = mode else {
-            return self
-                .reply(
+        let parsed_amount = match mode {
+            AmountInputMode::SourceAsset => {
+                parse_amount(trimmed).or_else(|| parse_amount_from_text(trimmed))
+            }
+            AmountInputMode::Usd => parse_usd_amount(trimmed),
+        };
+        let parsed_amount = match parsed_amount {
+            Some(amount) => Some(amount),
+            None => self.extract_amount_via_kimi(trimmed).await,
+        };
+
+        let Some(input_amount) = parsed_amount else {
+            WhatsAppCrud::new(self.state.db.clone())
+                .upsert_session_state(
                     wa_id,
                     phone_number_id,
-                    session_id,
+                    &ConversationState::AwaitingAmount,
+                    locale,
+                    &draft,
+                    inbound_message_id,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let prompt = self
+                .narrate_or(
                     &format!(
-                        "Choose how you want to enter the amount: source coin ({}) or USD.",
+                        "The user's amount was not readable. Ask them to send only the amount for {} on {}. They may send a coin amount like 0.25 or a dollar amount like $100. Do not mention commands or menus.",
+                        from.ticker.to_uppercase(),
+                        from.network
+                    ),
+                    &format!(
+                        "I couldn't read the amount. Send something like 0.25 {} or $100.",
                         from.ticker.to_uppercase()
                     ),
                 )
                 .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id, &prompt)
+                .await;
         };
 
-        draft.amount_input_mode = Some(mode.clone());
-        draft.requested_amount_usd = None;
-
-        let direct_amount = match mode {
-            AmountInputMode::SourceAsset => match parse_amount(trimmed) {
-                Some(amount) => Some(amount),
-                None => self.extract_amount_via_kimi(trimmed).await,
-            },
-            AmountInputMode::Usd => match parse_usd_amount(trimmed) {
-                Some(amount) => Some(amount),
-                None => self.extract_amount_via_kimi(trimmed).await,
-            },
+        let amount = match mode {
+            AmountInputMode::SourceAsset => {
+                draft.requested_amount_usd = None;
+                input_amount
+            }
+            AmountInputMode::Usd => {
+                draft.requested_amount_usd = Some(input_amount);
+                self.resolve_source_amount_from_usd(&from, input_amount)
+                    .await
+                    .map_err(|error| error.to_string())?
+            }
         };
 
-        if let Some(input_amount) = direct_amount {
-            let amount = match mode {
-                AmountInputMode::SourceAsset => input_amount,
-                AmountInputMode::Usd => {
-                    draft.requested_amount_usd = Some(input_amount);
-                    self.resolve_source_amount_from_usd(&from, input_amount)
-                        .await
-                        .map_err(|error| error.to_string())?
-                }
-            };
-            draft.amount = Some(amount);
+        draft.amount_input_mode = Some(mode);
+        draft.amount = Some(amount);
 
-            return match self
-                .fetch_and_prompt_quotes(
-                    wa_id,
-                    phone_number_id,
-                    session_id,
-                    locale,
-                    draft,
-                    inbound_message_id,
-                )
-                .await
-            {
-                Ok(()) => Ok(()),
-                Err(error) => self.reply(wa_id, phone_number_id, session_id, &error).await,
-            };
+        match self
+            .fetch_and_prompt_quotes(
+                wa_id,
+                phone_number_id,
+                session_id,
+                locale,
+                draft,
+                inbound_message_id,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => self.reply(wa_id, phone_number_id, session_id, &error).await,
         }
+    }
+
+    async fn prompt_amount(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        locale: &str,
+        mut draft: SwapDraft,
+        inbound_message_id: Option<&str>,
+    ) -> Result<(), String> {
+        let from = draft.from.as_ref().ok_or_else(|| {
+            "I lost the source asset for this swap. Send the swap details again.".to_string()
+        })?;
+
+        draft.amount = None;
+        draft.amount_input_mode = Some(AmountInputMode::SourceAsset);
+        draft.requested_amount_usd = None;
 
         WhatsAppCrud::new(self.state.db.clone())
             .upsert_session_state(
@@ -2220,96 +2295,22 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let (situation, fallback) = match mode {
-            AmountInputMode::SourceAsset => (
-                format!(
-                    "Ask the user how much {} on {} they want to send. Mention they can just \
-                     reply with the plain amount, for example 0.25. Repeat the ticker {} and \
-                     network {} exactly.",
-                    from.ticker.to_uppercase(),
-                    from.network,
-                    from.ticker.to_uppercase(),
-                    from.network
-                ),
-                format!(
-                    "How much {} on {} do you want to send? Reply with the amount only, for example 0.25.",
-                    from.ticker.to_uppercase(),
-                    from.network
-                ),
-            ),
-            AmountInputMode::Usd => (
-                "Ask the user how many US dollars they want to send, mentioning they can reply \
-                 with a plain USD value like 1000 or $1000."
-                    .to_string(),
-                "How many dollars do you want to send? Reply with a USD value like 1000 or $1000."
-                    .to_string(),
-            ),
-        };
-
-        let prompt = self.narrate_or(&situation, &fallback).await;
-
-        self.reply(wa_id, phone_number_id, session_id, &prompt)
-            .await
-    }
-
-    async fn prompt_amount_mode(
-        &self,
-        wa_id: &str,
-        phone_number_id: &str,
-        session_id: Option<&str>,
-        locale: &str,
-        mut draft: SwapDraft,
-        inbound_message_id: Option<&str>,
-    ) -> Result<(), String> {
-        let from = draft
-            .from
-            .as_ref()
-            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
-
-        draft.amount = None;
-        draft.amount_input_mode = None;
-        draft.requested_amount_usd = None;
-
-        WhatsAppCrud::new(self.state.db.clone())
-            .upsert_session_state(
-                wa_id,
-                phone_number_id,
-                &ConversationState::AwaitingAmountMode,
-                locale,
-                &draft,
-                inbound_message_id,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let rows = vec![
-            InteractiveListOption {
-                id: build_amount_mode_selection_id(&AmountInputMode::SourceAsset),
-                title: "Enter in source coin".to_string(),
-                description: Some(truncate_whatsapp_text(
-                    &format!(
-                        "Use the {} amount you want to send",
-                        from.ticker.to_uppercase(),
-                    ),
-                    72,
-                )),
-            },
-            InteractiveListOption {
-                id: build_amount_mode_selection_id(&AmountInputMode::Usd),
-                title: "Enter in USD".to_string(),
-                description: Some("Enter a dollar value like $1000".to_string()),
-            },
-        ];
-
         let body = self
             .narrate_or(
-                "Ask the user whether they'd like to enter the amount in the source coin or in USD.",
-                "Choose how you want to enter the send amount.",
+                &format!(
+                    "Ask the user how much {} on {} they want to send. Tell them they can write a coin amount like 0.25 or a dollar value like $100. Do not show a menu.",
+                    from.ticker.to_uppercase(),
+                    from.network
+                ),
+                &format!(
+                    "How much {} on {} do you want to send? You can write a coin amount like 0.25 or a dollar value like $100.",
+                    from.ticker.to_uppercase(),
+                    from.network
+                ),
             )
             .await;
 
-        self.reply_interactive_list(wa_id, phone_number_id, session_id, &body, "Choose", rows)
-            .await
+        self.reply(wa_id, phone_number_id, session_id, &body).await
     }
 
     /// Falls back to Kimi when the deterministic amount parser can't make sense of the
@@ -2455,16 +2456,21 @@ impl WhatsAppFlowService {
         let from = draft
             .from
             .as_ref()
-            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?
+            .ok_or_else(|| {
+                "I lost the source asset for this swap. Send the swap details again.".to_string()
+            })?
             .clone();
         let to = draft
             .to
             .as_ref()
-            .ok_or_else(|| "Destination asset missing. Type swap to restart.".to_string())?
+            .ok_or_else(|| {
+                "I lost the destination asset for this swap. Send the swap details again."
+                    .to_string()
+            })?
             .clone();
         let amount = draft
             .amount
-            .ok_or_else(|| "Amount missing. Type swap to restart.".to_string())?;
+            .ok_or_else(|| "I lost the amount for this swap. Send the amount again.".to_string())?;
 
         let swap_crud = self.swap_crud();
         let rates = match swap_crud
@@ -2740,7 +2746,7 @@ impl WhatsAppFlowService {
             ));
         }
 
-        lines.push("Reply confirm to create the swap, or cancel to abort.".to_string());
+        lines.push("If this looks right, reply confirm. If not, reply cancel.".to_string());
 
         self.reply(wa_id, phone_number_id, session_id, &lines.join("\n"))
             .await
@@ -3206,22 +3212,24 @@ impl WhatsAppFlowService {
         body: &str,
         families: &[AssetFamilySelection],
     ) -> Result<(), String> {
-        let rows = families
+        let options = families
             .iter()
-            .map(|family| InteractiveListOption {
-                id: build_family_selection_id(family),
-                title: truncate_whatsapp_text(&family.ticker.to_ascii_uppercase(), 24),
-                description: Some(truncate_whatsapp_text(&family.name, 72)),
+            .enumerate()
+            .map(|(index, family)| {
+                format!(
+                    "{}. {} - {}",
+                    index + 1,
+                    family.ticker.to_uppercase(),
+                    family.name
+                )
             })
             .collect::<Vec<_>>();
 
-        self.reply_interactive_list(
+        self.reply(
             wa_id,
             phone_number_id,
             session_id,
-            body,
-            "Choose asset",
-            rows,
+            &format_numbered_reply(body, &options, "Reply with the number, ticker, or name."),
         )
         .await
     }
@@ -3236,18 +3244,25 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let rows = options
             .iter()
-            .map(|option| InteractiveListOption {
-                id: build_asset_selection_id(option),
-                title: truncate_whatsapp_text(&option.network, 24),
-                description: Some(truncate_whatsapp_text(
-                    &format!("{} ({})", option.name, option.ticker.to_ascii_uppercase()),
-                    72,
-                )),
+            .enumerate()
+            .map(|(index, option)| {
+                format!(
+                    "{}. {} - {} ({})",
+                    index + 1,
+                    option.network,
+                    option.name,
+                    option.ticker.to_uppercase()
+                )
             })
             .collect::<Vec<_>>();
 
-        self.reply_interactive_list(wa_id, phone_number_id, session_id, body, "Networks", rows)
-            .await
+        self.reply(
+            wa_id,
+            phone_number_id,
+            session_id,
+            &format_numbered_reply(body, &rows, "Reply with the number or network name."),
+        )
+        .await
     }
 
     async fn reply_currency_options(
@@ -3256,27 +3271,30 @@ impl WhatsAppFlowService {
         phone_number_id: &str,
         session_id: Option<&str>,
         body: &str,
-        button_label: &str,
+        _button_label: &str,
         options: &[CurrencySelection],
     ) -> Result<(), String> {
         let rows = options
             .iter()
-            .map(|option| InteractiveListOption {
-                id: build_asset_selection_id(option),
-                title: truncate_whatsapp_text(
-                    &format!(
-                        "{} • {}",
-                        option.ticker.to_ascii_uppercase(),
-                        option.network
-                    ),
-                    24,
-                ),
-                description: Some(truncate_whatsapp_text(&option.name, 72)),
+            .enumerate()
+            .map(|(index, option)| {
+                format!(
+                    "{}. {} - {} on {}",
+                    index + 1,
+                    option.ticker.to_uppercase(),
+                    option.name,
+                    option.network
+                )
             })
             .collect::<Vec<_>>();
 
-        self.reply_interactive_list(wa_id, phone_number_id, session_id, body, button_label, rows)
-            .await
+        self.reply(
+            wa_id,
+            phone_number_id,
+            session_id,
+            &format_numbered_reply(body, &rows, "Reply with the number, ticker, or network."),
+        )
+        .await
     }
 
     async fn reply_quote_options(
@@ -3289,181 +3307,23 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let rows = quotes
             .iter()
-            .map(|quote| InteractiveListOption {
-                id: build_quote_selection_id(quote.index),
-                title: truncate_whatsapp_text(
-                    &format!("{}. {}", quote.index, quote.provider_name),
-                    24,
-                ),
-                description: Some(truncate_whatsapp_text(
-                    &format_quote_list_description(quote),
-                    72,
-                )),
+            .map(|quote| {
+                format!(
+                    "{}. {} - {}",
+                    quote.index,
+                    quote.provider_name,
+                    format_quote_list_description(quote)
+                )
             })
             .collect::<Vec<_>>();
 
-        self.reply_interactive_list(
+        self.reply(
             wa_id,
             phone_number_id,
             session_id,
-            body,
-            "Choose exchange",
-            rows,
+            &format_numbered_reply(body, &rows, "Reply with the route number or provider name."),
         )
         .await
-    }
-
-    async fn reply_interactive_list(
-        &self,
-        wa_id: &str,
-        phone_number_id: &str,
-        session_id: Option<&str>,
-        body: &str,
-        button_label: &str,
-        rows: Vec<InteractiveListOption>,
-    ) -> Result<(), String> {
-        let service = self
-            .state
-            .whatsapp_service
-            .as_ref()
-            .ok_or_else(|| "WhatsApp is not configured".to_string())?;
-
-        if rows.is_empty() {
-            return Err("no WhatsApp list options available".to_string());
-        }
-
-        let sections = vec![InteractiveListSection {
-            title: None,
-            rows: rows.into_iter().take(10).collect::<Vec<_>>(),
-        }];
-
-        let crud = WhatsAppCrud::new(self.state.db.clone());
-        let outbound_id = crud
-            .record_outbound_message(session_id, wa_id, phone_number_id, "interactive_list", body)
-            .await
-            .map_err(|error| error.to_string())?;
-
-        match service
-            .send_interactive_list_message(wa_id, body, button_label, sections)
-            .await
-        {
-            Ok(response) => {
-                let provider_message_id =
-                    response.messages.first().map(|message| message.id.as_str());
-                crud.mark_outbound_sent(&outbound_id, provider_message_id)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = crud
-                    .mark_outbound_failed(&outbound_id, &error.to_string())
-                    .await;
-                Err(error.to_string())
-            }
-        }
-    }
-
-    async fn send_welcome_sequence(
-        &self,
-        wa_id: &str,
-        phone_number_id: &str,
-        session_id: Option<&str>,
-        locale: &str,
-        inbound_message_id: Option<&str>,
-    ) -> Result<(), String> {
-        WhatsAppCrud::new(self.state.db.clone())
-            .upsert_session_state(
-                wa_id,
-                phone_number_id,
-                &ConversationState::Idle,
-                locale,
-                &SwapDraft::default(),
-                inbound_message_id,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let welcome_copy = self
-            .narrate_or(
-                "Welcome the user to Assetar. Briefly explain it lets them compare live crypto \
-                 swap routes and swap directly in this chat. Mention: type swap to begin, type \
-                 status followed by a swap ID to check progress later, and type cancel any time \
-                 to reset the current flow.",
-                &Self::welcome_intro_message(),
-            )
-            .await;
-        if let Some(image_link) = self.branding_logo_url() {
-            if let Err(error) = self
-                .reply_image(
-                    wa_id,
-                    phone_number_id,
-                    session_id,
-                    &image_link,
-                    Some(&welcome_copy),
-                )
-                .await
-            {
-                tracing::warn!(
-                    "failed to send WhatsApp welcome image with caption, retrying as text only: {}",
-                    error
-                );
-                return self
-                    .reply(wa_id, phone_number_id, session_id, &welcome_copy)
-                    .await;
-            }
-
-            return Ok(());
-        }
-
-        self.reply(wa_id, phone_number_id, session_id, &welcome_copy)
-            .await
-    }
-
-    fn branding_logo_url(&self) -> Option<String> {
-        self.state
-            .whatsapp_service
-            .as_ref()
-            .and_then(|service| service.config().public_base_url.as_ref())
-            .map(|base| format!("{}/branding/assetar-logo.png", base.trim_end_matches('/')))
-    }
-
-    fn help_message() -> String {
-        [
-            "Assetar menu 📋",
-            "🔄 Type swap to start a guided swap",
-            "🔎 Type status and then your swap ID to check a swap",
-            "♻️ Type cancel to reset the current flow",
-            "ℹ️ Type help to see this menu again",
-        ]
-        .join("\n")
-    }
-
-    fn welcome_intro_message() -> String {
-        [
-            "Hi 👋 Welcome to Assetar.",
-            "Assetar helps you compare live crypto swap routes and complete swaps easily in chat.",
-            "🔄 Type swap to begin.",
-            "🔎 Type status and then your swap ID to check progress later.",
-            "♻️ Type cancel any time to reset the current flow.",
-        ]
-        .join("\n\n")
-    }
-
-    fn examples_message() -> String {
-        [
-            "Swap examples 💡",
-            "- swap",
-            "- swap 100 usdc on stellar to bitcoin",
-            "- swap 0.5 btc to xmr",
-            "- swap, then choose USD amount and type $1000",
-        ]
-        .join("\n")
-    }
-
-    fn status_help_message() -> String {
-        "🔎 Type status and then your swap ID to check a swap. Example: status 4fd0c0e1-1234-5678-9abc-1234567890ab."
-            .to_string()
     }
 }
 
@@ -3671,6 +3531,20 @@ fn parse_status_command(input: &str) -> Option<String> {
         .split_once(' ')
         .map(|(_, value)| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn parse_status_lookup_input(input: &str) -> Option<String> {
+    static UUID_RE: OnceLock<Regex> = OnceLock::new();
+    let regex = UUID_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .expect("valid uuid regex")
+    });
+
+    parse_status_command(input).or_else(|| {
+        regex
+            .find(input.trim())
+            .map(|matched| matched.as_str().to_string())
+    })
 }
 
 fn normalize_optional_text(value: Option<&str>) -> Option<&str> {
@@ -3887,17 +3761,37 @@ fn parse_amount(input: &str) -> Option<f64> {
     }
 }
 
-fn parse_usd_amount(input: &str) -> Option<f64> {
-    let normalized = input
-        .trim()
-        .trim_start_matches('$')
-        .replace(',', "")
-        .replace("USD", "")
-        .replace("usd", "")
-        .trim()
-        .to_string();
+fn parse_amount_from_text(input: &str) -> Option<f64> {
+    static AMOUNT_IN_TEXT_RE: OnceLock<Regex> = OnceLock::new();
+    let regex = AMOUNT_IN_TEXT_RE.get_or_init(|| {
+        Regex::new(r"\d+(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?").expect("valid amount regex")
+    });
 
-    parse_amount(&normalized)
+    regex.find(input).and_then(|matched| {
+        let value = matched.as_str().replace(',', "");
+        value.parse::<f64>().ok().filter(|amount| *amount > 0.0)
+    })
+}
+
+fn looks_like_usd_amount(input: &str) -> bool {
+    if input.contains('$') {
+        return true;
+    }
+
+    normalize_phrase(input).split_whitespace().any(|token| {
+        matches!(
+            token,
+            "usd" | "dollar" | "dollars" | "buck" | "bucks" | "cash"
+        )
+    })
+}
+
+fn parse_usd_amount(input: &str) -> Option<f64> {
+    if !looks_like_usd_amount(input) {
+        return parse_amount(input);
+    }
+
+    parse_amount_from_text(input)
 }
 
 fn parse_asset_selection_id(
@@ -3952,11 +3846,55 @@ fn pending_family(draft: &SwapDraft, side: AssetSide) -> Option<&AssetFamilySele
     }
 }
 
+fn pending_family_options(draft: &SwapDraft, side: AssetSide) -> &[AssetFamilySelection] {
+    match side {
+        AssetSide::From => &draft.pending_from_family_options,
+        AssetSide::To => &draft.pending_to_family_options,
+    }
+}
+
+fn pending_currency_options(draft: &SwapDraft, side: AssetSide) -> &[CurrencySelection] {
+    match side {
+        AssetSide::From => &draft.pending_from_currency_options,
+        AssetSide::To => &draft.pending_to_currency_options,
+    }
+}
+
 fn set_pending_family(draft: &mut SwapDraft, side: AssetSide, value: Option<AssetFamilySelection>) {
     match side {
         AssetSide::From => draft.pending_from_family = value,
         AssetSide::To => draft.pending_to_family = value,
     }
+}
+
+fn set_pending_family_options(
+    draft: &mut SwapDraft,
+    side: AssetSide,
+    value: Vec<AssetFamilySelection>,
+) {
+    match side {
+        AssetSide::From => draft.pending_from_family_options = value,
+        AssetSide::To => draft.pending_to_family_options = value,
+    }
+}
+
+fn set_pending_currency_options(
+    draft: &mut SwapDraft,
+    side: AssetSide,
+    value: Vec<CurrencySelection>,
+) {
+    match side {
+        AssetSide::From => draft.pending_from_currency_options = value,
+        AssetSide::To => draft.pending_to_currency_options = value,
+    }
+}
+
+fn format_numbered_reply(body: &str, options: &[String], hint: &str) -> String {
+    if options.is_empty() {
+        return body.to_string();
+    }
+
+    format!("{}\n\n{}\n\n{}", body, options.join("\n"), hint)
 }
 
 fn should_restart_asset_search_from_network_choice(
