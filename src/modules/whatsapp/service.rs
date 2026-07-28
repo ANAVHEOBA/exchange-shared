@@ -1567,7 +1567,8 @@ impl WhatsAppFlowService {
                         )
                         .await;
 
-                    self.reply(wa_id, phone_number_id, session_id, &prompt).await
+                    self.reply(wa_id, phone_number_id, session_id, &prompt)
+                        .await
                 }
             }
             AssetSide::To => {
@@ -1915,17 +1916,33 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let prompt = match mode {
-            AmountInputMode::SourceAsset => format!(
-                "How much {} on {} do you want to send? Reply with the amount only, for example 0.25.",
-                from.ticker.to_uppercase(),
-                from.network
+        let (situation, fallback) = match mode {
+            AmountInputMode::SourceAsset => (
+                format!(
+                    "Ask the user how much {} on {} they want to send. Mention they can just \
+                     reply with the plain amount, for example 0.25. Repeat the ticker {} and \
+                     network {} exactly.",
+                    from.ticker.to_uppercase(),
+                    from.network,
+                    from.ticker.to_uppercase(),
+                    from.network
+                ),
+                format!(
+                    "How much {} on {} do you want to send? Reply with the amount only, for example 0.25.",
+                    from.ticker.to_uppercase(),
+                    from.network
+                ),
             ),
-            AmountInputMode::Usd => {
+            AmountInputMode::Usd => (
+                "Ask the user how many US dollars they want to send, mentioning they can reply \
+                 with a plain USD value like 1000 or $1000."
+                    .to_string(),
                 "How many dollars do you want to send? Reply with a USD value like 1000 or $1000."
-                    .to_string()
-            }
+                    .to_string(),
+            ),
         };
+
+        let prompt = self.narrate_or(&situation, &fallback).await;
 
         self.reply(wa_id, phone_number_id, session_id, &prompt)
             .await
@@ -1980,15 +1997,15 @@ impl WhatsAppFlowService {
             },
         ];
 
-        self.reply_interactive_list(
-            wa_id,
-            phone_number_id,
-            session_id,
-            "Choose how you want to enter the send amount.",
-            "Choose",
-            rows,
-        )
-        .await
+        let body = self
+            .narrate_or(
+                "Ask the user whether they'd like to enter the amount in the source coin or in USD.",
+                "Choose how you want to enter the send amount.",
+            )
+            .await;
+
+        self.reply_interactive_list(wa_id, phone_number_id, session_id, &body, "Choose", rows)
+            .await
     }
 
     /// Falls back to Kimi when the deterministic amount parser can't make sense of the
