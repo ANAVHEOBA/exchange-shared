@@ -79,6 +79,24 @@ pub async fn run_whatsapp_worker(state: Arc<AppState>) {
                                 event.attempt_count,
                                 error
                             );
+
+                            // Retries are exhausted, so this input will never be
+                            // reprocessed - make sure the user hears something
+                            // instead of silence, even though we don't show them
+                            // the internal reason.
+                            if exhausted {
+                                if let Err(notify_error) = flow
+                                    .notify_processing_failed(&event.wa_id, &event.phone_number_id)
+                                    .await
+                                {
+                                    tracing::error!(
+                                        "failed to notify {} on {} about exhausted processing failure: {}",
+                                        event.wa_id,
+                                        event.phone_number_id,
+                                        notify_error
+                                    );
+                                }
+                            }
                         }
                     }
                 }

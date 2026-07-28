@@ -294,6 +294,26 @@ impl WhatsAppFlowService {
         result
     }
 
+    /// Last-resort notice sent when the worker gives up retrying a message
+    /// event entirely. Without this, an unexpected error anywhere in the flow
+    /// (anything other than the two error types `fetch_and_prompt_quotes`
+    /// already turns into a reply) left the user in total silence - the
+    /// worker just logs it and marks the event failed. The specific reason
+    /// still isn't shown to the user, but they at least know to try again.
+    pub async fn notify_processing_failed(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+    ) -> Result<(), String> {
+        self.reply(
+            wa_id,
+            phone_number_id,
+            None,
+            "⚠️ Sorry, something went wrong on our end processing that. Please try again, or type swap to restart.",
+        )
+        .await
+    }
+
     async fn process_message_event_locked(
         &self,
         phone_number_id: &str,
