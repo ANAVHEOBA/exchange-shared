@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use crate::modules::swap::crud::{CurrenciesResult, SwapCrud};
+use crate::modules::swap::crud::{CurrenciesResult, SwapCrud, SwapError};
 use crate::modules::swap::schema::{
     CreateSwapRequest, CurrenciesQuery, CurrencyResponse, RateResponse, RateType, RatesQuery,
     ValidateAddressRequest,
@@ -2037,6 +2037,11 @@ impl WhatsAppFlowService {
             .await
         {
             Ok(rates) => rates,
+            Err(error @ (SwapError::PairNotAvailable | SwapError::AmountOutOfRange { .. })) => {
+                return self
+                    .reply(wa_id, phone_number_id, session_id, &error.to_string())
+                    .await;
+            }
             Err(error) => {
                 return Err(format!(
                     "Failed to fetch live routes for {} on {} -> {} on {}: {}",

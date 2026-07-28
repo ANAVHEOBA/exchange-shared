@@ -154,6 +154,18 @@ fn upstream_error_indicates_missing_quote(message: &str) -> bool {
         || lowered.contains("pair not available")
 }
 
+/// Trocador reports an out-of-bounds amount as a plain error string rather than
+/// an empty quote list with populated min/max fields, so it needs its own check
+/// distinct from `upstream_error_indicates_missing_quote` - otherwise it falls
+/// through to a generic 502 that leaks the raw upstream error text to users.
+fn upstream_error_indicates_amount_out_of_range(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("higher than max")
+        || lowered.contains("lower than min")
+        || lowered.contains("amount too low")
+        || lowered.contains("amount too high")
+}
+
 pub enum CurrenciesResult {
     RawJson(String),
     Structured(Vec<CurrencyResponse>),
@@ -173,7 +185,7 @@ pub enum SwapError {
     ProviderNotFound,
     CurrencyNotFound,
     PairNotAvailable,
-    AmountOutOfRange { min: f64, max: f64 },
+    AmountOutOfRange { min: Option<f64>, max: Option<f64> },
     InvalidAddress,
     ValidationError(String),
     SwapNotFound,
@@ -190,9 +202,37 @@ impl std::fmt::Display for SwapError {
             SwapError::ProviderNotFound => write!(f, "Provider not found"),
             SwapError::CurrencyNotFound => write!(f, "Currency not found"),
             SwapError::PairNotAvailable => write!(f, "Trading pair not available"),
-            SwapError::AmountOutOfRange { min, max } => {
-                write!(f, "Amount out of range: min={}, max={}", min, max)
-            }
+            SwapError::AmountOutOfRange {
+                min: Some(min),
+                max: Some(max),
+            } => write!(
+                f,
+                "That amount is outside the allowed range for this pair (min {}, max {}).",
+                min, max
+            ),
+            SwapError::AmountOutOfRange {
+                min: Some(min),
+                max: None,
+            } => write!(
+                f,
+                "That amount is below the minimum for this pair (min {}).",
+                min
+            ),
+            SwapError::AmountOutOfRange {
+                min: None,
+                max: Some(max),
+            } => write!(
+                f,
+                "That amount is above the maximum for this pair (max {}).",
+                max
+            ),
+            SwapError::AmountOutOfRange {
+                min: None,
+                max: None,
+            } => write!(
+                f,
+                "That amount is outside the allowed range for this pair. Try a different amount."
+            ),
             SwapError::InvalidAddress => write!(f, "Invalid address"),
             SwapError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
             SwapError::SwapNotFound => write!(f, "Swap not found"),
@@ -208,6 +248,14 @@ impl std::fmt::Display for SwapError {
 impl From<TrocadorError> for SwapError {
     fn from(err: TrocadorError) -> Self {
         match err {
+            TrocadorError::ApiError(message)
+                if upstream_error_indicates_amount_out_of_range(&message) =>
+            {
+                SwapError::AmountOutOfRange {
+                    min: None,
+                    max: None,
+                }
+            }
             TrocadorError::ApiError(message)
                 if upstream_error_indicates_missing_quote(&message) =>
             {
@@ -1439,11 +1487,13 @@ impl SwapCrud {
         let rates_response = priced_rates.response;
 
         if rates_response.rates.is_empty() {
-            if let (Some(min), Some(max)) =
-                (rates_response.min_deposit, rates_response.max_deposit)
+            if let (Some(min), Some(max)) = (rates_response.min_deposit, rates_response.max_deposit)
             {
                 if query.amount < min || query.amount > max {
-                    return Err(SwapError::AmountOutOfRange { min, max });
+                    return Err(SwapError::AmountOutOfRange {
+                        min: Some(min),
+                        max: Some(max),
+                    });
                 }
             }
 

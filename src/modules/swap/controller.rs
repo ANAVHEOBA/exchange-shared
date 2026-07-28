@@ -470,16 +470,30 @@ pub async fn get_rates(
     let crud = swap_crud(&state);
 
     let response = crud.get_rates_optimized(&query).await.map_err(|e| {
-        let status = match e {
-            super::crud::SwapError::PairNotAvailable => StatusCode::NOT_FOUND,
-            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-
-        (
-            status,
-            Json(super::schema::SwapErrorResponse::new(e.to_string())),
-        )
+        let message = e.to_string();
+        match e {
+            super::crud::SwapError::PairNotAvailable => (
+                StatusCode::NOT_FOUND,
+                Json(super::schema::SwapErrorResponse::new(message)),
+            ),
+            super::crud::SwapError::AmountOutOfRange { min, max } => {
+                let body = match (min, max) {
+                    (Some(min), Some(max)) => {
+                        super::schema::SwapErrorResponse::with_limits(message, min, max)
+                    }
+                    _ => super::schema::SwapErrorResponse::new(message),
+                };
+                (StatusCode::BAD_REQUEST, Json(body))
+            }
+            super::crud::SwapError::ExternalApiError(_) => (
+                StatusCode::BAD_GATEWAY,
+                Json(super::schema::SwapErrorResponse::new(message)),
+            ),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(super::schema::SwapErrorResponse::new(message)),
+            ),
+        }
     })?;
 
     Ok(Json(response))
@@ -900,10 +914,13 @@ pub async fn get_estimate(
             super::crud::SwapError::PairNotAvailable => {
                 (StatusCode::NOT_FOUND, Json(SwapErrorResponse::new(message)))
             }
-            super::crud::SwapError::AmountOutOfRange { min, max } => (
-                StatusCode::BAD_REQUEST,
-                Json(SwapErrorResponse::with_limits(message, min, max)),
-            ),
+            super::crud::SwapError::AmountOutOfRange { min, max } => {
+                let body = match (min, max) {
+                    (Some(min), Some(max)) => SwapErrorResponse::with_limits(message, min, max),
+                    _ => SwapErrorResponse::new(message),
+                };
+                (StatusCode::BAD_REQUEST, Json(body))
+            }
             super::crud::SwapError::ExternalApiError(_) => (
                 StatusCode::BAD_GATEWAY,
                 Json(SwapErrorResponse::new(message)),
