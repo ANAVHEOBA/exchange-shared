@@ -984,7 +984,10 @@ impl WhatsAppFlowService {
                             phone_number_id,
                             session_id.as_deref(),
                             inbound_message_id,
-                            &error,
+                            &format!(
+                                "{} Or reply skip to continue without a refund address.",
+                                error
+                            ),
                         )
                         .await;
                 }
@@ -1779,6 +1782,37 @@ impl WhatsAppFlowService {
         }
 
         if let Some(refund_address) = normalize_optional_text(intent.refund_address.as_deref()) {
+            if let Some(from) = draft.from.as_ref() {
+                if let Err(error) = self
+                    .validate_address(&from.ticker, &from.network, refund_address)
+                    .await
+                {
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingRefundAddress,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_to_inbound(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            inbound_message_id,
+                            &format!(
+                                "{} Or reply skip to continue without a refund address.",
+                                error
+                            ),
+                        )
+                        .await;
+                }
+            }
+
             draft.refund_address = Some(refund_address.to_string());
         }
 
