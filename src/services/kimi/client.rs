@@ -7,29 +7,52 @@ use serde_json::Value;
 const MOONSHOT_API_BASE_URL: &str = "https://api.moonshot.ai/v1";
 const KIMI_MODEL: &str = "kimi-k2.6";
 
-const SWAP_INTENT_SYSTEM_PROMPT: &str = r#"You are the WhatsApp assistant for Assetar, a non-custodial crypto swap service.
-Talk like a real person texting, not a support bot: short, warm, casual. Use at most one emoji per
-message, and often none at all. Never say "As an AI" or "I'd be happy to help".
+/// Shared grounding prepended to every Kimi call so the model always knows
+/// what Assetar is and how it should sound, instead of relying on a bare
+/// per-call instruction with no context about the product.
+const PROJECT_CONTEXT: &str = "\
+You work for Assetar, a non-custodial cryptocurrency swap service reachable over WhatsApp. Assetar \
+aggregates live rates from many exchange providers (via Trocador) so users can compare routes and \
+swap directly with the best one - no account needed, no KYC for most routes, and Assetar never \
+holds or touches user funds directly.
 
+The swap flow always follows the same shape: pick the coin and network to send, pick the coin and \
+network to receive, enter an amount, compare quotes from different providers, provide a receiving \
+address (and a refund address if needed), then confirm before the swap is created.
+
+Match the user's own language and tone - if they write in pidgin, Spanish, or anything else, reply \
+naturally in kind. Keep it short, warm, and human: the way a helpful person texting back would \
+sound, not a corporate support script. Never say \"As an AI\" or use stiff phrases like \"I'd be \
+happy to help\".";
+
+const SWAP_INTENT_INSTRUCTIONS: &str = "\
 You must always respond by calling exactly one of the two tools you're given:
 
-1. If the user is expressing intent to swap crypto, even vaguely ("swap some usdt for monero",
-   "change my btc to xmr", "100 usdc to bitcoin"), call extract_swap_request with only the values
-   they actually stated. Never guess a value they did not say - leave it out instead.
-2. For anything else - greetings, thanks, confusion, small talk, questions you can't safely answer -
-   call send_friendly_reply with a short, human reply. Never invent swap rates, addresses, amounts,
-   or swap status; if asked about those, say you'll need to start or check a swap first.
-"#;
+1. If the user is expressing intent to swap crypto, even vaguely (\"swap some usdt for monero\", \
+\"change my btc to xmr\", \"100 usdc to bitcoin\"), call extract_swap_request with only the values \
+they actually stated. Never guess a value they did not say - leave it out instead.
+2. For anything else - greetings, thanks, confusion, small talk, questions you can't safely answer \
+- call send_friendly_reply with a short, human reply. Never invent swap rates, addresses, amounts, \
+or swap status; if asked about those, say you'll need to start or check a swap first.";
 
-const AMOUNT_SYSTEM_PROMPT: &str = r#"The user is replying to a prompt asking how much they want to
-swap. Their message may be messy ("just send 100 bucks", "0.25 pls", "around 50"). If you can
-confidently identify the single numeric amount they mean, call extract_amount with that number.
-If there is no clear number, or the message is about something else entirely, do not call any tool.
-Never guess a number that isn't clearly implied by the message.
-"#;
+const AMOUNT_INSTRUCTIONS: &str = "\
+The user is replying to a prompt asking how much they want to swap. Their message may be messy \
+(\"just send 100 bucks\", \"0.25 pls\", \"around 50\"). If you can confidently identify the single \
+numeric amount they mean, call extract_amount with that number. If there is no clear number, or \
+the message is about something else entirely, do not call any tool. Never guess a number that \
+isn't clearly implied by the message.";
+
+const NARRATE_INSTRUCTIONS: &str = "\
+You'll be given a short description of a fact or step to convey to the user right now. Rephrase it \
+into a single short WhatsApp message in your own natural words. Never invent, alter, round, or omit \
+any number, ticker, network name, or address mentioned in the description - repeat those exactly \
+as given. Don't add extra options, steps, or questions beyond what's described. Reply with the \
+message text only - no preamble, no quotes around it, no meta commentary.";
 
 /// Client for Moonshot's Kimi K2.6 chat completions API.
-/// Used as an optional pre-processor in front of the deterministic WhatsApp swap flow.
+/// Used as an optional pre-processor and phrasing layer in front of the
+/// deterministic WhatsApp swap flow - it never decides an amount, address, or
+/// network, only extracts/rephrases what the flow already has.
 pub struct KimiClient {
     client: Client,
     api_key: String,
@@ -98,8 +121,10 @@ struct ChatCompletionRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
     thinking: ThinkingConfig<'a>,
-    tools: Vec<ToolDef<'a>>,
-    tool_choice: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolDef<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'a str>,
     temperature: f32,
 }
 
@@ -211,8 +236,9 @@ impl KimiClient {
             },
         ];
 
+        let system_prompt = Self::system_prompt(SWAP_INTENT_INSTRUCTIONS);
         let message = self
-            .call_with_tools(SWAP_INTENT_SYSTEM_PROMPT, user_text, tools)
+            .send_chat_completion(&system_prompt, user_text, Some(tools), 0.4)
             .await?;
 
         if let Some(call) = message.tool_calls.into_iter().next() {
@@ -276,8 +302,9 @@ impl KimiClient {
             },
         }];
 
+        let system_prompt = Self::system_prompt(AMOUNT_INSTRUCTIONS);
         let message = self
-            .call_with_tools(AMOUNT_SYSTEM_PROMPT, user_text, tools)
+            .send_chat_completion(&system_prompt, user_text, Some(tools), 0.4)
             .await?;
 
         let Some(call) = message.tool_calls.into_iter().next() else {
@@ -299,12 +326,38 @@ impl KimiClient {
         }
     }
 
-    async fn call_with_tools(
+    /// Rephrases a plain description of a step/fact into a short, natural
+    /// WhatsApp message that matches the user's own language/tone. This is a
+    /// pure phrasing pass with no tool calls and no external I/O beyond the
+    /// one Kimi request - callers must describe any number, ticker, network,
+    /// or address exactly as it should appear, since the model is instructed
+    /// to repeat those verbatim rather than invent or restate them loosely.
+    /// Not used for the address-entry, confirmation, or quote-list steps -
+    /// those stay fully templated.
+    pub async fn narrate(&self, situation: &str) -> Result<String, KimiError> {
+        let system_prompt = Self::system_prompt(NARRATE_INSTRUCTIONS);
+        let message = self
+            .send_chat_completion(&system_prompt, situation, None, 0.7)
+            .await?;
+
+        message
+            .content
+            .filter(|c| !c.trim().is_empty())
+            .ok_or_else(|| KimiError::ParseError("Kimi returned an empty response".to_string()))
+    }
+
+    fn system_prompt(instructions: &str) -> String {
+        format!("{}\n\n{}", PROJECT_CONTEXT, instructions)
+    }
+
+    async fn send_chat_completion(
         &self,
         system_prompt: &str,
         user_text: &str,
-        tools: Vec<ToolDef<'_>>,
+        tools: Option<Vec<ToolDef<'_>>>,
+        temperature: f32,
     ) -> Result<ChatResponseMessage, KimiError> {
+        let tool_choice = tools.is_some().then_some("auto");
         let request = ChatCompletionRequest {
             model: KIMI_MODEL,
             messages: vec![
@@ -319,8 +372,8 @@ impl KimiClient {
             ],
             thinking: ThinkingConfig { kind: "disabled" },
             tools,
-            tool_choice: "auto",
-            temperature: 0.4,
+            tool_choice,
+            temperature,
         };
 
         let response = self

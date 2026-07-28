@@ -199,6 +199,22 @@ impl AssetSide {
         }
     }
 
+    /// Plain-language description of `asset_prompt` for `narrate_or`, kept in
+    /// sync with it by hand since one is a fixed string and the other is an
+    /// instruction for the model to rephrase.
+    fn asset_prompt_situation(self) -> &'static str {
+        match self {
+            Self::From => {
+                "Ask the user what coin they want to send, mentioning they can type a ticker or \
+                 coin name, with examples like btc, xlm, or usdc on stellar."
+            }
+            Self::To => {
+                "Ask the user what coin they want to receive, mentioning they can type a ticker \
+                 or coin name, with examples like xmr, btc, or usdt on tron."
+            }
+        }
+    }
+
     fn network_prompt(self, family: &AssetFamilySelection) -> String {
         format!(
             "{} ({}) has multiple networks. Choose one.",
@@ -439,13 +455,15 @@ impl WhatsAppFlowService {
                     .await
                     .map_err(|error| error.to_string())?;
 
-                    return self
-                        .reply(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
+                    let prompt = self
+                        .narrate_or(
+                            AssetSide::From.asset_prompt_situation(),
                             AssetSide::From.asset_prompt(),
                         )
+                        .await;
+
+                    return self
+                        .reply(wa_id, phone_number_id, session_id.as_deref(), &prompt)
                         .await;
                 }
 
@@ -1063,8 +1081,12 @@ impl WhatsAppFlowService {
         side: AssetSide,
     ) -> Result<(), String> {
         if normalize_quick_action_command(input).eq_ignore_ascii_case("swap") {
+            let prompt = self
+                .narrate_or(side.asset_prompt_situation(), side.asset_prompt())
+                .await;
+
             return self
-                .reply(wa_id, phone_number_id, session_id, side.asset_prompt())
+                .reply(wa_id, phone_number_id, session_id, &prompt)
                 .await;
         }
 
@@ -1538,13 +1560,14 @@ impl WhatsAppFlowService {
                         .await
                         .map_err(|error| error.to_string())?;
 
-                    self.reply(
-                        wa_id,
-                        phone_number_id,
-                        session_id,
-                        AssetSide::To.asset_prompt(),
-                    )
-                    .await
+                    let prompt = self
+                        .narrate_or(
+                            AssetSide::To.asset_prompt_situation(),
+                            AssetSide::To.asset_prompt(),
+                        )
+                        .await;
+
+                    self.reply(wa_id, phone_number_id, session_id, &prompt).await
                 }
             }
             AssetSide::To => {
@@ -1813,13 +1836,15 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-            return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id,
+            let prompt = self
+                .narrate_or(
+                    AssetSide::To.asset_prompt_situation(),
                     AssetSide::To.asset_prompt(),
                 )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id, &prompt)
                 .await;
         }
 
@@ -1834,13 +1859,15 @@ impl WhatsAppFlowService {
         .await
         .map_err(|error| error.to_string())?;
 
-        self.reply(
-            wa_id,
-            phone_number_id,
-            session_id,
-            AssetSide::From.asset_prompt(),
-        )
-        .await
+        let prompt = self
+            .narrate_or(
+                AssetSide::From.asset_prompt_situation(),
+                AssetSide::From.asset_prompt(),
+            )
+            .await;
+
+        self.reply(wa_id, phone_number_id, session_id, &prompt)
+            .await
     }
 
     async fn handle_amount_mode_input(
@@ -1976,6 +2003,26 @@ impl WhatsAppFlowService {
             Err(error) => {
                 tracing::warn!("Kimi amount extraction failed: {}", error);
                 None
+            }
+        }
+    }
+
+    /// Best-effort: rephrases a routine prompt naturally (matching the user's
+    /// own language/tone), falling back to the canned copy unchanged if Kimi
+    /// isn't configured or the call fails. Only ever used for the ordinary
+    /// back-and-forth prompts (asset/amount questions, welcome text) - never
+    /// for addresses, confirmations, or quote figures, so a fallback or a
+    /// failure never blocks the flow or risks altering a fact.
+    async fn narrate_or(&self, situation: &str, fallback: &str) -> String {
+        let Some(kimi) = self.state.kimi_client.as_ref() else {
+            return fallback.to_string();
+        };
+
+        match kimi.narrate(situation).await {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!("Kimi narration failed, using fallback copy: {}", error);
+                fallback.to_string()
             }
         }
     }
@@ -2821,7 +2868,15 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let welcome_copy = Self::welcome_intro_message();
+        let welcome_copy = self
+            .narrate_or(
+                "Welcome the user to Assetar. Briefly explain it lets them compare live crypto \
+                 swap routes and swap directly in this chat. Mention: type swap to begin, type \
+                 status followed by a swap ID to check progress later, and type cancel any time \
+                 to reset the current flow.",
+                &Self::welcome_intro_message(),
+            )
+            .await;
         if let Some(image_link) = self.branding_logo_url() {
             if let Err(error) = self
                 .reply_image(
