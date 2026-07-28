@@ -59,6 +59,12 @@ clearly selects a route. If they say first, top, recommended, best, cheapest, mo
 route 1 language, choose index 1. If they give a number or ordinal, use that route number. If the \
 message is unclear or not a route selection, do not call any tool. Never invent route numbers.";
 
+const ADDRESS_EXTRACTION_INSTRUCTIONS: &str = "\
+The user is replying with a cryptocurrency receiving or refund address. Call extract_address only \
+when the message clearly contains one address-like value. It may be surrounded by words like \
+\"send to\" or \"use this\". Never invent or repair an address. If the message is unclear or has \
+multiple possible addresses, do not call any tool.";
+
 const NARRATE_INSTRUCTIONS: &str = "\
 You'll be given a short description of a fact or step to convey to the user right now. Rephrase it \
 into a single short WhatsApp message in your own natural words. Never invent, alter, round, or omit \
@@ -102,8 +108,11 @@ pub enum KimiIntent {
     /// The user appears to want a swap; fields are only populated when stated.
     SwapRequest {
         amount: Option<f64>,
+        amount_mode: Option<KimiAmountMode>,
         from_asset: Option<String>,
         to_asset: Option<String>,
+        recipient_address: Option<String>,
+        refund_address: Option<String>,
     },
     /// Anything else - a ready-to-send, human-toned reply.
     FriendlyReply(String),
@@ -196,9 +205,15 @@ struct SwapRequestArgs {
     #[serde(default)]
     amount: Option<f64>,
     #[serde(default)]
+    amount_mode: Option<String>,
+    #[serde(default)]
     from_asset: Option<String>,
     #[serde(default)]
     to_asset: Option<String>,
+    #[serde(default)]
+    recipient_address: Option<String>,
+    #[serde(default)]
+    refund_address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -219,6 +234,11 @@ struct AmountModeArgs {
 #[derive(Deserialize)]
 struct QuoteSelectionArgs {
     index: usize,
+}
+
+#[derive(Deserialize)]
+struct AddressArgs {
+    address: String,
 }
 
 impl KimiClient {
@@ -278,7 +298,12 @@ impl KimiClient {
                         "properties": {
                             "amount": {
                                 "type": "number",
-                                "description": "Amount of the source asset, if the user stated one."
+                                "description": "The numeric amount if the user stated one."
+                            },
+                            "amount_mode": {
+                                "type": "string",
+                                "enum": ["source_asset", "usd"],
+                                "description": "usd when the amount is clearly a dollar value like $100 or 100 USD; otherwise source_asset when it is a crypto amount."
                             },
                             "from_asset": {
                                 "type": "string",
@@ -287,6 +312,14 @@ impl KimiClient {
                             "to_asset": {
                                 "type": "string",
                                 "description": "The coin/network the user wants to receive, as they described it."
+                            },
+                            "recipient_address": {
+                                "type": "string",
+                                "description": "The destination/receiving/payout address, if the user clearly gave one."
+                            },
+                            "refund_address": {
+                                "type": "string",
+                                "description": "The refund address, if the user clearly gave one."
                             }
                         }
                     }),
@@ -324,8 +357,11 @@ impl KimiClient {
 
                     Ok(KimiIntent::SwapRequest {
                         amount: args.amount,
+                        amount_mode: parse_amount_mode_arg(args.amount_mode.as_deref()),
                         from_asset: args.from_asset,
                         to_asset: args.to_asset,
+                        recipient_address: args.recipient_address,
+                        refund_address: args.refund_address,
                     })
                 }
                 "send_friendly_reply" => {
@@ -518,6 +554,64 @@ impl KimiClient {
         }
     }
 
+    /// Best-effort extraction of a single address out of a conversational
+    /// message like "use this one: 4A...". The backend still validates it for
+    /// the expected asset/network before accepting it.
+    pub async fn extract_address(
+        &self,
+        user_text: &str,
+        ticker: &str,
+        network: &str,
+    ) -> Result<Option<String>, KimiError> {
+        let tools = vec![ToolDef {
+            kind: "function",
+            function: ToolFunctionDef {
+                name: "extract_address",
+                description: "Extract exactly one cryptocurrency address from the user's message.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "address": {
+                            "type": "string",
+                            "description": "The address exactly as the user wrote it."
+                        }
+                    },
+                    "required": ["address"]
+                }),
+            },
+        }];
+
+        let system_prompt = Self::system_prompt(ADDRESS_EXTRACTION_INSTRUCTIONS);
+        let prompt = format!(
+            "Expected asset: {} on {}\nUser message: {}",
+            ticker.to_uppercase(),
+            network,
+            user_text
+        );
+        let message = self
+            .send_chat_completion(&system_prompt, &prompt, Some(tools))
+            .await?;
+
+        let Some(call) = message.tool_calls.into_iter().next() else {
+            return Ok(None);
+        };
+
+        if call.function.name != "extract_address" {
+            return Ok(None);
+        }
+
+        let args: AddressArgs = serde_json::from_str(&call.function.arguments).map_err(|e| {
+            KimiError::ParseError(format!("Invalid extract_address arguments: {}", e))
+        })?;
+        let address = args.address.trim();
+
+        if address.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(address.to_string()))
+        }
+    }
+
     /// Rephrases a plain description of a step/fact into a short, natural
     /// WhatsApp message that matches the user's own language/tone. This is a
     /// pure phrasing pass with no tool calls and no external I/O beyond the
@@ -610,5 +704,13 @@ impl KimiClient {
             .next()
             .map(|choice| choice.message)
             .ok_or_else(|| KimiError::ParseError("Kimi returned no choices".to_string()))
+    }
+}
+
+fn parse_amount_mode_arg(value: Option<&str>) -> Option<KimiAmountMode> {
+    match value.map(str::trim) {
+        Some("source_asset") => Some(KimiAmountMode::SourceAsset),
+        Some("usd") => Some(KimiAmountMode::Usd),
+        _ => None,
     }
 }

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -122,6 +123,15 @@ enum AmountInputMode {
     Usd,
 }
 
+impl From<KimiAmountMode> for AmountInputMode {
+    fn from(value: KimiAmountMode) -> Self {
+        match value {
+            KimiAmountMode::SourceAsset => Self::SourceAsset,
+            KimiAmountMode::Usd => Self::Usd,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SwapDraft {
     from: Option<CurrencySelection>,
@@ -142,8 +152,11 @@ struct SwapDraft {
 #[derive(Debug)]
 struct ParsedSwapIntent {
     amount: Option<f64>,
+    amount_mode: Option<AmountInputMode>,
     from_phrase: Option<String>,
     to_phrase: Option<String>,
+    recipient_address: Option<String>,
+    refund_address: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -435,8 +448,14 @@ impl WhatsAppFlowService {
             {
                 Ok(()) => Ok(()),
                 Err(error) => {
-                    self.reply(wa_id, phone_number_id, session_id.as_deref(), &error)
-                        .await
+                    self.reply_to_inbound(
+                        wa_id,
+                        phone_number_id,
+                        session_id.as_deref(),
+                        inbound_message_id,
+                        &error,
+                    )
+                    .await
                 }
             };
         }
@@ -485,8 +504,11 @@ impl WhatsAppFlowService {
                     match kimi.classify_swap_message(trimmed).await {
                         Ok(KimiIntent::SwapRequest {
                             amount,
+                            amount_mode,
                             from_asset,
                             to_asset,
+                            recipient_address,
+                            refund_address,
                         }) => {
                             return self
                                 .handle_parsed_swap_intent(
@@ -498,8 +520,11 @@ impl WhatsAppFlowService {
                                     inbound_message_id,
                                     ParsedSwapIntent {
                                         amount,
+                                        amount_mode: amount_mode.map(AmountInputMode::from),
                                         from_phrase: from_asset,
                                         to_phrase: to_asset,
+                                        recipient_address,
+                                        refund_address,
                                     },
                                 )
                                 .await;
@@ -770,7 +795,7 @@ impl WhatsAppFlowService {
                 .await
             }
             ConversationState::AwaitingRecipientAddress => {
-                let Some(target) = draft.to.as_ref() else {
+                let Some(target) = draft.to.as_ref().cloned() else {
                     return self
                         .reply(
                             wa_id,
@@ -780,15 +805,53 @@ impl WhatsAppFlowService {
                         )
                         .await;
                 };
+                if is_show_routes_command(trimmed) && !draft.quotes.is_empty() {
+                    draft.selected_quote = None;
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingQuoteSelection,
+                        &locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_quote_options(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            "Pick the provider route you want to use.",
+                            &draft.quotes,
+                        )
+                        .await;
+                }
+
+                let candidate_address = self
+                    .extract_address_via_kimi(trimmed, &target.ticker, &target.network)
+                    .await
+                    .unwrap_or_else(|| trimmed.to_string());
+
                 if let Err(error) = self
-                    .validate_address(&target.ticker, &target.network, trimmed)
+                    .validate_address(&target.ticker, &target.network, &candidate_address)
                     .await
                 {
                     return self
-                        .reply(wa_id, phone_number_id, session_id.as_deref(), &error)
+                        .reply_to_inbound(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            inbound_message_id,
+                            &error,
+                        )
                         .await;
                 }
-                draft.recipient_address = Some(trimmed.to_string());
+                draft.recipient_address = Some(candidate_address);
+                if draft.selected_quote.is_none() {
+                    draft.selected_quote = draft.quotes.first().cloned();
+                }
 
                 if target.memo {
                     crud.upsert_session_state(
@@ -816,24 +879,29 @@ impl WhatsAppFlowService {
                     )
                     .await
                 } else {
-                    crud.upsert_session_state(
-                        wa_id,
-                        phone_number_id,
-                        &ConversationState::AwaitingRefundAddress,
-                        &locale,
-                        &draft,
-                        inbound_message_id,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-
-                    self.reply(
-                        wa_id,
-                        phone_number_id,
-                        session_id.as_deref(),
-                        "Optional but recommended: send a refund address for the asset you are sending, or reply skip.",
-                    )
-                    .await
+                    match self
+                        .prompt_confirmation(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            &locale,
+                            draft,
+                            inbound_message_id,
+                        )
+                        .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            self.reply_to_inbound(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                inbound_message_id,
+                                &error,
+                            )
+                            .await
+                        }
+                    }
                 }
             }
             ConversationState::AwaitingRecipientExtraId => {
@@ -849,24 +917,29 @@ impl WhatsAppFlowService {
                 }
 
                 draft.recipient_extra_id = Some(trimmed.to_string());
-                crud.upsert_session_state(
-                    wa_id,
-                    phone_number_id,
-                    &ConversationState::AwaitingRefundAddress,
-                    &locale,
-                    &draft,
-                    inbound_message_id,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-
-                self.reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    "Optional but recommended: send a refund address for the asset you are sending, or reply skip.",
-                )
-                .await
+                match self
+                    .prompt_confirmation(
+                        wa_id,
+                        phone_number_id,
+                        session_id.as_deref(),
+                        &locale,
+                        draft,
+                        inbound_message_id,
+                    )
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        self.reply_to_inbound(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            inbound_message_id,
+                            &error,
+                        )
+                        .await
+                    }
+                }
             }
             ConversationState::AwaitingRefundAddress => {
                 if lowered == "skip" {
@@ -906,7 +979,13 @@ impl WhatsAppFlowService {
                     .await
                 {
                     return self
-                        .reply(wa_id, phone_number_id, session_id.as_deref(), &error)
+                        .reply_to_inbound(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            inbound_message_id,
+                            &error,
+                        )
                         .await;
                 }
                 draft.refund_address = Some(trimmed.to_string());
@@ -1652,10 +1731,6 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let crud = WhatsAppCrud::new(self.state.db.clone());
 
-        if let Some(amount) = intent.amount {
-            draft.amount = Some(amount);
-        }
-
         let catalog = self.fetch_currency_catalog().await?;
         let from_plan = match intent.from_phrase.as_deref() {
             Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
@@ -1674,6 +1749,71 @@ impl WhatsAppFlowService {
         if let Some(AssetInputPlan::Selected(selection)) = to_plan.as_ref() {
             draft.to = Some(selection.clone());
             draft.pending_to_family = None;
+        }
+
+        if let Some(amount) = intent.amount {
+            match intent.amount_mode.unwrap_or(AmountInputMode::SourceAsset) {
+                AmountInputMode::SourceAsset => {
+                    draft.amount = Some(amount);
+                    draft.requested_amount_usd = None;
+                    draft.amount_input_mode = Some(AmountInputMode::SourceAsset);
+                }
+                AmountInputMode::Usd => {
+                    draft.requested_amount_usd = Some(amount);
+                    draft.amount_input_mode = Some(AmountInputMode::Usd);
+                    if let Some(from) = draft.from.as_ref() {
+                        draft.amount =
+                            Some(self.resolve_source_amount_from_usd(from, amount).await?);
+                    }
+                }
+            }
+        } else if draft.amount.is_none() {
+            if let (Some(from), Some(usd_amount)) =
+                (draft.from.as_ref(), draft.requested_amount_usd)
+            {
+                draft.amount = Some(
+                    self.resolve_source_amount_from_usd(from, usd_amount)
+                        .await?,
+                );
+            }
+        }
+
+        if let Some(refund_address) = normalize_optional_text(intent.refund_address.as_deref()) {
+            draft.refund_address = Some(refund_address.to_string());
+        }
+
+        if let Some(recipient_address) =
+            normalize_optional_text(intent.recipient_address.as_deref())
+        {
+            if let Some(to) = draft.to.as_ref() {
+                if let Err(error) = self
+                    .validate_address(&to.ticker, &to.network, recipient_address)
+                    .await
+                {
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingRecipientAddress,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    return self
+                        .reply_to_inbound(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            inbound_message_id,
+                            &error,
+                        )
+                        .await;
+                }
+            }
+
+            draft.recipient_address = Some(recipient_address.to_string());
         }
 
         if let Some(plan) = from_plan {
@@ -2146,6 +2286,23 @@ impl WhatsAppFlowService {
         }
     }
 
+    async fn extract_address_via_kimi(
+        &self,
+        text: &str,
+        ticker: &str,
+        network: &str,
+    ) -> Option<String> {
+        let kimi = self.state.kimi_client.as_ref()?;
+
+        match kimi.extract_address(text, ticker, network).await {
+            Ok(address) => address,
+            Err(error) => {
+                tracing::warn!("Kimi address extraction failed: {}", error);
+                None
+            }
+        }
+    }
+
     /// Best-effort: rephrases a routine prompt naturally (matching the user's
     /// own language/tone), falling back to the canned copy unchanged if Kimi
     /// isn't configured or the call fails. Only ever used for the ordinary
@@ -2219,11 +2376,13 @@ impl WhatsAppFlowService {
         let from = draft
             .from
             .as_ref()
-            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
+            .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?
+            .clone();
         let to = draft
             .to
             .as_ref()
-            .ok_or_else(|| "Destination asset missing. Type swap to restart.".to_string())?;
+            .ok_or_else(|| "Destination asset missing. Type swap to restart.".to_string())?
+            .clone();
         let amount = draft
             .amount
             .ok_or_else(|| "Amount missing. Type swap to restart.".to_string())?;
@@ -2290,19 +2449,6 @@ impl WhatsAppFlowService {
             .enumerate()
             .map(|(index, rate)| to_quote_choice(index + 1, rate, &rates.trade_id))
             .collect::<Vec<_>>();
-        draft.selected_quote = None;
-
-        WhatsAppCrud::new(self.state.db.clone())
-            .upsert_session_state(
-                wa_id,
-                phone_number_id,
-                &ConversationState::AwaitingQuoteSelection,
-                locale,
-                &draft,
-                inbound_message_id,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
 
         let request_context = if let Some(requested_usd) = draft.requested_amount_usd {
             format!(
@@ -2320,6 +2466,89 @@ impl WhatsAppFlowService {
                 from.network
             )
         };
+
+        draft.selected_quote = draft.quotes.first().cloned();
+
+        if draft.recipient_address.is_some() {
+            if to.memo && draft.recipient_extra_id.is_none() {
+                WhatsAppCrud::new(self.state.db.clone())
+                    .upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingRecipientExtraId,
+                        locale,
+                        &draft,
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                return self
+                    .reply(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        &format!(
+                            "The {} destination also needs {}. Reply with it now.",
+                            to.ticker.to_uppercase(),
+                            to.extra_id_name
+                                .clone()
+                                .unwrap_or_else(|| "the extra ID".to_string())
+                        ),
+                    )
+                    .await;
+            }
+
+            return self
+                .prompt_confirmation(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                )
+                .await;
+        }
+
+        WhatsAppCrud::new(self.state.db.clone())
+            .upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::AwaitingRecipientAddress,
+                locale,
+                &draft,
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if let Some(recommended) = draft.selected_quote.as_ref() {
+            let body = format!(
+                "{} Recommended route: {} for about {} {} on {}. Send your {} on {} receiving address, or reply routes to compare providers.",
+                request_context,
+                recommended.provider_name,
+                trim_f64(recommended.estimated_amount),
+                to.ticker.to_uppercase(),
+                to.network,
+                to.ticker.to_uppercase(),
+                to.network
+            );
+
+            return self.reply(wa_id, phone_number_id, session_id, &body).await;
+        }
+
+        WhatsAppCrud::new(self.state.db.clone())
+            .upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::AwaitingQuoteSelection,
+                locale,
+                &draft,
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
 
         let body = if rates.rates.len() > 10 {
             format!(
@@ -2557,11 +2786,21 @@ impl WhatsAppFlowService {
         if response.valid {
             Ok(())
         } else {
-            Err(format!(
+            let fallback = format!(
                 "That address does not look valid for {} on {}. Send another one.",
                 ticker.to_uppercase(),
                 network
-            ))
+            );
+            Err(self
+                .narrate_or(
+                    &format!(
+                        "Tell the user their address does not look valid for {} on {} and ask them to send another one. Keep it short.",
+                        ticker.to_uppercase(),
+                        network
+                    ),
+                    &fallback,
+                )
+                .await)
         }
     }
 
@@ -2776,6 +3015,65 @@ impl WhatsAppFlowService {
             Err(error) => {
                 let _ = crud
                     .mark_outbound_failed(&outbound_id, &error.to_string())
+                    .await;
+                Err(error.to_string())
+            }
+        }
+    }
+
+    async fn reply_to_inbound(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        inbound_message_id: Option<&str>,
+        body: &str,
+    ) -> Result<(), String> {
+        let Some(inbound_message_id) = inbound_message_id else {
+            return self.reply(wa_id, phone_number_id, session_id, body).await;
+        };
+
+        let service = self
+            .state
+            .whatsapp_service
+            .as_ref()
+            .ok_or_else(|| "WhatsApp is not configured".to_string())?;
+        let idempotency_key =
+            whatsapp_outbound_idempotency_key(phone_number_id, wa_id, inbound_message_id, body);
+
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+        let reservation = crud
+            .record_outbound_message_once(
+                session_id,
+                wa_id,
+                phone_number_id,
+                "text",
+                body,
+                &idempotency_key,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if !reservation.should_send {
+            tracing::info!(
+                "Skipping duplicate WhatsApp reply for inbound message {}",
+                inbound_message_id
+            );
+            return Ok(());
+        }
+
+        match service.send_text_message(wa_id, body).await {
+            Ok(response) => {
+                let provider_message_id =
+                    response.messages.first().map(|message| message.id.as_str());
+                crud.mark_outbound_sent(&reservation.id, provider_message_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = crud
+                    .mark_outbound_failed(&reservation.id, &error.to_string())
                     .await;
                 Err(error.to_string())
             }
@@ -3296,6 +3594,26 @@ fn parse_status_command(input: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalize_optional_text(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn is_show_routes_command(input: &str) -> bool {
+    matches!(
+        normalize_phrase(input).as_str(),
+        "routes"
+            | "show routes"
+            | "show providers"
+            | "providers"
+            | "compare"
+            | "compare providers"
+            | "quotes"
+            | "show quotes"
+            | "choose provider"
+            | "pick provider"
+    )
+}
+
 fn parse_quote_selection(input: &str) -> Option<usize> {
     let trimmed = input.trim();
     if let Ok(index) = trimmed.parse::<usize>() {
@@ -3625,12 +3943,15 @@ fn parse_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
         amount: captures
             .name("amount")
             .and_then(|value| parse_amount(value.as_str())),
+        amount_mode: Some(AmountInputMode::SourceAsset),
         from_phrase: captures
             .name("from")
             .map(|value| value.as_str().trim().to_string()),
         to_phrase: captures
             .name("to")
             .map(|value| value.as_str().trim().to_string()),
+        recipient_address: None,
+        refund_address: None,
     })
 }
 
@@ -4179,6 +4500,23 @@ fn truncate_whatsapp_text(value: &str, max_chars: usize) -> String {
     let mut shortened = characters.into_iter().take(keep).collect::<String>();
     shortened.push('…');
     shortened
+}
+
+fn whatsapp_outbound_idempotency_key(
+    phone_number_id: &str,
+    wa_id: &str,
+    inbound_message_id: &str,
+    body: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(phone_number_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(wa_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(inbound_message_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(body.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

@@ -57,6 +57,11 @@ pub struct AdminOutboundMessageRecord {
     pub created_at: DateTime<Utc>,
 }
 
+pub struct OutboundMessageReservation {
+    pub id: String,
+    pub should_send: bool,
+}
+
 pub struct WhatsAppCrud {
     pool: DbPool,
 }
@@ -632,6 +637,93 @@ impl WhatsAppCrud {
         .await?;
 
         Ok(id)
+    }
+
+    pub async fn record_outbound_message_once(
+        &self,
+        session_id: Option<&str>,
+        wa_id: &str,
+        phone_number_id: &str,
+        message_kind: &str,
+        body: &str,
+        idempotency_key: &str,
+    ) -> Result<OutboundMessageReservation, Error> {
+        if let Some(row) = sqlx::query(
+            r#"
+            SELECT id, status
+            FROM whatsapp_outbound_messages
+            WHERE idempotency_key = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            let id: String = row.get("id");
+            let status: String = row.get("status");
+
+            if status != "failed" {
+                return Ok(OutboundMessageReservation {
+                    id,
+                    should_send: false,
+                });
+            }
+
+            sqlx::query(
+                r#"
+                UPDATE whatsapp_outbound_messages
+                SET session_id = ?,
+                    wa_id = ?,
+                    phone_number_id = ?,
+                    message_kind = ?,
+                    body = ?,
+                    status = 'pending',
+                    error_message = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                "#,
+            )
+            .bind(session_id)
+            .bind(wa_id)
+            .bind(phone_number_id)
+            .bind(message_kind)
+            .bind(redact_outbound_body(body))
+            .bind(&id)
+            .execute(&self.pool)
+            .await?;
+
+            return Ok(OutboundMessageReservation {
+                id,
+                should_send: true,
+            });
+        }
+
+        let id = Uuid::new_v4().to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO whatsapp_outbound_messages (
+                id, session_id, wa_id, phone_number_id, provider_message_id,
+                message_kind, body, status, idempotency_key
+            )
+            VALUES (?, ?, ?, ?, NULL, ?, ?, 'pending', ?)
+            "#,
+        )
+        .bind(&id)
+        .bind(session_id)
+        .bind(wa_id)
+        .bind(phone_number_id)
+        .bind(message_kind)
+        .bind(redact_outbound_body(body))
+        .bind(idempotency_key)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(OutboundMessageReservation {
+            id,
+            should_send: true,
+        })
     }
 
     pub async fn mark_outbound_sent(
