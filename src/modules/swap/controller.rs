@@ -895,13 +895,24 @@ pub async fn get_estimate(
     let crud = swap_crud(&state);
 
     let response = crud.get_estimate_optimized(&query).await.map_err(|e| {
-        let status = match e {
-            super::crud::SwapError::PairNotAvailable => StatusCode::NOT_FOUND,
-            super::crud::SwapError::AmountOutOfRange { .. } => StatusCode::BAD_REQUEST,
-            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, Json(SwapErrorResponse::new(e.to_string())))
+        let message = e.to_string();
+        match e {
+            super::crud::SwapError::PairNotAvailable => {
+                (StatusCode::NOT_FOUND, Json(SwapErrorResponse::new(message)))
+            }
+            super::crud::SwapError::AmountOutOfRange { min, max } => (
+                StatusCode::BAD_REQUEST,
+                Json(SwapErrorResponse::with_limits(message, min, max)),
+            ),
+            super::crud::SwapError::ExternalApiError(_) => (
+                StatusCode::BAD_GATEWAY,
+                Json(SwapErrorResponse::new(message)),
+            ),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SwapErrorResponse::new(message)),
+            ),
+        }
     })?;
 
     Ok(Json(response))

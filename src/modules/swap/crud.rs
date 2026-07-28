@@ -1439,6 +1439,14 @@ impl SwapCrud {
         let rates_response = priced_rates.response;
 
         if rates_response.rates.is_empty() {
+            if let (Some(min), Some(max)) =
+                (rates_response.min_deposit, rates_response.max_deposit)
+            {
+                if query.amount < min || query.amount > max {
+                    return Err(SwapError::AmountOutOfRange { min, max });
+                }
+            }
+
             return Err(SwapError::PairNotAvailable);
         }
 
