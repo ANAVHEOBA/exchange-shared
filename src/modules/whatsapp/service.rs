@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use crate::modules::swap::crud::{CurrenciesResult, SwapCrud, SwapError};
 use crate::modules::swap::schema::{
-    CreateSwapRequest, CurrenciesQuery, CurrencyResponse, RateResponse, RateType, RatesQuery,
-    ValidateAddressRequest,
+    CreateSwapRequest, CurrenciesQuery, CurrencyResponse, PairLimitsQuery, RateResponse, RateType,
+    RatesQuery, ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
 use crate::services::kimi::KimiIntent;
@@ -1897,6 +1897,26 @@ impl WhatsAppFlowService {
             .from
             .as_ref()
             .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
+        let to = draft
+            .to
+            .as_ref()
+            .ok_or_else(|| "Destination asset missing. Type swap to restart.".to_string())?;
+
+        // Best-effort: mention the pair's known minimum upfront, the same way
+        // Trocador's own site shows it before the user has typed an amount.
+        // Never blocks the flow if this lookup fails or is unknown.
+        let min_deposit = self
+            .swap_crud()
+            .get_pair_limits(&PairLimitsQuery {
+                from: from.ticker.clone(),
+                network_from: from.network.clone(),
+                to: to.ticker.clone(),
+                network_to: to.network.clone(),
+            })
+            .await
+            .ok()
+            .and_then(|limits| limits.min_deposit)
+            .filter(|value| *value > 0.0);
 
         draft.amount = None;
         draft.amount_input_mode = None;
@@ -1933,15 +1953,17 @@ impl WhatsAppFlowService {
             },
         ];
 
-        self.reply_interactive_list(
-            wa_id,
-            phone_number_id,
-            session_id,
-            "Choose how you want to enter the send amount.",
-            "Choose",
-            rows,
-        )
-        .await
+        let body = match min_deposit {
+            Some(min_deposit) => format!(
+                "Choose how you want to enter the send amount. Minimum for this pair: {} {}.",
+                trim_f64(min_deposit),
+                from.ticker.to_uppercase()
+            ),
+            None => "Choose how you want to enter the send amount.".to_string(),
+        };
+
+        self.reply_interactive_list(wa_id, phone_number_id, session_id, &body, "Choose", rows)
+            .await
     }
 
     /// Falls back to Kimi when the deterministic amount parser can't make sense of the
@@ -2037,7 +2059,12 @@ impl WhatsAppFlowService {
             .await
         {
             Ok(rates) => rates,
-            Err(error @ (SwapError::PairNotAvailable | SwapError::AmountOutOfRange { .. })) => {
+            Err(SwapError::PairNotAvailable) => {
+                return self
+                    .reply(wa_id, phone_number_id, session_id, NO_ROUTE_EXPLANATION)
+                    .await;
+            }
+            Err(error @ SwapError::AmountOutOfRange { .. }) => {
                 return self
                     .reply(wa_id, phone_number_id, session_id, &error.to_string())
                     .await;
@@ -2061,10 +2088,7 @@ impl WhatsAppFlowService {
                 rates.min_deposit,
                 rates.max_deposit,
             )
-            .unwrap_or_else(|| {
-                "No live routes are available for that pair right now. Try another amount or network."
-                    .to_string()
-            });
+            .unwrap_or_else(|| NO_ROUTE_EXPLANATION.to_string());
 
             return self
                 .reply(wa_id, phone_number_id, session_id, &message)
@@ -2988,6 +3012,11 @@ fn humanize_minutes(minutes: u32) -> String {
         format!("~{} hr {} min", hours, remainder)
     }
 }
+
+/// Same reasoning Trocador's own site gives for a genuinely unavailable pair
+/// (as opposed to an amount that's simply out of bounds) - used instead of a
+/// bare "pair not available" so users understand why and what to try next.
+const NO_ROUTE_EXPLANATION: &str = "We couldn't find any live routes for that pair and amount right now. Very small amounts sometimes don't cover network fees, and some pairs have limited liquidity. Try a different amount, or split it into two swaps using a more liquid coin as a stop.";
 
 /// Explains why no routes came back when Trocador's response tells us the
 /// requested amount fell outside the pair's min/max deposit bounds, instead of
