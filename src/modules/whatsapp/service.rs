@@ -498,6 +498,59 @@ impl WhatsAppFlowService {
             };
         }
 
+        if should_use_contextual_kimi(&state) {
+            if let Some(kimi) = self.state.kimi_client.clone() {
+                let context = build_swap_context_summary(&draft, &state);
+                match kimi
+                    .classify_swap_message_with_context(trimmed, &context)
+                    .await
+                {
+                    Ok(KimiIntent::SwapRequest {
+                        amount,
+                        amount_mode,
+                        from_asset,
+                        to_asset,
+                        recipient_address,
+                        refund_address,
+                    }) if has_swap_fields(
+                        amount,
+                        amount_mode,
+                        from_asset.as_deref(),
+                        to_asset.as_deref(),
+                        recipient_address.as_deref(),
+                        refund_address.as_deref(),
+                    ) =>
+                    {
+                        return self
+                            .handle_parsed_swap_intent(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                &locale,
+                                draft,
+                                inbound_message_id,
+                                ParsedSwapIntent {
+                                    amount,
+                                    amount_mode: amount_mode.map(AmountInputMode::from),
+                                    from_phrase: from_asset,
+                                    to_phrase: to_asset,
+                                    recipient_address,
+                                    refund_address,
+                                },
+                            )
+                            .await;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            "Context-aware Kimi classification failed, falling back to deterministic state handlers: {}",
+                            error
+                        );
+                    }
+                }
+            }
+        }
+
         match state {
             ConversationState::Idle => {
                 if lowered == "swap" {
@@ -700,7 +753,7 @@ impl WhatsAppFlowService {
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "I need the route number or provider name from the list above.",
+                            "Tell me the provider you want to use, or send your destination address and I’ll keep the recommended route.",
                         )
                         .await;
                 };
@@ -768,26 +821,74 @@ impl WhatsAppFlowService {
                         )
                         .await;
                 };
-                if is_show_routes_command(trimmed) && !draft.quotes.is_empty() {
-                    draft.selected_quote = None;
-                    crud.upsert_session_state(
-                        wa_id,
-                        phone_number_id,
-                        &ConversationState::AwaitingQuoteSelection,
-                        &locale,
-                        &draft,
-                        inbound_message_id,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
+                if let Some(choice_index) = parse_quote_selection(trimmed)
+                    .or_else(|| parse_quote_selection_by_provider(trimmed, &draft.quotes))
+                {
+                    if let Some(selected_quote) = draft
+                        .quotes
+                        .iter()
+                        .find(|quote| quote.index == choice_index)
+                        .cloned()
+                    {
+                        draft.selected_quote = Some(selected_quote.clone());
+                        crud.upsert_session_state(
+                            wa_id,
+                            phone_number_id,
+                            &ConversationState::AwaitingRecipientAddress,
+                            &locale,
+                            &draft,
+                            inbound_message_id,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
 
+                        return self
+                            .reply(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                &format!(
+                                    "Okay, I switched the route to {}. Send your {} on {} receiving address.",
+                                    selected_quote.provider_name,
+                                    target.ticker.to_uppercase(),
+                                    target.network
+                                ),
+                            )
+                            .await;
+                    }
+                }
+
+                if is_show_routes_command(trimmed) && !draft.quotes.is_empty() {
+                    let alternative_quotes =
+                        if let Some(selected_quote) = draft.selected_quote.as_ref() {
+                            draft
+                                .quotes
+                                .iter()
+                                .filter(|quote| {
+                                    !quote
+                                        .provider_name
+                                        .eq_ignore_ascii_case(&selected_quote.provider_name)
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        } else {
+                            draft.quotes.clone()
+                        };
+                    let route_summary = summarize_quote_providers(&alternative_quotes);
                     return self
-                        .reply_quote_options(
+                        .reply(
                             wa_id,
                             phone_number_id,
                             session_id.as_deref(),
-                            "Pick the provider route you want to use.",
-                            &draft.quotes,
+                            &format!(
+                                "Best live route right now is {}. Other available providers: {}. Send your destination address when you're ready.",
+                                draft
+                                    .selected_quote
+                                    .as_ref()
+                                    .map(|quote| quote.provider_name.as_str())
+                                    .unwrap_or("the recommended provider"),
+                                route_summary
+                            ),
                         )
                         .await;
                 }
@@ -2610,7 +2711,7 @@ impl WhatsAppFlowService {
 
         if let Some(recommended) = draft.selected_quote.as_ref() {
             let body = format!(
-                "{} Recommended route: {} for about {} {} on {}. Send your {} on {} receiving address, or reply routes to compare providers.",
+                "{} Recommended route: {} for about {} {} on {}. Send your {} on {} receiving address.",
                 request_context,
                 recommended.provider_name,
                 trim_f64(recommended.estimated_amount),
@@ -3214,22 +3315,14 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let options = families
             .iter()
-            .enumerate()
-            .map(|(index, family)| {
-                format!(
-                    "{}. {} - {}",
-                    index + 1,
-                    family.ticker.to_uppercase(),
-                    family.name
-                )
-            })
+            .map(|family| format!("{} ({})", family.name, family.ticker.to_uppercase()))
             .collect::<Vec<_>>();
 
         self.reply(
             wa_id,
             phone_number_id,
             session_id,
-            &format_numbered_reply(body, &options, "Reply with the number, ticker, or name."),
+            &format_choice_prompt(body, &options, "Tell me which one you want."),
         )
         .await
     }
@@ -3244,23 +3337,14 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let rows = options
             .iter()
-            .enumerate()
-            .map(|(index, option)| {
-                format!(
-                    "{}. {} - {} ({})",
-                    index + 1,
-                    option.network,
-                    option.name,
-                    option.ticker.to_uppercase()
-                )
-            })
+            .map(|option| option.network.clone())
             .collect::<Vec<_>>();
 
         self.reply(
             wa_id,
             phone_number_id,
             session_id,
-            &format_numbered_reply(body, &rows, "Reply with the number or network name."),
+            &format_choice_prompt(body, &rows, "Tell me the network you want."),
         )
         .await
     }
@@ -3276,23 +3360,14 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let rows = options
             .iter()
-            .enumerate()
-            .map(|(index, option)| {
-                format!(
-                    "{}. {} - {} on {}",
-                    index + 1,
-                    option.ticker.to_uppercase(),
-                    option.name,
-                    option.network
-                )
-            })
+            .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
             .collect::<Vec<_>>();
 
         self.reply(
             wa_id,
             phone_number_id,
             session_id,
-            &format_numbered_reply(body, &rows, "Reply with the number, ticker, or network."),
+            &format_choice_prompt(body, &rows, "Tell me the exact one you want."),
         )
         .await
     }
@@ -3309,8 +3384,7 @@ impl WhatsAppFlowService {
             .iter()
             .map(|quote| {
                 format!(
-                    "{}. {} - {}",
-                    quote.index,
+                    "{} - {}",
                     quote.provider_name,
                     format_quote_list_description(quote)
                 )
@@ -3321,7 +3395,11 @@ impl WhatsAppFlowService {
             wa_id,
             phone_number_id,
             session_id,
-            &format_numbered_reply(body, &rows, "Reply with the route number or provider name."),
+            &format_choice_prompt(
+                body,
+                &rows,
+                "If you want a different route, tell me the provider name.",
+            ),
         )
         .await
     }
@@ -3344,6 +3422,145 @@ fn session_parts(
         draft,
         ConversationState::from_db(&record.state),
     ))
+}
+
+fn should_use_contextual_kimi(state: &ConversationState) -> bool {
+    matches!(
+        state,
+        ConversationState::AwaitingFromAssetSearch
+            | ConversationState::AwaitingFromAssetChoice
+            | ConversationState::AwaitingFromNetworkChoice
+            | ConversationState::AwaitingToAssetSearch
+            | ConversationState::AwaitingToAssetChoice
+            | ConversationState::AwaitingToNetworkChoice
+            | ConversationState::AwaitingAmountMode
+            | ConversationState::AwaitingAmount
+            | ConversationState::AwaitingQuoteSelection
+            | ConversationState::AwaitingRecipientAddress
+            | ConversationState::AwaitingRefundAddress
+    )
+}
+
+fn has_swap_fields(
+    amount: Option<f64>,
+    amount_mode: Option<KimiAmountMode>,
+    from_asset: Option<&str>,
+    to_asset: Option<&str>,
+    recipient_address: Option<&str>,
+    refund_address: Option<&str>,
+) -> bool {
+    amount.is_some()
+        || amount_mode.is_some()
+        || normalize_optional_text(from_asset).is_some()
+        || normalize_optional_text(to_asset).is_some()
+        || normalize_optional_text(recipient_address).is_some()
+        || normalize_optional_text(refund_address).is_some()
+}
+
+fn build_swap_context_summary(draft: &SwapDraft, state: &ConversationState) -> String {
+    let mut lines = vec![format!("Current step: {}", conversation_state_label(state))];
+
+    if let Some(from) = draft.from.as_ref() {
+        lines.push(format!(
+            "Known source asset: {} on {}",
+            from.ticker.to_uppercase(),
+            from.network
+        ));
+    } else if let Some(family) = draft.pending_from_family.as_ref() {
+        lines.push(format!(
+            "Source asset family is known but the network is still needed: {} ({})",
+            family.name,
+            family.ticker.to_uppercase()
+        ));
+    }
+
+    if let Some(to) = draft.to.as_ref() {
+        lines.push(format!(
+            "Known destination asset: {} on {}",
+            to.ticker.to_uppercase(),
+            to.network
+        ));
+    } else if let Some(family) = draft.pending_to_family.as_ref() {
+        lines.push(format!(
+            "Destination asset family is known but the network is still needed: {} ({})",
+            family.name,
+            family.ticker.to_uppercase()
+        ));
+    }
+
+    if !draft.pending_from_currency_options.is_empty() {
+        lines.push(format!(
+            "Source network options: {}",
+            draft
+                .pending_from_currency_options
+                .iter()
+                .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if !draft.pending_to_currency_options.is_empty() {
+        lines.push(format!(
+            "Destination network options: {}",
+            draft
+                .pending_to_currency_options
+                .iter()
+                .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if let Some(amount) = draft.amount {
+        lines.push(format!("Known source amount: {}", trim_f64(amount)));
+    }
+
+    if let Some(usd_amount) = draft.requested_amount_usd {
+        lines.push(format!(
+            "Requested dollar amount: ${}",
+            trim_f64(usd_amount)
+        ));
+    }
+
+    if let Some(quote) = draft.selected_quote.as_ref() {
+        lines.push(format!("Selected provider: {}", quote.provider_name));
+    }
+
+    if let Some(address) = draft.recipient_address.as_ref() {
+        lines.push(format!("Recipient address already known: {}", address));
+    } else {
+        lines.push("Recipient address is still missing.".to_string());
+    }
+
+    if let Some(address) = draft.refund_address.as_ref() {
+        lines.push(format!("Refund address already known: {}", address));
+    }
+
+    lines.join("\n")
+}
+
+fn conversation_state_label(state: &ConversationState) -> &'static str {
+    match state {
+        ConversationState::Idle => "idle",
+        ConversationState::AwaitingFromAssetSearch | ConversationState::AwaitingFromAssetChoice => {
+            "waiting for source asset"
+        }
+        ConversationState::AwaitingFromNetworkChoice => "waiting for source network",
+        ConversationState::AwaitingToAssetSearch | ConversationState::AwaitingToAssetChoice => {
+            "waiting for destination asset"
+        }
+        ConversationState::AwaitingToNetworkChoice => "waiting for destination network",
+        ConversationState::AwaitingAmountMode | ConversationState::AwaitingAmount => {
+            "waiting for amount"
+        }
+        ConversationState::AwaitingQuoteSelection => "waiting for provider choice",
+        ConversationState::AwaitingRecipientAddress => "waiting for destination address",
+        ConversationState::AwaitingRecipientExtraId => "waiting for destination extra ID",
+        ConversationState::AwaitingRefundAddress => "waiting for refund address",
+        ConversationState::AwaitingRefundExtraId => "waiting for refund extra ID",
+        ConversationState::AwaitingConfirmation => "waiting for final confirmation",
+    }
 }
 
 fn to_quote_choice(index: usize, rate: &RateResponse, trade_id: &str) -> QuoteChoice {
@@ -3889,12 +4106,49 @@ fn set_pending_currency_options(
     }
 }
 
-fn format_numbered_reply(body: &str, options: &[String], hint: &str) -> String {
+fn format_choice_prompt(body: &str, options: &[String], hint: &str) -> String {
     if options.is_empty() {
         return body.to_string();
     }
 
-    format!("{}\n\n{}\n\n{}", body, options.join("\n"), hint)
+    let choices = options
+        .iter()
+        .map(|option| format!("- {}", option))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{}\n\n{}\n\n{}", body, choices, hint)
+}
+
+fn summarize_quote_providers(quotes: &[QuoteChoice]) -> String {
+    let mut providers = quotes
+        .iter()
+        .map(|quote| quote.provider_name.trim())
+        .filter(|name| !name.is_empty())
+        .fold(Vec::<String>::new(), |mut acc, name| {
+            if !acc
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(name))
+            {
+                acc.push(name.to_string());
+            }
+            acc
+        });
+
+    if providers.is_empty() {
+        return "no other providers right now".to_string();
+    }
+
+    if providers.len() == 1 {
+        return providers.remove(0);
+    }
+
+    if providers.len() == 2 {
+        return format!("{} and {}", providers[0], providers[1]);
+    }
+
+    let last = providers.pop().unwrap_or_default();
+    format!("{}, and {}", providers.join(", "), last)
 }
 
 fn should_restart_asset_search_from_network_choice(

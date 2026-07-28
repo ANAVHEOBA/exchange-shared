@@ -41,6 +41,17 @@ from_asset and to_asset empty for those.
 - call send_friendly_reply with a short, human reply. Never invent swap rates, addresses, amounts, \
 or swap status; if asked about those, say you'll need to start or check a swap first.";
 
+const SWAP_CONTEXT_INSTRUCTIONS: &str = "\
+You may also be given current swap context. Use that context to interpret short follow-up replies. \
+Examples:
+- If the context says the source or destination asset family is USDC and the user replies \"arbitrum\", \
+  return the full asset phrase as \"usdc on arbitrum\" in the correct field.
+- If the context shows the swap pair is already known and the user replies \"$100\", set amount=100 and amount_mode=usd.
+- If the context shows the pair is known and the user pastes one address-like value, set the recipient or refund address \
+  that best matches the context.
+Only use the provided context to resolve terse replies. Never invent values that are not grounded in the latest message \
+plus the given context.";
+
 const AMOUNT_INSTRUCTIONS: &str = "\
 The user is replying to a prompt asking how much they want to swap. Their message may be messy \
 (\"just send 100 bucks\", \"0.25 pls\", \"around 50\"). If you can confidently identify the single \
@@ -289,6 +300,33 @@ impl KimiClient {
     }
 
     pub async fn classify_swap_message(&self, user_text: &str) -> Result<KimiIntent, KimiError> {
+        self.classify_swap_message_internal(user_text, SWAP_INTENT_INSTRUCTIONS)
+            .await
+    }
+
+    pub async fn classify_swap_message_with_context(
+        &self,
+        user_text: &str,
+        context: &str,
+    ) -> Result<KimiIntent, KimiError> {
+        let instructions = format!(
+            "{}\n\n{}",
+            SWAP_INTENT_INSTRUCTIONS, SWAP_CONTEXT_INSTRUCTIONS
+        );
+        let prompt = format!(
+            "Current swap context:\n{}\n\nLatest user message:\n{}",
+            context, user_text
+        );
+
+        self.classify_swap_message_internal(&prompt, &instructions)
+            .await
+    }
+
+    async fn classify_swap_message_internal(
+        &self,
+        user_text: &str,
+        instructions: &str,
+    ) -> Result<KimiIntent, KimiError> {
         let tools = vec![
             ToolDef {
                 kind: "function",
@@ -346,7 +384,7 @@ impl KimiClient {
             },
         ];
 
-        let system_prompt = Self::system_prompt(SWAP_INTENT_INSTRUCTIONS);
+        let system_prompt = Self::system_prompt(instructions);
         let message = self
             .send_chat_completion(&system_prompt, user_text, Some(tools))
             .await?;
