@@ -418,6 +418,30 @@ impl WhatsAppFlowService {
                 .await;
         }
 
+        if is_generic_swap_start(&lowered) {
+            crud.upsert_session_state(
+                wa_id,
+                phone_number_id,
+                &ConversationState::Idle,
+                &locale,
+                &SwapDraft::default(),
+                inbound_message_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+            let prompt = self
+                .narrate_or(
+                    "The user wants to start a crypto swap but has not given the pair or amount yet. Ask them to send the swap in one message, with an example like: swap 100 USDT to XMR. Mention they can include the receiving address too if they have it. Do not show menu options.",
+                    "Tell me the pair and amount in one message, like: swap 100 USDT to XMR. If you already have the receiving address, include it too.",
+                )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id.as_deref(), &prompt)
+                .await;
+        }
+
         if lowered == "examples" {
             return self
                 .reply(
@@ -463,21 +487,10 @@ impl WhatsAppFlowService {
         match state {
             ConversationState::Idle => {
                 if lowered == "swap" {
-                    crud.upsert_session_state(
-                        wa_id,
-                        phone_number_id,
-                        &ConversationState::AwaitingFromAssetSearch,
-                        &locale,
-                        &SwapDraft::default(),
-                        inbound_message_id,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-
                     let prompt = self
                         .narrate_or(
-                            AssetSide::From.asset_prompt_situation(),
-                            AssetSide::From.asset_prompt(),
+                            "The user wants to start a crypto swap but has not given the pair or amount yet. Ask them to send the swap in one message, with an example like: swap 100 USDT to XMR. Mention they can include the receiving address too if they have it.",
+                            "Tell me the pair and amount in one message, like: swap 100 USDT to XMR. If you already have the receiving address, include it too.",
                         )
                         .await;
 
@@ -1745,12 +1758,35 @@ impl WhatsAppFlowService {
     ) -> Result<(), String> {
         let crud = WhatsAppCrud::new(self.state.db.clone());
 
+        let from_phrase = meaningful_asset_phrase(intent.from_phrase.as_deref());
+        let to_phrase = meaningful_asset_phrase(intent.to_phrase.as_deref());
+        let recipient_address = normalize_optional_text(intent.recipient_address.as_deref());
+        let refund_address = normalize_optional_text(intent.refund_address.as_deref());
+
+        if intent.amount.is_none()
+            && from_phrase.is_none()
+            && to_phrase.is_none()
+            && recipient_address.is_none()
+            && refund_address.is_none()
+        {
+            let prompt = self
+                .narrate_or(
+                    "The user wants to swap crypto but has not given the coin pair, amount, or address. Ask for the pair and amount in one natural message. Keep it short and do not show menu options.",
+                    "Sure. Send the pair and amount in one message, like: swap 100 USDT to XMR.",
+                )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id, &prompt)
+                .await;
+        }
+
         let catalog = self.fetch_currency_catalog().await?;
-        let from_plan = match intent.from_phrase.as_deref() {
+        let from_plan = match from_phrase {
             Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
             None => None,
         };
-        let to_plan = match intent.to_phrase.as_deref() {
+        let to_plan = match to_phrase {
             Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
             None => None,
         };
@@ -1792,7 +1828,7 @@ impl WhatsAppFlowService {
             }
         }
 
-        if let Some(refund_address) = normalize_optional_text(intent.refund_address.as_deref()) {
+        if let Some(refund_address) = refund_address {
             if let Some(from) = draft.from.as_ref() {
                 if let Err(error) = self
                     .validate_address(&from.ticker, &from.network, refund_address)
@@ -1827,9 +1863,7 @@ impl WhatsAppFlowService {
             draft.refund_address = Some(refund_address.to_string());
         }
 
-        if let Some(recipient_address) =
-            normalize_optional_text(intent.recipient_address.as_deref())
-        {
+        if let Some(recipient_address) = recipient_address {
             if let Some(to) = draft.to.as_ref() {
                 if let Err(error) = self
                     .validate_address(&to.ticker, &to.network, recipient_address)
@@ -3643,6 +3677,71 @@ fn normalize_optional_text(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
+fn meaningful_asset_phrase(value: Option<&str>) -> Option<&str> {
+    let value = normalize_optional_text(value)?;
+    let normalized = normalize_phrase(value);
+
+    if matches!(
+        normalized.as_str(),
+        "crypto"
+            | "cryptocurrency"
+            | "coin"
+            | "coins"
+            | "token"
+            | "tokens"
+            | "some crypto"
+            | "some cryptocurrency"
+            | "some coin"
+            | "some coins"
+            | "some token"
+            | "some tokens"
+            | "any crypto"
+            | "any cryptocurrency"
+            | "any coin"
+            | "any coins"
+            | "any token"
+            | "any tokens"
+    ) {
+        return None;
+    }
+
+    Some(value)
+}
+
+fn is_generic_swap_start(input: &str) -> bool {
+    let normalized = normalize_phrase(input);
+    if matches!(
+        normalized.as_str(),
+        "swap"
+            | "start swap"
+            | "i want to swap"
+            | "i want swap"
+            | "i want to make a swap"
+            | "i want to swap crypto"
+            | "i want to swap some crypto"
+            | "want to swap crypto"
+            | "want to swap some crypto"
+            | "swap crypto"
+            | "swap some crypto"
+            | "swap coins"
+            | "swap tokens"
+    ) {
+        return true;
+    }
+
+    normalized.contains("swap")
+        && (normalized.contains("some crypto")
+            || normalized.contains("any crypto")
+            || normalized.ends_with(" crypto")
+            || normalized.ends_with(" coins")
+            || normalized.ends_with(" tokens"))
+        && !normalized
+            .chars()
+            .any(|character| character.is_ascii_digit())
+        && !normalized.contains(" to ")
+        && !normalized.contains(" for ")
+}
+
 fn is_show_routes_command(input: &str) -> bool {
     matches!(
         normalize_phrase(input).as_str(),
@@ -4567,10 +4666,11 @@ fn whatsapp_outbound_idempotency_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        amount_out_of_range_message, parse_amount_mode, parse_asset_selection_id,
-        parse_confirmation_decision, parse_quote_selection, parse_usd_amount,
-        resolve_currency_phrase, should_restart_asset_search_from_network_choice, AmountInputMode,
-        AssetFamilySelection, CurrencySelection,
+        amount_out_of_range_message, is_generic_swap_start, meaningful_asset_phrase,
+        parse_amount_mode, parse_asset_selection_id, parse_confirmation_decision,
+        parse_quote_selection, parse_usd_amount, resolve_currency_phrase,
+        should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
+        CurrencySelection,
     };
     use crate::modules::swap::schema::CurrencyResponse;
     use crate::services::kimi::KimiConfirmation;
@@ -4605,6 +4705,29 @@ mod tests {
             memo: false,
             extra_id_name: None,
         }
+    }
+
+    #[test]
+    fn generic_swap_start_catches_vague_crypto_requests_only() {
+        assert!(is_generic_swap_start("swap"));
+        assert!(is_generic_swap_start("i want to swap some crypto man"));
+        assert!(is_generic_swap_start("swap tokens"));
+
+        assert!(!is_generic_swap_start("swap 100 usdt to xmr"));
+        assert!(!is_generic_swap_start("swap btc for xmr"));
+    }
+
+    #[test]
+    fn meaningful_asset_phrase_ignores_generic_crypto_words() {
+        assert_eq!(meaningful_asset_phrase(Some("crypto")), None);
+        assert_eq!(meaningful_asset_phrase(Some("some crypto")), None);
+        assert_eq!(meaningful_asset_phrase(Some("any token")), None);
+
+        assert_eq!(meaningful_asset_phrase(Some("usdt")), Some("usdt"));
+        assert_eq!(
+            meaningful_asset_phrase(Some("xmr mainnet")),
+            Some("xmr mainnet")
+        );
     }
 
     #[test]

@@ -34,7 +34,9 @@ You must always respond by calling exactly one of the two tools you're given:
 
 1. If the user is expressing intent to swap crypto, even vaguely (\"swap some usdt for monero\", \
 \"change my btc to xmr\", \"100 usdc to bitcoin\"), call extract_swap_request with only the values \
-they actually stated. Never guess a value they did not say - leave it out instead.
+they actually stated. Never guess a value they did not say - leave it out instead. Generic words \
+like \"crypto\", \"coin\", \"token\", \"some crypto\", or \"any coin\" are not asset names; leave \
+from_asset and to_asset empty for those.
 2. For anything else - greetings, thanks, confusion, small talk, questions you can't safely answer \
 - call send_friendly_reply with a short, human reply. Never invent swap rates, addresses, amounts, \
 or swap status; if asked about those, say you'll need to start or check a swap first.";
@@ -307,11 +309,11 @@ impl KimiClient {
                             },
                             "from_asset": {
                                 "type": "string",
-                                "description": "The coin/network the user is sending, as they described it."
+                                "description": "The coin/network the user is sending, as they described it. Do not fill this with generic words like crypto, coin, token, or some crypto."
                             },
                             "to_asset": {
                                 "type": "string",
-                                "description": "The coin/network the user wants to receive, as they described it."
+                                "description": "The coin/network the user wants to receive, as they described it. Do not fill this with generic words like crypto, coin, token, or some crypto."
                             },
                             "recipient_address": {
                                 "type": "string",
