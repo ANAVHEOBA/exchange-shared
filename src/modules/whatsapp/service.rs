@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use crate::modules::swap::crud::{CurrenciesResult, SwapCrud, SwapError};
 use crate::modules::swap::schema::{
-    CreateSwapRequest, CurrenciesQuery, CurrencyResponse, PairLimitsQuery, RateResponse, RateType,
-    RatesQuery, ValidateAddressRequest,
+    CreateSwapRequest, CurrenciesQuery, CurrencyResponse, RateResponse, RateType, RatesQuery,
+    ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
 use crate::services::kimi::KimiIntent;
@@ -1917,26 +1917,6 @@ impl WhatsAppFlowService {
             .from
             .as_ref()
             .ok_or_else(|| "Source asset missing. Type swap to restart.".to_string())?;
-        let to = draft
-            .to
-            .as_ref()
-            .ok_or_else(|| "Destination asset missing. Type swap to restart.".to_string())?;
-
-        // Best-effort: mention the pair's known minimum upfront, the same way
-        // Trocador's own site shows it before the user has typed an amount.
-        // Never blocks the flow if this lookup fails or is unknown.
-        let min_deposit = self
-            .swap_crud()
-            .get_pair_limits(&PairLimitsQuery {
-                from: from.ticker.clone(),
-                network_from: from.network.clone(),
-                to: to.ticker.clone(),
-                network_to: to.network.clone(),
-            })
-            .await
-            .ok()
-            .and_then(|limits| limits.min_deposit)
-            .filter(|value| *value > 0.0);
 
         draft.amount = None;
         draft.amount_input_mode = None;
@@ -1973,17 +1953,15 @@ impl WhatsAppFlowService {
             },
         ];
 
-        let body = match min_deposit {
-            Some(min_deposit) => format!(
-                "Choose how you want to enter the send amount. Minimum for this pair: {} {}.",
-                trim_f64(min_deposit),
-                from.ticker.to_uppercase()
-            ),
-            None => "Choose how you want to enter the send amount.".to_string(),
-        };
-
-        self.reply_interactive_list(wa_id, phone_number_id, session_id, &body, "Choose", rows)
-            .await
+        self.reply_interactive_list(
+            wa_id,
+            phone_number_id,
+            session_id,
+            "Choose how you want to enter the send amount.",
+            "Choose",
+            rows,
+        )
+        .await
     }
 
     /// Falls back to Kimi when the deterministic amount parser can't make sense of the
