@@ -429,7 +429,7 @@ impl WhatsAppFlowService {
                 .await;
         }
 
-        if lowered == "help" || lowered == "menu" || lowered == "start" || is_greeting(&lowered) {
+        if lowered == "help" || lowered == "menu" || lowered == "start" {
             return self
                 .send_welcome_sequence(
                     wa_id,
@@ -486,20 +486,6 @@ impl WhatsAppFlowService {
                         .await;
                 }
 
-                if let Some(intent) = parse_swap_intent(trimmed) {
-                    return self
-                        .handle_parsed_swap_intent(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            &locale,
-                            draft,
-                            inbound_message_id,
-                            intent,
-                        )
-                        .await;
-                }
-
                 if let Some(kimi) = self.state.kimi_client.clone() {
                     match kimi.classify_swap_message(trimmed).await {
                         Ok(KimiIntent::SwapRequest {
@@ -536,11 +522,36 @@ impl WhatsAppFlowService {
                         }
                         Err(error) => {
                             tracing::warn!(
-                                "Kimi classification failed, falling back to the menu: {}",
+                                "Kimi classification failed, falling back to deterministic parsing: {}",
                                 error
                             );
                         }
                     }
+                }
+
+                if let Some(intent) = parse_swap_intent(trimmed) {
+                    return self
+                        .handle_parsed_swap_intent(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            &locale,
+                            draft,
+                            inbound_message_id,
+                            intent,
+                        )
+                        .await;
+                }
+
+                if is_greeting(&lowered) {
+                    return self
+                        .reply(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            "Hey, I'm here. Tell me what you want to swap, like: swap 100 USDT to XMR.",
+                        )
+                        .await;
                 }
 
                 self.reply(
