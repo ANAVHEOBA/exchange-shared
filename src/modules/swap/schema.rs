@@ -274,6 +274,26 @@ pub struct RatesResponse {
 }
 
 // =============================================================================
+// PAIR LIMITS - min/max deposit for a pair, independent of amount
+// =============================================================================
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct PairLimitsQuery {
+    pub from: String,
+    pub network_from: String,
+    pub to: String,
+    pub network_to: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct PairLimitsResponse {
+    /// `None` when the pair's bounds could not be determined (e.g. no route at all).
+    pub min_deposit: Option<f64>,
+    pub max_deposit: Option<f64>,
+}
+
+// =============================================================================
 // HOSTED DONATION FLOW
 // =============================================================================
 

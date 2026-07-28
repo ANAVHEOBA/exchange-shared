@@ -13,8 +13,8 @@ use super::crud::{CurrenciesResult, SwapCrud};
 use super::schema::{
     ClientHistoryResponse, CreateDonationSwapRequest, CreateSwapRequest, CreateSwapResponse,
     CurrenciesQuery, DonationRatesQuery, DonationTargetResponse, HistoryQuery, HistoryResponse,
-    ProvidersQuery, SwapErrorResponse, SwapOpsActionResponse, SwapStatusResponse,
-    SwapTimelineResponse, ValidateAddressRequest, ValidateAddressResponse,
+    PairLimitsQuery, PairLimitsResponse, ProvidersQuery, SwapErrorResponse, SwapOpsActionResponse,
+    SwapStatusResponse, SwapTimelineResponse, ValidateAddressRequest, ValidateAddressResponse,
 };
 use super::service::SwapService;
 use crate::middleware::admin::Admin;
@@ -930,6 +930,41 @@ pub async fn get_estimate(
                 Json(SwapErrorResponse::new(message)),
             ),
         }
+    })?;
+
+    Ok(Json(response))
+}
+
+// =============================================================================
+// GET /swap/pair-limits - Min/max deposit for a pair, independent of amount
+// =============================================================================
+
+#[utoipa::path(
+    get,
+    path = "/swap/pair-limits",
+    tag = "Swap",
+    params(PairLimitsQuery),
+    responses(
+        (status = 200, description = "Pair deposit bounds (fields are null when unknown)", body = PairLimitsResponse),
+        (status = 404, description = "Trading pair not available", body = SwapErrorResponse),
+        (status = 500, description = "Server error", body = SwapErrorResponse),
+        (status = 502, description = "Upstream provider error", body = SwapErrorResponse)
+    )
+)]
+pub async fn get_pair_limits(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<PairLimitsQuery>,
+) -> Result<Json<PairLimitsResponse>, (StatusCode, Json<SwapErrorResponse>)> {
+    let crud = swap_crud(&state);
+
+    let response = crud.get_pair_limits(&query).await.map_err(|e| {
+        let message = e.to_string();
+        let status = match e {
+            super::crud::SwapError::PairNotAvailable => StatusCode::NOT_FOUND,
+            super::crud::SwapError::ExternalApiError(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(SwapErrorResponse::new(message)))
     })?;
 
     Ok(Json(response))

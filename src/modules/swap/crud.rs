@@ -13,7 +13,7 @@ use super::schema::{
 use super::service::SwapService;
 use crate::services::gas::GasEstimator;
 use crate::services::payout_policy::PayoutPolicyConfig;
-use crate::services::pricing::{PricedRates, QuoteService};
+use crate::services::pricing::{CommissionService, PricedRates, QuoteService};
 use crate::services::redis_cache::RedisService;
 use crate::services::rpc::RpcManager;
 use crate::services::trocador::{swap_markup_from_env, TrocadorError, TrocadorGateway};
@@ -26,6 +26,13 @@ const RATES_MEMORY_CACHE_MAX_ENTRIES: usize = 256;
 const ESTIMATE_EXACT_MEMORY_CACHE_TTL: Duration = Duration::from_secs(10);
 const ESTIMATE_BUCKET_MEMORY_CACHE_TTL: Duration = Duration::from_secs(60);
 const ESTIMATE_MEMORY_CACHE_MAX_ENTRIES: usize = 512;
+const PAIR_LIMITS_MEMORY_CACHE_TTL: Duration = Duration::from_secs(300);
+const PAIR_LIMITS_MEMORY_CACHE_MAX_ENTRIES: usize = 512;
+/// Nominal USD value used to probe Trocador for a pair's min/max deposit
+/// without the caller having to supply a real amount. Chosen because it sits
+/// comfortably inside most providers' bounds, so the probe itself rarely
+/// triggers the very "amount out of range" error it's trying to avoid.
+const PAIR_LIMITS_PROBE_USD: f64 = 50.0;
 
 #[derive(Debug, Clone)]
 struct CachedRatesResponse {
@@ -48,6 +55,59 @@ fn rates_memory_cache() -> &'static RwLock<HashMap<String, CachedRatesResponse>>
 fn estimate_memory_cache() -> &'static RwLock<HashMap<String, CachedEstimateEntry>> {
     static CACHE: OnceLock<RwLock<HashMap<String, CachedEstimateEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+#[derive(Debug, Clone)]
+struct CachedPairLimits {
+    cached_at: Instant,
+    value: super::schema::PairLimitsResponse,
+}
+
+fn pair_limits_memory_cache() -> &'static RwLock<HashMap<String, CachedPairLimits>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, CachedPairLimits>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn read_cached_pair_limits(cache_key: &str) -> Option<super::schema::PairLimitsResponse> {
+    let cache = pair_limits_memory_cache().read().ok()?;
+    let cached = cache.get(cache_key)?;
+
+    if cached.cached_at.elapsed() > PAIR_LIMITS_MEMORY_CACHE_TTL {
+        return None;
+    }
+
+    Some(cached.value.clone())
+}
+
+fn write_cached_pair_limits(cache_key: String, value: super::schema::PairLimitsResponse) {
+    let Ok(mut cache) = pair_limits_memory_cache().write() else {
+        return;
+    };
+
+    cache.retain(|_, cached| cached.cached_at.elapsed() <= PAIR_LIMITS_MEMORY_CACHE_TTL);
+    if cache.len() >= PAIR_LIMITS_MEMORY_CACHE_MAX_ENTRIES {
+        let overflow = cache
+            .len()
+            .saturating_add(1)
+            .saturating_sub(PAIR_LIMITS_MEMORY_CACHE_MAX_ENTRIES);
+        let mut oldest_entries = cache
+            .iter()
+            .map(|(cached_key, cached)| (cached_key.clone(), cached.cached_at))
+            .collect::<Vec<_>>();
+        oldest_entries.sort_by_key(|(_, cached_at)| *cached_at);
+
+        for (cached_key, _) in oldest_entries.into_iter().take(overflow.max(1)) {
+            cache.remove(&cached_key);
+        }
+    }
+
+    cache.insert(
+        cache_key,
+        CachedPairLimits {
+            cached_at: Instant::now(),
+            value,
+        },
+    );
 }
 
 fn read_cached_rates_response(cache_key: &str) -> Option<RatesResponse> {
@@ -1562,6 +1622,100 @@ impl SwapCrud {
         if let Some(service) = &self.redis_service {
             let _ = service.set_json(&exact_key, &exact_entry, 10).await;
             let _ = service.set_json(&bucketed_key, &bucketed_entry, 60).await;
+        }
+
+        Ok(response)
+    }
+
+    /// Returns a pair's min/max deposit bounds without requiring a real amount,
+    /// so the UI can show "Minimum: X" the moment a pair is picked - matching
+    /// Trocador's own site, which shows this before the user types anything.
+    ///
+    /// Trocador's rate API has no amount-free "limits" endpoint, so this probes
+    /// it with a nominal amount (~$50 worth of the source asset) and reads the
+    /// min/max deposit off that response. If even the probe amount is judged
+    /// out of range, or the pair has no route at all, this returns `None` for
+    /// both fields rather than erroring - the UI just won't show a hint, which
+    /// is honest and safe.
+    pub async fn get_pair_limits(
+        &self,
+        query: &super::schema::PairLimitsQuery,
+    ) -> Result<super::schema::PairLimitsResponse, SwapError> {
+        let cache_key = format!(
+            "pair_limits:{}:{}:{}:{}",
+            query.from.to_lowercase(),
+            query.network_from.to_lowercase(),
+            query.to.to_lowercase(),
+            query.network_to.to_lowercase(),
+        );
+
+        if let Some(cached) = read_cached_pair_limits(&cache_key) {
+            return Ok(cached);
+        }
+
+        if query.from.eq_ignore_ascii_case(&query.to)
+            && query.network_from.eq_ignore_ascii_case(&query.network_to)
+        {
+            return Err(SwapError::PairNotAvailable);
+        }
+
+        let trocador_gateway = TrocadorGateway::from_env()
+            .map_err(|_| SwapError::ExternalApiError("TROCADOR_API_KEY not set".to_string()))?;
+
+        let commission_service = CommissionService::new();
+        let usd_per_unit = commission_service
+            .resolve_live_amount_usd(&trocador_gateway, &query.from, &query.network_from, 1.0)
+            .await
+            .unwrap_or(0.0);
+
+        let probe_amount = if usd_per_unit > 0.0 {
+            PAIR_LIMITS_PROBE_USD / usd_per_unit
+        } else {
+            1.0
+        };
+
+        let probe_result = self
+            .call_trocador_with_retry(|| async {
+                let markup = swap_markup_from_env().map_err(TrocadorError::ApiError)?;
+                trocador_gateway
+                    .fetch_rates(
+                        &query.from,
+                        &query.network_from,
+                        &query.to,
+                        &query.network_to,
+                        probe_amount,
+                        None,
+                        markup.as_deref(),
+                    )
+                    .await
+            })
+            .await;
+
+        let response = match probe_result {
+            Ok(trocador_response) => super::schema::PairLimitsResponse {
+                min_deposit: trocador_response.quotes.min_deposit,
+                max_deposit: trocador_response.quotes.max_deposit,
+            },
+            Err(SwapError::AmountOutOfRange { min, max }) => super::schema::PairLimitsResponse {
+                min_deposit: min,
+                max_deposit: max,
+            },
+            Err(SwapError::PairNotAvailable) => super::schema::PairLimitsResponse {
+                min_deposit: None,
+                max_deposit: None,
+            },
+            Err(other) => return Err(other),
+        };
+
+        write_cached_pair_limits(cache_key.clone(), response.clone());
+        if let Some(service) = &self.redis_service {
+            let _ = service
+                .set_json(
+                    &cache_key,
+                    &response,
+                    PAIR_LIMITS_MEMORY_CACHE_TTL.as_secs(),
+                )
+                .await;
         }
 
         Ok(response)

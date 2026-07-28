@@ -7,9 +7,9 @@ use std::sync::Arc;
 use super::controller::{
     create_donation_swap, create_swap, get_admin_swap_history, get_admin_swap_status,
     get_admin_swap_timeline, get_client_swap_history, get_currencies, get_donation_rates,
-    get_donation_target, get_estimate, get_pairs, get_providers, get_rates, get_swap_history,
-    get_swap_status, reconcile_admin_swap, refresh_admin_swap_status, trocador_webhook,
-    validate_address,
+    get_donation_target, get_estimate, get_pair_limits, get_pairs, get_providers, get_rates,
+    get_swap_history, get_swap_status, reconcile_admin_swap, refresh_admin_swap_status,
+    trocador_webhook, validate_address,
 };
 use crate::AppState;
 
@@ -20,6 +20,7 @@ pub fn swap_routes() -> Router<Arc<AppState>> {
         .route("/pairs", get(get_pairs))
         .route("/rates", get(get_rates))
         .route("/estimate", get(get_estimate))
+        .route("/pair-limits", get(get_pair_limits))
         .route("/create", post(create_swap))
         .route("/donation/target", get(get_donation_target))
         .route("/donation/rates", get(get_donation_rates))
