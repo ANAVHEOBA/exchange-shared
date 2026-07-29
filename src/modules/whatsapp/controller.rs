@@ -1,10 +1,17 @@
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+        HeaderMap, StatusCode,
+    },
     response::IntoResponse,
     Json,
 };
+use image::{DynamicImage, ImageFormat, Luma};
+use qrcode::QrCode;
+use serde::Deserialize;
+use std::io::Cursor;
 use std::sync::Arc;
 use validator::Validate;
 
@@ -66,6 +73,11 @@ fn normalize_patch_field<'a>(value: Option<&'a String>) -> Option<Option<&'a str
             Some(trimmed)
         }
     })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SwapQrQuery {
+    pub client_id: String,
 }
 
 #[utoipa::path(
@@ -250,6 +262,73 @@ pub async fn receive_webhook(
         inserted,
         duplicates,
     }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/whatsapp/qr/{swap_id}",
+    tag = "WhatsApp",
+    params(
+        ("swap_id" = String, Path, description = "Assetar swap id"),
+        ("client_id" = String, Query, description = "Derived anonymous client id")
+    ),
+    responses(
+        (status = 200, description = "Swap deposit QR image"),
+        (status = 404, description = "Swap not found", body = ApiError),
+        (status = 500, description = "Failed to render QR", body = ApiError)
+    )
+)]
+pub async fn get_swap_deposit_qr(
+    State(state): State<Arc<AppState>>,
+    Path(swap_id): Path<String>,
+    Query(query): Query<SwapQrQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    let status = swap_crud(&state)
+        .get_swap_status_for_client(&swap_id, &query.client_id)
+        .await
+        .map_err(|error| match error {
+            crate::modules::swap::crud::SwapError::SwapNotFound => {
+                (StatusCode::NOT_FOUND, Json(ApiError::new("Swap not found")))
+            }
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new(error.to_string())),
+            ),
+        })?;
+
+    let qr_code = QrCode::new(status.deposit_address.as_bytes()).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!(
+                "failed to encode QR payload: {}",
+                error
+            ))),
+        )
+    })?;
+    let image = qr_code
+        .render::<Luma<u8>>()
+        .min_dimensions(512, 512)
+        .build();
+    let mut buffer = Cursor::new(Vec::new());
+    DynamicImage::ImageLuma8(image)
+        .write_to(&mut buffer, ImageFormat::Png)
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new(format!(
+                    "failed to render QR image: {}",
+                    error
+                ))),
+            )
+        })?;
+
+    Ok((
+        [
+            (CONTENT_TYPE, "image/png"),
+            (CACHE_CONTROL, "private, max-age=300, no-store"),
+        ],
+        buffer.into_inner(),
+    ))
 }
 
 #[utoipa::path(

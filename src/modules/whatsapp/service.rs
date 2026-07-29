@@ -17,7 +17,9 @@ use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
 use crate::services::kimi::{KimiAmountMode, KimiConfirmation, KimiIntent};
 use crate::services::pricing::CommissionService;
 use crate::services::trocador::TrocadorGateway;
-use crate::services::whatsapp::derive_whatsapp_client_id;
+use crate::services::whatsapp::{
+    derive_whatsapp_client_id, InteractiveListOption, InteractiveListSection, ReplyButtonOption,
+};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1124,15 +1126,15 @@ impl WhatsAppFlowService {
                     }
                     Some(KimiConfirmation::Confirm) => {}
                     None => {
-                        let message = self
-                            .narrate_or(
-                                "Tell the user this is the final confirmation step. Ask them to reply with the exact word confirm to create the swap, or cancel to stop. Keep it short.",
-                                "If this looks right, reply confirm. If not, reply cancel.",
-                            )
-                            .await;
-
                         return self
-                            .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
+                            .prompt_confirmation(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                &locale,
+                                draft,
+                                inbound_message_id,
+                            )
                             .await;
                     }
                 }
@@ -1200,6 +1202,27 @@ impl WhatsAppFlowService {
                     &format!("Deposit address\n{}", response.deposit_address),
                 )
                 .await?;
+
+                if let Some(qr_link) =
+                    self.swap_deposit_qr_link(phone_number_id, wa_id, &response.swap_id)
+                {
+                    if let Err(error) = self
+                        .reply_image(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            &qr_link,
+                            Some("Deposit QR"),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to send WhatsApp deposit QR for swap {}: {}",
+                            response.swap_id,
+                            error
+                        );
+                    }
+                }
 
                 if let Some(extra_id) = response.deposit_extra_id.as_ref() {
                     self.reply(
@@ -2389,6 +2412,11 @@ impl WhatsAppFlowService {
         let from = draft.from.as_ref().ok_or_else(|| {
             "I lost the source asset for this swap. Send the swap details again.".to_string()
         })?;
+        let destination_context = draft
+            .to
+            .as_ref()
+            .map(|asset| format!(" for {} on {}", asset.ticker.to_uppercase(), asset.network))
+            .unwrap_or_default();
 
         draft.amount = None;
         draft.amount_input_mode = Some(AmountInputMode::SourceAsset);
@@ -2409,14 +2437,16 @@ impl WhatsAppFlowService {
         let body = self
             .narrate_or(
                 &format!(
-                    "Ask the user how much {} on {} they want to send. Tell them they can write a coin amount like 0.25 or a dollar value like $100. Do not show a menu.",
+                    "Ask the user how much {} on {} they want to send{}. Tell them they can write a coin amount like 0.25 or a dollar value like $100. Do not show a menu.",
                     from.ticker.to_uppercase(),
-                    from.network
+                    from.network,
+                    destination_context
                 ),
                 &format!(
-                    "How much {} on {} do you want to send? You can write a coin amount like 0.25 or a dollar value like $100.",
+                    "How much {} on {} do you want to send{}? You can write a coin amount like 0.25 or a dollar value like $100.",
                     from.ticker.to_uppercase(),
-                    from.network
+                    from.network,
+                    destination_context
                 ),
             )
             .await;
@@ -2881,9 +2911,26 @@ impl WhatsAppFlowService {
         }
 
         lines.push("If this looks right, reply confirm. If not, reply cancel.".to_string());
+        let body = lines.join("\n");
 
-        self.reply(wa_id, phone_number_id, session_id, &lines.join("\n"))
-            .await
+        self.reply_interactive_buttons_or_fallback(
+            wa_id,
+            phone_number_id,
+            session_id,
+            &body,
+            vec![
+                ReplyButtonOption {
+                    id: build_confirmation_selection_id(KimiConfirmation::Confirm).to_string(),
+                    title: "Confirm".to_string(),
+                },
+                ReplyButtonOption {
+                    id: build_confirmation_selection_id(KimiConfirmation::Cancel).to_string(),
+                    title: "Cancel".to_string(),
+                },
+            ],
+            &body,
+        )
+        .await
     }
 
     async fn create_swap_from_draft(
@@ -3206,6 +3253,30 @@ impl WhatsAppFlowService {
         )
     }
 
+    fn public_backend_base_url(&self) -> Option<String> {
+        std::env::var("PUBLIC_BACKEND_URL")
+            .ok()
+            .or_else(|| std::env::var("RENDER_EXTERNAL_URL").ok())
+            .or_else(|| std::env::var("API_BASE_URL").ok())
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn swap_deposit_qr_link(
+        &self,
+        phone_number_id: &str,
+        wa_id: &str,
+        swap_id: &str,
+    ) -> Option<String> {
+        let base_url = self.public_backend_base_url()?;
+        let client_id = derive_whatsapp_client_id(phone_number_id, wa_id);
+
+        Some(format!(
+            "{}/whatsapp/qr/{}?client_id={}",
+            base_url, swap_id, client_id
+        ))
+    }
+
     async fn acknowledge_inbound_message(&self, inbound_message_id: Option<&str>) {
         let Some(message_id) = inbound_message_id else {
             return;
@@ -3362,10 +3433,64 @@ impl WhatsAppFlowService {
             .as_ref()
             .ok_or_else(|| "WhatsApp is not configured".to_string())?;
 
-        let body_for_audit = caption.unwrap_or(image_link);
         let crud = WhatsAppCrud::new(self.state.db.clone());
+        let inferred_inbound_message_id = crud
+            .get_last_inbound_message_id(wa_id, phone_number_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let body_for_audit = serde_json::json!({
+            "image_link": image_link,
+            "caption": caption,
+        })
+        .to_string();
+
+        if let Some(inbound_message_id) = inferred_inbound_message_id.as_deref() {
+            let idempotency_key = whatsapp_outbound_idempotency_key(
+                phone_number_id,
+                wa_id,
+                inbound_message_id,
+                &body_for_audit,
+            );
+            let reservation = crud
+                .record_outbound_message_once(
+                    session_id,
+                    wa_id,
+                    phone_number_id,
+                    "image",
+                    &body_for_audit,
+                    &idempotency_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            if !reservation.should_send {
+                tracing::info!(
+                    "Skipping duplicate WhatsApp image reply for inbound message {}",
+                    inbound_message_id
+                );
+                return Ok(());
+            }
+
+            return match service.send_image_message(wa_id, image_link, caption).await {
+                Ok(response) => {
+                    let provider_message_id =
+                        response.messages.first().map(|message| message.id.as_str());
+                    crud.mark_outbound_sent(&reservation.id, provider_message_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = crud
+                        .mark_outbound_failed(&reservation.id, &error.to_string())
+                        .await;
+                    Err(error.to_string())
+                }
+            };
+        }
+
         let outbound_id = crud
-            .record_outbound_message(session_id, wa_id, phone_number_id, "image", body_for_audit)
+            .record_outbound_message(session_id, wa_id, phone_number_id, "image", &body_for_audit)
             .await
             .map_err(|error| error.to_string())?;
 
@@ -3387,6 +3512,296 @@ impl WhatsAppFlowService {
         }
     }
 
+    async fn reply_interactive_list_or_fallback(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        button_label: &str,
+        section_title: Option<&str>,
+        options: Vec<InteractiveListOption>,
+        fallback_body: &str,
+    ) -> Result<(), String> {
+        if options.is_empty() {
+            return self
+                .reply(wa_id, phone_number_id, session_id, fallback_body)
+                .await;
+        }
+
+        let Some(service) = self.state.whatsapp_service.as_ref() else {
+            return self
+                .reply(wa_id, phone_number_id, session_id, fallback_body)
+                .await;
+        };
+
+        let options = options
+            .into_iter()
+            .take(10)
+            .map(|option| InteractiveListOption {
+                id: truncate_whatsapp_text(&option.id, 200),
+                title: truncate_whatsapp_text(&option.title, 24),
+                description: option
+                    .description
+                    .map(|value| truncate_whatsapp_text(&value, 72)),
+            })
+            .collect::<Vec<_>>();
+
+        let payload_body = serde_json::json!({
+            "body": body,
+            "button": button_label,
+            "section_title": section_title,
+            "rows": options.iter().map(|option| serde_json::json!({
+                "id": option.id.as_str(),
+                "title": option.title.as_str(),
+                "description": option.description.as_deref(),
+            })).collect::<Vec<_>>(),
+        })
+        .to_string();
+
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+        let inferred_inbound_message_id = crud
+            .get_last_inbound_message_id(wa_id, phone_number_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let sections = vec![InteractiveListSection {
+            title: section_title.map(str::to_string),
+            rows: options,
+        }];
+
+        if let Some(inbound_message_id) = inferred_inbound_message_id.as_deref() {
+            let idempotency_key = whatsapp_outbound_idempotency_key(
+                phone_number_id,
+                wa_id,
+                inbound_message_id,
+                &payload_body,
+            );
+            let reservation = crud
+                .record_outbound_message_once(
+                    session_id,
+                    wa_id,
+                    phone_number_id,
+                    "interactive_list",
+                    &payload_body,
+                    &idempotency_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            if !reservation.should_send {
+                tracing::info!(
+                    "Skipping duplicate WhatsApp interactive list for inbound message {}",
+                    inbound_message_id
+                );
+                return Ok(());
+            }
+
+            return match service
+                .send_interactive_list_message(wa_id, body, button_label, sections)
+                .await
+            {
+                Ok(response) => {
+                    let provider_message_id =
+                        response.messages.first().map(|message| message.id.as_str());
+                    crud.mark_outbound_sent(&reservation.id, provider_message_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = crud
+                        .mark_outbound_failed(&reservation.id, &error.to_string())
+                        .await;
+                    tracing::warn!(
+                        "WhatsApp interactive list failed for {} on {}: {}. Falling back to text.",
+                        wa_id,
+                        phone_number_id,
+                        error
+                    );
+                    self.reply(wa_id, phone_number_id, session_id, fallback_body)
+                        .await
+                }
+            };
+        }
+
+        let outbound_id = crud
+            .record_outbound_message(
+                session_id,
+                wa_id,
+                phone_number_id,
+                "interactive_list",
+                &payload_body,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        match service
+            .send_interactive_list_message(wa_id, body, button_label, sections)
+            .await
+        {
+            Ok(response) => {
+                let provider_message_id =
+                    response.messages.first().map(|message| message.id.as_str());
+                crud.mark_outbound_sent(&outbound_id, provider_message_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = crud
+                    .mark_outbound_failed(&outbound_id, &error.to_string())
+                    .await;
+                tracing::warn!(
+                    "WhatsApp interactive list failed for {} on {}: {}. Falling back to text.",
+                    wa_id,
+                    phone_number_id,
+                    error
+                );
+                self.reply(wa_id, phone_number_id, session_id, fallback_body)
+                    .await
+            }
+        }
+    }
+
+    async fn reply_interactive_buttons_or_fallback(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        body: &str,
+        buttons: Vec<ReplyButtonOption>,
+        fallback_body: &str,
+    ) -> Result<(), String> {
+        if buttons.is_empty() {
+            return self
+                .reply(wa_id, phone_number_id, session_id, fallback_body)
+                .await;
+        }
+
+        let Some(service) = self.state.whatsapp_service.as_ref() else {
+            return self
+                .reply(wa_id, phone_number_id, session_id, fallback_body)
+                .await;
+        };
+
+        let buttons = buttons
+            .into_iter()
+            .take(3)
+            .map(|button| ReplyButtonOption {
+                id: truncate_whatsapp_text(&button.id, 200),
+                title: truncate_whatsapp_text(&button.title, 20),
+            })
+            .collect::<Vec<_>>();
+
+        let payload_body = serde_json::json!({
+            "body": body,
+            "buttons": buttons.iter().map(|button| serde_json::json!({
+                "id": button.id.as_str(),
+                "title": button.title.as_str(),
+            })).collect::<Vec<_>>(),
+        })
+        .to_string();
+
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+        let inferred_inbound_message_id = crud
+            .get_last_inbound_message_id(wa_id, phone_number_id)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if let Some(inbound_message_id) = inferred_inbound_message_id.as_deref() {
+            let idempotency_key = whatsapp_outbound_idempotency_key(
+                phone_number_id,
+                wa_id,
+                inbound_message_id,
+                &payload_body,
+            );
+            let reservation = crud
+                .record_outbound_message_once(
+                    session_id,
+                    wa_id,
+                    phone_number_id,
+                    "interactive_button",
+                    &payload_body,
+                    &idempotency_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            if !reservation.should_send {
+                tracing::info!(
+                    "Skipping duplicate WhatsApp interactive button reply for inbound message {}",
+                    inbound_message_id
+                );
+                return Ok(());
+            }
+
+            return match service
+                .send_interactive_button_message(wa_id, body, buttons, None)
+                .await
+            {
+                Ok(response) => {
+                    let provider_message_id =
+                        response.messages.first().map(|message| message.id.as_str());
+                    crud.mark_outbound_sent(&reservation.id, provider_message_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = crud
+                        .mark_outbound_failed(&reservation.id, &error.to_string())
+                        .await;
+                    tracing::warn!(
+                        "WhatsApp interactive buttons failed for {} on {}: {}. Falling back to text.",
+                        wa_id,
+                        phone_number_id,
+                        error
+                    );
+                    self.reply(wa_id, phone_number_id, session_id, fallback_body)
+                        .await
+                }
+            };
+        }
+
+        let outbound_id = crud
+            .record_outbound_message(
+                session_id,
+                wa_id,
+                phone_number_id,
+                "interactive_button",
+                &payload_body,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        match service
+            .send_interactive_button_message(wa_id, body, buttons, None)
+            .await
+        {
+            Ok(response) => {
+                let provider_message_id =
+                    response.messages.first().map(|message| message.id.as_str());
+                crud.mark_outbound_sent(&outbound_id, provider_message_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = crud
+                    .mark_outbound_failed(&outbound_id, &error.to_string())
+                    .await;
+                tracing::warn!(
+                    "WhatsApp interactive buttons failed for {} on {}: {}. Falling back to text.",
+                    wa_id,
+                    phone_number_id,
+                    error
+                );
+                self.reply(wa_id, phone_number_id, session_id, fallback_body)
+                    .await
+            }
+        }
+    }
+
     async fn reply_asset_family_options(
         &self,
         wa_id: &str,
@@ -3395,16 +3810,29 @@ impl WhatsAppFlowService {
         body: &str,
         families: &[AssetFamilySelection],
     ) -> Result<(), String> {
-        let options = families
+        let fallback_options = families
             .iter()
             .map(|family| format!("{} ({})", family.name, family.ticker.to_uppercase()))
             .collect::<Vec<_>>();
+        let interactive_rows = families
+            .iter()
+            .map(|family| InteractiveListOption {
+                id: build_family_selection_id(family),
+                title: truncate_whatsapp_text(&family.name, 24),
+                description: Some(truncate_whatsapp_text(&family.ticker.to_uppercase(), 72)),
+            })
+            .collect::<Vec<_>>();
+        let fallback = format_choice_prompt(body, &fallback_options, "Tell me which one you want.");
 
-        self.reply(
+        self.reply_interactive_list_or_fallback(
             wa_id,
             phone_number_id,
             session_id,
-            &format_choice_prompt(body, &options, "Tell me which one you want."),
+            body,
+            "Choose asset",
+            Some("Matching assets"),
+            interactive_rows,
+            &fallback,
         )
         .await
     }
@@ -3417,16 +3845,32 @@ impl WhatsAppFlowService {
         body: &str,
         options: &[CurrencySelection],
     ) -> Result<(), String> {
-        let rows = options
+        let fallback_rows = options
             .iter()
             .map(|option| option.network.clone())
             .collect::<Vec<_>>();
+        let interactive_rows = options
+            .iter()
+            .map(|option| InteractiveListOption {
+                id: build_asset_selection_id(option),
+                title: truncate_whatsapp_text(&option.network, 24),
+                description: Some(truncate_whatsapp_text(
+                    &format!("{} ({})", option.name, option.ticker.to_uppercase()),
+                    72,
+                )),
+            })
+            .collect::<Vec<_>>();
+        let fallback = format_choice_prompt(body, &fallback_rows, "Tell me the network you want.");
 
-        self.reply(
+        self.reply_interactive_list_or_fallback(
             wa_id,
             phone_number_id,
             session_id,
-            &format_choice_prompt(body, &rows, "Tell me the network you want."),
+            body,
+            "Choose network",
+            Some("Available networks"),
+            interactive_rows,
+            &fallback,
         )
         .await
     }
@@ -3440,16 +3884,33 @@ impl WhatsAppFlowService {
         _button_label: &str,
         options: &[CurrencySelection],
     ) -> Result<(), String> {
-        let rows = options
+        let fallback_rows = options
             .iter()
             .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
             .collect::<Vec<_>>();
+        let interactive_rows = options
+            .iter()
+            .map(|option| InteractiveListOption {
+                id: build_asset_selection_id(option),
+                title: truncate_whatsapp_text(
+                    &format!("{} on {}", option.ticker.to_uppercase(), option.network),
+                    24,
+                ),
+                description: Some(truncate_whatsapp_text(&option.name, 72)),
+            })
+            .collect::<Vec<_>>();
+        let fallback =
+            format_choice_prompt(body, &fallback_rows, "Tell me the exact one you want.");
 
-        self.reply(
+        self.reply_interactive_list_or_fallback(
             wa_id,
             phone_number_id,
             session_id,
-            &format_choice_prompt(body, &rows, "Tell me the exact one you want."),
+            body,
+            "Choose coin",
+            Some("Matching coins"),
+            interactive_rows,
+            &fallback,
         )
         .await
     }
@@ -3462,7 +3923,7 @@ impl WhatsAppFlowService {
         body: &str,
         quotes: &[QuoteChoice],
     ) -> Result<(), String> {
-        let rows = quotes
+        let fallback_rows = quotes
             .iter()
             .map(|quote| {
                 format!(
@@ -3472,16 +3933,32 @@ impl WhatsAppFlowService {
                 )
             })
             .collect::<Vec<_>>();
+        let interactive_rows = quotes
+            .iter()
+            .map(|quote| InteractiveListOption {
+                id: build_quote_selection_id(quote.index),
+                title: truncate_whatsapp_text(&quote.provider_name, 24),
+                description: Some(truncate_whatsapp_text(
+                    &format_quote_list_description(quote),
+                    72,
+                )),
+            })
+            .collect::<Vec<_>>();
+        let fallback = format_choice_prompt(
+            body,
+            &fallback_rows,
+            "If you want a different route, tell me the provider name.",
+        );
 
-        self.reply(
+        self.reply_interactive_list_or_fallback(
             wa_id,
             phone_number_id,
             session_id,
-            &format_choice_prompt(
-                body,
-                &rows,
-                "If you want a different route, tell me the provider name.",
-            ),
+            body,
+            "View routes",
+            Some("Live routes"),
+            interactive_rows,
+            &fallback,
         )
         .await
     }
@@ -3682,13 +4159,6 @@ fn normalize_quick_action_command(input: &str) -> String {
             }
         }
     }
-}
-
-fn is_greeting(input: &str) -> bool {
-    matches!(
-        input.trim(),
-        "hi" | "hello" | "hey" | "good morning" | "good afternoon" | "good evening"
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -4058,6 +4528,13 @@ fn build_quote_selection_id(index: usize) -> String {
     format!("quote:{}", index)
 }
 
+fn build_confirmation_selection_id(decision: KimiConfirmation) -> &'static str {
+    match decision {
+        KimiConfirmation::Confirm => "confirm:confirm",
+        KimiConfirmation::Cancel => "confirm:cancel",
+    }
+}
+
 fn parse_quote_selection_by_provider(input: &str, quotes: &[QuoteChoice]) -> Option<usize> {
     let normalized = normalize_phrase(input);
     if normalized.is_empty() {
@@ -4083,6 +4560,8 @@ fn parse_confirmation_decision(input: &str) -> Option<KimiConfirmation> {
     }
 
     match normalize_phrase(input).as_str() {
+        "confirm confirm" | "confirmconfirm" => Some(KimiConfirmation::Confirm),
+        "confirm cancel" | "confirmcancel" => Some(KimiConfirmation::Cancel),
         "confirm" | "yes" | "yes please" | "yesplease" | "y" | "yeah" | "yep" | "sure" | "ok"
         | "okay" | "proceed" | "goahead" | "createit" | "doit" | "sendit" | "letsgo"
         | "continue" | "looks good" | "looksgood" | "all good" | "allgood" | "thats fine"
@@ -4090,21 +4569,6 @@ fn parse_confirmation_decision(input: &str) -> Option<KimiConfirmation> {
         "no" | "n" | "nope" | "nah" | "cancelit" | "notnow" | "dont" | "donot" | "dont do it"
         | "dontdoit" | "wait" => Some(KimiConfirmation::Cancel),
         _ => None,
-    }
-}
-
-fn parse_amount_mode_selection_id(input: &str) -> Option<AmountInputMode> {
-    match input.trim().to_ascii_lowercase().as_str() {
-        "amount_mode:source_asset" => Some(AmountInputMode::SourceAsset),
-        "amount_mode:usd" => Some(AmountInputMode::Usd),
-        _ => None,
-    }
-}
-
-fn build_amount_mode_selection_id(mode: &AmountInputMode) -> String {
-    match mode {
-        AmountInputMode::SourceAsset => "amount_mode:source_asset".to_string(),
-        AmountInputMode::Usd => "amount_mode:usd".to_string(),
     }
 }
 
@@ -5410,6 +5874,18 @@ mod tests {
             "it will work man check very well the request are not being sent properly"
         ));
         assert!(looks_like_asset_correction("xlm on mainnet"));
+    }
+
+    #[test]
+    fn parses_confirmation_button_ids() {
+        assert_eq!(
+            parse_confirmation_decision("confirm:confirm"),
+            Some(KimiConfirmation::Confirm)
+        );
+        assert_eq!(
+            parse_confirmation_decision("confirm:cancel"),
+            Some(KimiConfirmation::Cancel)
+        );
     }
 
     #[test]
