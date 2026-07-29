@@ -318,12 +318,6 @@ impl WhatsAppFlowService {
                 phone_number_id,
                 error
             );
-            if result.is_ok() {
-                return Err(format!(
-                    "failed to release WhatsApp session lock: {}",
-                    error
-                ));
-            }
         }
 
         result
@@ -535,6 +529,7 @@ impl WhatsAppFlowService {
                                 &locale,
                                 draft,
                                 inbound_message_id,
+                                trimmed,
                                 ParsedSwapIntent {
                                     amount,
                                     amount_mode: amount_mode.map(AmountInputMode::from),
@@ -601,6 +596,7 @@ impl WhatsAppFlowService {
                                     &locale,
                                     draft,
                                     inbound_message_id,
+                                    trimmed,
                                     ParsedSwapIntent {
                                         amount,
                                         amount_mode: amount_mode.map(AmountInputMode::from),
@@ -635,6 +631,7 @@ impl WhatsAppFlowService {
                             &locale,
                             draft,
                             inbound_message_id,
+                            trimmed,
                             intent,
                         )
                         .await;
@@ -1908,9 +1905,11 @@ impl WhatsAppFlowService {
         locale: &str,
         mut draft: SwapDraft,
         inbound_message_id: Option<&str>,
+        raw_text: &str,
         intent: ParsedSwapIntent,
     ) -> Result<(), String> {
         let crud = WhatsAppCrud::new(self.state.db.clone());
+        let intent = rebalance_intent_asset_sides(raw_text, intent);
 
         let from_phrase = meaningful_asset_phrase(intent.from_phrase.as_deref());
         let to_phrase = meaningful_asset_phrase(intent.to_phrase.as_deref());
@@ -2309,9 +2308,17 @@ impl WhatsAppFlowService {
             })?
             .clone();
 
-        if parse_amount_from_text(trimmed).is_none() && !looks_like_usd_amount(trimmed) {
+        let sanitized_correction =
+            sanitize_asset_phrase(trimmed).unwrap_or_else(|| trimmed.trim().to_string());
+
+        if parse_amount_from_text(trimmed).is_none()
+            && !looks_like_usd_amount(trimmed)
+            && looks_like_asset_correction(&sanitized_correction)
+        {
             let catalog = self.fetch_currency_catalog().await?;
-            let correction_plan = self.resolve_asset_input(&catalog, trimmed).await?;
+            let correction_plan = self
+                .resolve_asset_input(&catalog, &sanitized_correction)
+                .await?;
             if !matches!(correction_plan, AssetInputPlan::Error(_)) {
                 return self
                     .handle_asset_search_input(
@@ -2321,7 +2328,7 @@ impl WhatsAppFlowService {
                         locale,
                         draft,
                         inbound_message_id,
-                        trimmed,
+                        &sanitized_correction,
                         AssetSide::From,
                     )
                     .await;
@@ -2647,7 +2654,13 @@ impl WhatsAppFlowService {
             Ok(rates) => rates,
             Err(SwapError::PairNotAvailable) => {
                 return self
-                    .reply(wa_id, phone_number_id, session_id, NO_ROUTE_EXPLANATION)
+                    .reply_to_inbound(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        inbound_message_id,
+                        NO_ROUTE_EXPLANATION,
+                    )
                     .await;
             }
             Err(SwapError::AmountOutOfRange { min, max }) => {
@@ -2657,7 +2670,13 @@ impl WhatsAppFlowService {
                             .to_string()
                     });
                 return self
-                    .reply(wa_id, phone_number_id, session_id, &message)
+                    .reply_to_inbound(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        inbound_message_id,
+                        &message,
+                    )
                     .await;
             }
             Err(error) => {
@@ -2682,7 +2701,13 @@ impl WhatsAppFlowService {
             .unwrap_or_else(|| NO_ROUTE_EXPLANATION.to_string());
 
             return self
-                .reply(wa_id, phone_number_id, session_id, &message)
+                .reply_to_inbound(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    inbound_message_id,
+                    &message,
+                )
                 .await;
         }
 
@@ -3976,12 +4001,16 @@ fn sanitize_asset_phrase(value: &str) -> Option<String> {
         "no i said ",
         "i said ",
         "i said i want to buy ",
+        "i said i want to buy some ",
         "i said i want to send ",
         "i said i want ",
+        "i want to buy some ",
         "i want to buy ",
         "i want to get ",
+        "i want to get some ",
         "i want to receive ",
         "i want to send ",
+        "i want some ",
         "i want ",
         "im buying ",
         "i am buying ",
@@ -3997,6 +4026,21 @@ fn sanitize_asset_phrase(value: &str) -> Option<String> {
             normalized = stripped.trim().to_string();
             break;
         }
+    }
+
+    loop {
+        let next = normalized.split_whitespace().collect::<Vec<_>>();
+        if next.len() <= 1 {
+            break;
+        }
+
+        let first = next[0];
+        if matches!(first, "some" | "a" | "an" | "the" | "just") {
+            normalized = next[1..].join(" ");
+            continue;
+        }
+
+        break;
     }
 
     if let Some((before_not, _)) = normalized.split_once(" not ") {
@@ -4066,6 +4110,35 @@ fn meaningful_asset_phrase(value: Option<&str>) -> Option<String> {
     }
 
     Some(sanitized)
+}
+
+fn looks_like_asset_correction(value: &str) -> bool {
+    let normalized = normalize_phrase(value);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() > 6 {
+        return false;
+    }
+
+    !tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "check"
+                | "request"
+                | "requests"
+                | "properly"
+                | "working"
+                | "wrong"
+                | "error"
+                | "issue"
+                | "problem"
+                | "because"
+                | "why"
+        )
+    })
 }
 
 fn is_generic_swap_start(input: &str) -> bool {
@@ -4599,6 +4672,50 @@ fn parse_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
     })
 }
 
+fn rebalance_intent_asset_sides(raw_text: &str, mut intent: ParsedSwapIntent) -> ParsedSwapIntent {
+    let normalized = normalize_phrase(raw_text);
+    if normalized.is_empty() {
+        return intent;
+    }
+
+    let prefers_destination = message_prefers_destination_asset(&normalized);
+    let prefers_source = message_prefers_source_asset(&normalized);
+
+    if intent.to_phrase.is_none()
+        && intent.from_phrase.is_some()
+        && prefers_destination
+        && !prefers_source
+    {
+        intent.to_phrase = intent.from_phrase.take();
+    } else if intent.from_phrase.is_none()
+        && intent.to_phrase.is_some()
+        && prefers_source
+        && !prefers_destination
+    {
+        intent.from_phrase = intent.to_phrase.take();
+    }
+
+    intent
+}
+
+fn message_prefers_destination_asset(normalized_text: &str) -> bool {
+    normalized_text.contains("buy")
+        || normalized_text.contains("receive")
+        || normalized_text.contains("get")
+        || normalized_text.contains("cash out")
+        || normalized_text.contains("cashout")
+}
+
+fn message_prefers_source_asset(normalized_text: &str) -> bool {
+    normalized_text.contains("send")
+        || normalized_text.contains("selling")
+        || normalized_text.contains("sell")
+        || normalized_text.contains("swap from")
+        || normalized_text.contains("from ")
+        || normalized_text.contains("use ")
+        || normalized_text.starts_with("use ")
+}
+
 fn resolve_currency_phrase(
     catalog: &[CurrencyResponse],
     phrase: &str,
@@ -4842,7 +4959,7 @@ fn split_explicit_network_phrase(
 ) -> Option<(String, String)> {
     static ASSET_ON_NETWORK_RE: OnceLock<Regex> = OnceLock::new();
     let regex = ASSET_ON_NETWORK_RE.get_or_init(|| {
-        Regex::new(r"(?i)^(?P<asset>.+?)\s+on\s+(?P<network>.+)$")
+        Regex::new(r"(?i)^(?P<asset>.+?)\s+(?:on|in)\s+(?P<network>.+)$")
             .expect("valid asset-on-network regex")
     });
 
@@ -5272,12 +5389,12 @@ fn whatsapp_outbound_idempotency_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        amount_out_of_range_message, is_generic_swap_start, match_pending_network_option,
-        meaningful_asset_phrase, parse_amount_mode, parse_asset_selection_id,
-        parse_confirmation_decision, parse_quote_selection, parse_usd_amount, plan_asset_input,
-        resolve_currency_phrase, sanitize_asset_phrase,
-        should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
-        AssetInputPlan, CurrencySelection,
+        amount_out_of_range_message, is_generic_swap_start, looks_like_asset_correction,
+        match_pending_network_option, meaningful_asset_phrase, parse_amount_mode,
+        parse_asset_selection_id, parse_confirmation_decision, parse_quote_selection,
+        parse_usd_amount, plan_asset_input, rebalance_intent_asset_sides, resolve_currency_phrase,
+        sanitize_asset_phrase, should_restart_asset_search_from_network_choice, AmountInputMode,
+        AssetFamilySelection, AssetInputPlan, CurrencySelection, ParsedSwapIntent,
     };
     use crate::modules::swap::schema::CurrencyResponse;
     use crate::services::kimi::KimiConfirmation;
@@ -5361,9 +5478,38 @@ mod tests {
             Some("xlm on mainnet".to_string())
         );
         assert_eq!(
+            sanitize_asset_phrase("i want to buy some eth in mainnet"),
+            Some("eth in mainnet".to_string())
+        );
+        assert_eq!(
             sanitize_asset_phrase("i said xlm on mainnet not on man"),
             Some("xlm on mainnet".to_string())
         );
+    }
+
+    #[test]
+    fn rebalances_buy_intent_into_destination_side() {
+        let intent = ParsedSwapIntent {
+            amount: None,
+            amount_mode: None,
+            from_phrase: Some("eth in mainnet".to_string()),
+            to_phrase: None,
+            recipient_address: None,
+            refund_address: None,
+        };
+
+        let rebalanced = rebalance_intent_asset_sides("i want to buy some eth in mainnet", intent);
+
+        assert_eq!(rebalanced.from_phrase, None);
+        assert_eq!(rebalanced.to_phrase, Some("eth in mainnet".to_string()));
+    }
+
+    #[test]
+    fn long_complaints_do_not_trigger_asset_correction() {
+        assert!(!looks_like_asset_correction(
+            "it will work man check very well the request are not being sent properly"
+        ));
+        assert!(looks_like_asset_correction("xlm on mainnet"));
     }
 
     #[test]

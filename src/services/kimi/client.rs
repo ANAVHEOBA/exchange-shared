@@ -5,11 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DEFAULT_MOONSHOT_API_BASE_URL: &str = "https://api.moonshot.ai/v1";
-const DEFAULT_KIMI_MODEL: &str = "kimi-k2.7-code-highspeed";
-/// K2.6/K2.5 only accept 0.6 in non-thinking mode. K2.7 Code and K3 have
-/// different fixed temperature constraints, so the request builder omits the
-/// temperature field for those models.
-const KIMI_NON_THINKING_TEMPERATURE: f32 = 0.6;
+const DEFAULT_KIMI_MODEL: &str = "kimi-k2-thinking-turbo";
 
 /// Shared grounding prepended to every Kimi call so the model always knows
 /// what Assetar is and how it should sound, instead of relying on a bare
@@ -35,8 +31,9 @@ You must always respond by calling exactly one of the two tools you're given:
 1. If the user is expressing intent to swap crypto, even vaguely (\"swap some usdt for monero\", \
 \"change my btc to xmr\", \"100 usdc to bitcoin\"), call extract_swap_request with only the values \
 they actually stated. Never guess a value they did not say - leave it out instead. Generic words \
-like \"crypto\", \"coin\", \"token\", \"some crypto\", or \"any coin\" are not asset names; leave \
-from_asset and to_asset empty for those. If the user says they want to buy, get, receive, or cash \
+like \"crypto\", \"coin\", \"token\", quantifiers like \"some\", \"a\", or \"an\", and phrases \
+like \"some crypto\" or \"any coin\" are not asset names; leave from_asset and to_asset empty for \
+those. If the user says they want to buy, get, receive, or cash \
 out into an asset, treat that asset as to_asset unless they explicitly say it is what they are sending. \
 If the user says they want to send, sell, swap from, or use an asset, treat that asset as from_asset \
 unless they explicitly say it is what they want to receive. Ignore casual filler words like man, bro, \
@@ -687,10 +684,7 @@ impl KimiClient {
 
     fn request_overrides(&self) -> (Option<ThinkingConfig<'static>>, Option<f32>) {
         if self.model.starts_with("kimi-k2.6") || self.model.starts_with("kimi-k2.5") {
-            return (
-                Some(ThinkingConfig { kind: "disabled" }),
-                Some(KIMI_NON_THINKING_TEMPERATURE),
-            );
+            return (Some(ThinkingConfig { kind: "enabled" }), None);
         }
 
         (None, None)
@@ -720,7 +714,7 @@ impl KimiClient {
             tools,
             tool_choice,
             // Kimi rejects unsupported fixed values outright, so model-specific
-            // fields are omitted unless the chosen model accepts them.
+            // fields are omitted unless the chosen model explicitly needs them.
             temperature,
         };
 
