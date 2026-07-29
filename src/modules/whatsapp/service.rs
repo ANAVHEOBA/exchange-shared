@@ -1916,11 +1916,11 @@ impl WhatsAppFlowService {
 
         let catalog = self.fetch_currency_catalog().await?;
         let from_plan = match from_phrase {
-            Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
+            Some(value) => Some(self.resolve_asset_input(&catalog, &value).await?),
             None => None,
         };
         let to_plan = match to_phrase {
-            Some(value) => Some(self.resolve_asset_input(&catalog, value).await?),
+            Some(value) => Some(self.resolve_asset_input(&catalog, &value).await?),
             None => None,
         };
 
@@ -2287,6 +2287,25 @@ impl WhatsAppFlowService {
                 "I lost the source asset for this swap. Send the swap details again.".to_string()
             })?
             .clone();
+
+        if parse_amount_from_text(trimmed).is_none() && !looks_like_usd_amount(trimmed) {
+            let catalog = self.fetch_currency_catalog().await?;
+            let correction_plan = self.resolve_asset_input(&catalog, trimmed).await?;
+            if !matches!(correction_plan, AssetInputPlan::Error(_)) {
+                return self
+                    .handle_asset_search_input(
+                        wa_id,
+                        phone_number_id,
+                        session_id,
+                        locale,
+                        draft,
+                        inbound_message_id,
+                        trimmed,
+                        AssetSide::From,
+                    )
+                    .await;
+            }
+        }
 
         let mode = if looks_like_usd_amount(trimmed) {
             Some(AmountInputMode::Usd)
@@ -3105,7 +3124,9 @@ impl WhatsAppFlowService {
         catalog: &[CurrencyResponse],
         input: &str,
     ) -> Result<AssetInputPlan, String> {
-        let normalized_input = normalize_phrase(input);
+        let sanitized_input =
+            sanitize_asset_phrase(input).unwrap_or_else(|| input.trim().to_string());
+        let normalized_input = normalize_phrase(&sanitized_input);
         if normalized_input.is_empty() {
             return Ok(AssetInputPlan::Error(
                 "Type a coin ticker or name.".to_string(),
@@ -3113,14 +3134,36 @@ impl WhatsAppFlowService {
         }
 
         let network_aliases = build_network_aliases(catalog);
-        if split_explicit_network_phrase(input, &network_aliases).is_some() {
-            return plan_asset_input(catalog, input);
+        let planned = plan_asset_input(catalog, &sanitized_input)?;
+        if !matches!(planned, AssetInputPlan::Error(_)) {
+            return Ok(planned);
         }
 
-        let ranked_matches = self.search_currency_matches(catalog, input, 250).await?;
-        if ranked_matches.is_empty() {
-            return plan_asset_input(catalog, input);
+        if split_explicit_network_phrase(&sanitized_input, &network_aliases).is_some() {
+            return plan_asset_input(catalog, &sanitized_input);
         }
+
+        let ranked_matches = self
+            .search_currency_matches(catalog, &sanitized_input, 250)
+            .await?;
+        if ranked_matches.is_empty() {
+            return plan_asset_input(catalog, &sanitized_input);
+        }
+
+        let exact_ranked_matches = ranked_matches
+            .iter()
+            .filter(|currency| {
+                normalize_phrase(&currency.ticker) == normalized_input
+                    || normalize_phrase(&currency.name) == normalized_input
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let ranked_matches = if exact_ranked_matches.is_empty() {
+            ranked_matches
+        } else {
+            exact_ranked_matches
+        };
 
         let ranked_selections = ranked_matches
             .into_iter()
@@ -3139,14 +3182,20 @@ impl WhatsAppFlowService {
             .count();
 
         let prompt = if exact_matches > 1 {
-            format!("\"{}\" matches multiple options. Choose one.", input.trim())
+            format!(
+                "\"{}\" matches multiple options. Choose one.",
+                sanitized_input.trim()
+            )
         } else if ranked_selections.len() > 10 {
             format!(
                 "Top matches for \"{}\". Showing first 10. Choose one or narrow the search.",
-                input.trim()
+                sanitized_input.trim()
             )
         } else {
-            format!("Top matches for \"{}\". Choose one.", input.trim())
+            format!(
+                "Top matches for \"{}\". Choose one.",
+                sanitized_input.trim()
+            )
         };
 
         Ok(AssetInputPlan::ChooseResults {
@@ -3896,12 +3945,76 @@ fn normalize_optional_text(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn meaningful_asset_phrase(value: Option<&str>) -> Option<&str> {
+fn sanitize_asset_phrase(value: &str) -> Option<String> {
+    let mut normalized = normalize_phrase(value);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    for prefix in [
+        "no i said ",
+        "i said ",
+        "i said i want to buy ",
+        "i said i want to send ",
+        "i said i want ",
+        "i want to buy ",
+        "i want to get ",
+        "i want to receive ",
+        "i want to send ",
+        "i want ",
+        "im buying ",
+        "i am buying ",
+        "im sending ",
+        "i am sending ",
+        "buy ",
+        "get ",
+        "receive ",
+        "sending ",
+        "send ",
+    ] {
+        if let Some(stripped) = normalized.strip_prefix(prefix) {
+            normalized = stripped.trim().to_string();
+            break;
+        }
+    }
+
+    if let Some((before_not, _)) = normalized.split_once(" not ") {
+        let trimmed_before_not = before_not.trim();
+        if !trimmed_before_not.is_empty() {
+            normalized = trimmed_before_not.to_string();
+        }
+    }
+
+    loop {
+        let next = normalized.split_whitespace().collect::<Vec<_>>();
+        if next.is_empty() {
+            return None;
+        }
+
+        let last = *next.last().unwrap_or(&"");
+        if matches!(
+            last,
+            "man" | "bro" | "bros" | "bruh" | "baba" | "please" | "pls" | "abeg" | "nah"
+        ) {
+            normalized = next[..next.len() - 1].join(" ");
+            continue;
+        }
+        break;
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn meaningful_asset_phrase(value: Option<&str>) -> Option<String> {
     let value = normalize_optional_text(value)?;
-    let normalized = normalize_phrase(value);
+    let sanitized = sanitize_asset_phrase(value)?;
 
     if matches!(
-        normalized.as_str(),
+        sanitized.as_str(),
         "crypto"
             | "cryptocurrency"
             | "coin"
@@ -3920,11 +4033,18 @@ fn meaningful_asset_phrase(value: Option<&str>) -> Option<&str> {
             | "any coins"
             | "any token"
             | "any tokens"
+            | "i want to buy"
+            | "i want to send"
+            | "i want"
+            | "buy"
+            | "send"
+            | "receive"
+            | "get"
     ) {
         return None;
     }
 
-    Some(value)
+    Some(sanitized)
 }
 
 fn is_generic_swap_start(input: &str) -> bool {
@@ -4990,7 +5110,7 @@ mod tests {
     use super::{
         amount_out_of_range_message, is_generic_swap_start, meaningful_asset_phrase,
         parse_amount_mode, parse_asset_selection_id, parse_confirmation_decision,
-        parse_quote_selection, parse_usd_amount, resolve_currency_phrase,
+        parse_quote_selection, parse_usd_amount, resolve_currency_phrase, sanitize_asset_phrase,
         should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
         CurrencySelection,
     };
@@ -5016,6 +5136,16 @@ mod tests {
             currency("USD Coin", "usdc", "ERC20"),
             currency("USD Coin", "usdc", "Arbitrum"),
             currency("Bitcoin", "btc", "Mainnet"),
+        ]
+    }
+
+    fn stellar_like_catalog() -> Vec<CurrencyResponse> {
+        vec![
+            currency("Stellar", "xlm", "Mainnet"),
+            currency("Stellar", "xlm", "BEP20"),
+            currency("Wirex Token", "wxt", "XLM"),
+            currency("USD Coin", "usdc", "XLM"),
+            currency("MANTRA", "man", "Mainnet"),
         ]
     }
 
@@ -5045,10 +5175,29 @@ mod tests {
         assert_eq!(meaningful_asset_phrase(Some("some crypto")), None);
         assert_eq!(meaningful_asset_phrase(Some("any token")), None);
 
-        assert_eq!(meaningful_asset_phrase(Some("usdt")), Some("usdt"));
+        assert_eq!(
+            meaningful_asset_phrase(Some("usdt")),
+            Some("usdt".to_string())
+        );
         assert_eq!(
             meaningful_asset_phrase(Some("xmr mainnet")),
-            Some("xmr mainnet")
+            Some("xmr mainnet".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitizes_casual_asset_phrases() {
+        assert_eq!(
+            sanitize_asset_phrase("i said i want to buy btc"),
+            Some("btc".to_string())
+        );
+        assert_eq!(
+            sanitize_asset_phrase("i am sending xlm on mainnet man"),
+            Some("xlm on mainnet".to_string())
+        );
+        assert_eq!(
+            sanitize_asset_phrase("i said xlm on mainnet not on man"),
+            Some("xlm on mainnet".to_string())
         );
     }
 
@@ -5100,6 +5249,16 @@ mod tests {
         let selected = resolution.selected.expect("selected asset");
 
         assert_eq!(selected.ticker, "btc");
+        assert_eq!(selected.network, "Mainnet");
+    }
+
+    #[test]
+    fn plain_xlm_prefers_native_stellar_not_tokens_on_xlm_network() {
+        let resolution =
+            resolve_currency_phrase(&stellar_like_catalog(), "xlm").expect("resolution");
+        let selected = resolution.selected.expect("selected asset");
+
+        assert_eq!(selected.ticker, "xlm");
         assert_eq!(selected.network, "Mainnet");
     }
 

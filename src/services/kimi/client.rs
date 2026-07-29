@@ -36,7 +36,11 @@ You must always respond by calling exactly one of the two tools you're given:
 \"change my btc to xmr\", \"100 usdc to bitcoin\"), call extract_swap_request with only the values \
 they actually stated. Never guess a value they did not say - leave it out instead. Generic words \
 like \"crypto\", \"coin\", \"token\", \"some crypto\", or \"any coin\" are not asset names; leave \
-from_asset and to_asset empty for those.
+from_asset and to_asset empty for those. If the user says they want to buy, get, receive, or cash \
+out into an asset, treat that asset as to_asset unless they explicitly say it is what they are sending. \
+If the user says they want to send, sell, swap from, or use an asset, treat that asset as from_asset \
+unless they explicitly say it is what they want to receive. Ignore casual filler words like man, bro, \
+baba, abeg, please, or pls when extracting asset names and networks.
 2. For anything else - greetings, thanks, confusion, small talk, questions you can't safely answer \
 - call send_friendly_reply with a short, human reply. Never invent swap rates, addresses, amounts, \
 or swap status; if asked about those, say you'll need to start or check a swap first.";
