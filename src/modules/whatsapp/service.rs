@@ -3724,6 +3724,27 @@ impl WhatsAppFlowService {
             .collect::<Vec<_>>();
         let fallback = format_choice_prompt(body, &fallback_options, "Tell me which one you want.");
 
+        if families.len() <= 3 {
+            let buttons = families
+                .iter()
+                .map(|family| ReplyButtonOption {
+                    id: build_family_selection_id(family),
+                    title: truncate_whatsapp_text(&family.ticker.to_uppercase(), 20),
+                })
+                .collect::<Vec<_>>();
+
+            return self
+                .reply_interactive_buttons_or_fallback(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    body,
+                    buttons,
+                    &fallback,
+                )
+                .await;
+        }
+
         self.reply_interactive_list_or_fallback(
             wa_id,
             phone_number_id,
@@ -3761,6 +3782,27 @@ impl WhatsAppFlowService {
             })
             .collect::<Vec<_>>();
         let fallback = format_choice_prompt(body, &fallback_rows, "Tell me the network you want.");
+
+        if options.len() <= 3 {
+            let buttons = options
+                .iter()
+                .map(|option| ReplyButtonOption {
+                    id: build_asset_selection_id(option),
+                    title: truncate_whatsapp_text(&option.network, 20),
+                })
+                .collect::<Vec<_>>();
+
+            return self
+                .reply_interactive_buttons_or_fallback(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    body,
+                    buttons,
+                    &fallback,
+                )
+                .await;
+        }
 
         self.reply_interactive_list_or_fallback(
             wa_id,
@@ -3801,6 +3843,27 @@ impl WhatsAppFlowService {
             .collect::<Vec<_>>();
         let fallback =
             format_choice_prompt(body, &fallback_rows, "Tell me the exact one you want.");
+
+        if options.len() <= 3 {
+            let buttons = options
+                .iter()
+                .map(|option| ReplyButtonOption {
+                    id: build_asset_selection_id(option),
+                    title: truncate_whatsapp_text(&option.ticker.to_uppercase(), 20),
+                })
+                .collect::<Vec<_>>();
+
+            return self
+                .reply_interactive_buttons_or_fallback(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    body,
+                    buttons,
+                    &fallback,
+                )
+                .await;
+        }
 
         self.reply_interactive_list_or_fallback(
             wa_id,
@@ -3849,6 +3912,27 @@ impl WhatsAppFlowService {
             &fallback_rows,
             "If you want a different route, tell me the provider name.",
         );
+
+        if quotes.len() <= 3 {
+            let buttons = quotes
+                .iter()
+                .map(|quote| ReplyButtonOption {
+                    id: build_quote_selection_id(quote.index),
+                    title: truncate_whatsapp_text(&quote.provider_name, 20),
+                })
+                .collect::<Vec<_>>();
+
+            return self
+                .reply_interactive_buttons_or_fallback(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    body,
+                    buttons,
+                    &fallback,
+                )
+                .await;
+        }
 
         self.reply_interactive_list_or_fallback(
             wa_id,
