@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.env
+.env.*
+target
+bin
+node_modules
+dist
+.DS_Store
