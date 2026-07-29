@@ -1,9 +1,10 @@
-use rig::{completion::TypedPrompt, prelude::CompletionClient, providers::moonshot};
+use reqwest::Client;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::{json, Value};
 
 const DEFAULT_MOONSHOT_API_BASE_URL: &str = "https://api.moonshot.ai/v1";
-const DEFAULT_KIMI_MODEL: &str = "kimi-k2.6";
+const DEFAULT_KIMI_MODEL: &str = "kimi-k2.7-code";
 
 /// Shared grounding prepended to every Kimi call so the model always knows
 /// what Assetar is and how it should sound, instead of relying on a bare
@@ -92,11 +93,10 @@ const STRUCTURED_OUTPUT_INSTRUCTIONS: &str = "\
 You must produce structured output that matches the requested schema exactly. \
 Do not include explanation, markdown, or extra keys outside the schema.";
 
-/// Client for Moonshot's Kimi chat completions API, now backed by Rig's
-/// official Moonshot provider so the broader WhatsApp flow can stay Rust-native
-/// while we move toward a single orchestration engine.
 pub struct KimiClient {
-    client: moonshot::Client,
+    http_client: Client,
+    api_key: String,
+    base_url: String,
     model: String,
 }
 
@@ -119,7 +119,6 @@ impl std::fmt::Display for KimiError {
 
 impl std::error::Error for KimiError {}
 
-/// Structured result of classifying one inbound WhatsApp message.
 #[derive(Debug, Clone)]
 pub enum KimiIntent {
     SwapRequest {
@@ -202,6 +201,44 @@ struct StructuredNarrationResponse {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponse {
+    #[serde(default)]
+    choices: Vec<ChatCompletionChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionChoice {
+    message: ChatCompletionMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionMessage {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionErrorEnvelope {
+    error: ChatCompletionErrorBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionErrorBody {
+    message: String,
+    #[serde(default)]
+    r#type: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KimiRequestProfile {
+    temperature: Option<f64>,
+    thinking_type: Option<&'static str>,
+    max_tokens: u32,
+}
+
 impl KimiClient {
     pub fn model(&self) -> &str {
         &self.model
@@ -227,16 +264,13 @@ impl KimiClient {
         let base_url = std::env::var("KIMI_API_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_MOONSHOT_API_BASE_URL.to_string());
         let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| DEFAULT_KIMI_MODEL.to_string());
-        let normalized_base_url = base_url.trim_end_matches('/').to_string();
-        let mut builder = moonshot::Client::builder().api_key(api_key);
 
-        if normalized_base_url != DEFAULT_MOONSHOT_API_BASE_URL {
-            builder = builder.base_url(normalized_base_url);
-        }
-
-        let client = builder.build().ok()?;
-
-        Some(Self { client, model })
+        Some(Self {
+            http_client: Client::new(),
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model,
+        })
     }
 
     pub async fn classify_swap_message(&self, user_text: &str) -> Result<KimiIntent, KimiError> {
@@ -268,12 +302,7 @@ impl KimiClient {
         instructions: &str,
     ) -> Result<KimiIntent, KimiError> {
         let response = self
-            .typed_prompt::<StructuredIntentResponse>(
-                instructions,
-                user_text,
-                Some(0.0),
-                "structured intent",
-            )
+            .typed_prompt::<StructuredIntentResponse>(instructions, user_text, "structured intent")
             .await?;
 
         match response.kind {
@@ -302,7 +331,6 @@ impl KimiClient {
             .typed_prompt::<StructuredAmountResponse>(
                 AMOUNT_INSTRUCTIONS,
                 user_text,
-                Some(0.0),
                 "amount extraction",
             )
             .await?;
@@ -326,7 +354,6 @@ impl KimiClient {
             .typed_prompt::<StructuredAmountModeResponse>(
                 AMOUNT_MODE_INSTRUCTIONS,
                 &prompt,
-                Some(0.0),
                 "amount mode",
             )
             .await?;
@@ -351,7 +378,6 @@ impl KimiClient {
             .typed_prompt::<StructuredQuoteSelectionResponse>(
                 QUOTE_SELECTION_INSTRUCTIONS,
                 &prompt,
-                Some(0.0),
                 "quote selection",
             )
             .await?;
@@ -377,7 +403,6 @@ impl KimiClient {
             .typed_prompt::<StructuredAddressResponse>(
                 ADDRESS_EXTRACTION_INSTRUCTIONS,
                 &prompt,
-                Some(0.0),
                 "address extraction",
             )
             .await?;
@@ -393,7 +418,6 @@ impl KimiClient {
             .typed_prompt::<StructuredNarrationResponse>(
                 NARRATE_INSTRUCTIONS,
                 situation,
-                Some(0.2),
                 "narration",
             )
             .await?;
@@ -415,30 +439,155 @@ impl KimiClient {
         )
     }
 
+    fn request_profile(&self) -> KimiRequestProfile {
+        let normalized_model = self.model.to_ascii_lowercase();
+
+        if normalized_model.starts_with("kimi-k2.7-code") {
+            return KimiRequestProfile {
+                temperature: Some(1.0),
+                thinking_type: Some("enabled"),
+                max_tokens: 256,
+            };
+        }
+
+        if normalized_model == "kimi-k2.6" {
+            return KimiRequestProfile {
+                temperature: Some(0.6),
+                thinking_type: None,
+                max_tokens: 256,
+            };
+        }
+
+        KimiRequestProfile {
+            temperature: None,
+            thinking_type: None,
+            max_tokens: 256,
+        }
+    }
+
     async fn typed_prompt<T>(
         &self,
         instructions: &str,
         user_text: &str,
-        temperature: Option<f64>,
         label: &str,
     ) -> Result<T, KimiError>
     where
-        T: JsonSchema + for<'de> Deserialize<'de> + Send + 'static,
+        T: JsonSchema + DeserializeOwned + Send + 'static,
     {
-        let mut builder = self.client.agent(self.model.clone());
-        let system_prompt = Self::system_prompt(instructions);
-        builder = builder.preamble(&system_prompt);
-        if let Some(temperature) = temperature {
-            builder = builder.temperature(temperature);
-        }
-        let agent = builder.build();
+        let profile = self.request_profile();
+        let mut payload = json!({
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": Self::system_prompt(instructions),
+                },
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            ],
+            "response_format": {
+                "type": "json_object"
+            },
+            "max_tokens": profile.max_tokens,
+        });
 
-        agent
-            .prompt_typed::<T>(user_text)
-            .max_turns(1)
+        if let Some(temperature) = profile.temperature {
+            payload["temperature"] = json!(temperature);
+        }
+
+        if let Some(thinking_type) = profile.thinking_type {
+            payload["thinking"] = json!({ "type": thinking_type });
+        }
+
+        let response = self
+            .http_client
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&payload)
+            .send()
             .await
-            .map_err(|error| {
-                KimiError::ParseError(format!("Invalid Kimi {} response: {}", label, error))
-            })
+            .map_err(|error| KimiError::HttpError(error.to_string()))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| KimiError::HttpError(error.to_string()))?;
+
+        if !status.is_success() {
+            return Err(KimiError::ApiError(parse_api_error_message(&body)));
+        }
+
+        let envelope: ChatCompletionResponse = serde_json::from_str(&body).map_err(|error| {
+            KimiError::ParseError(format!("Invalid Kimi {} envelope: {}", label, error))
+        })?;
+
+        let message = envelope
+            .choices
+            .first()
+            .map(|choice| &choice.message)
+            .ok_or_else(|| {
+                KimiError::ParseError(format!("Kimi returned no choices for {}", label))
+            })?;
+
+        let content = normalize_json_content(&message.content);
+        if content.is_empty() {
+            let reasoning = message.reasoning_content.as_deref().unwrap_or_default();
+            return Err(KimiError::ParseError(format!(
+                "Kimi returned empty {} content{}",
+                label,
+                if reasoning.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (reasoning present: {} chars)", reasoning.chars().count())
+                }
+            )));
+        }
+
+        serde_json::from_str::<T>(&content).map_err(|error| {
+            KimiError::ParseError(format!(
+                "Invalid Kimi {} response: {}. Raw content: {}",
+                label, error, content
+            ))
+        })
     }
+}
+
+fn normalize_json_content(content: &str) -> String {
+    let trimmed = content.trim();
+    if trimmed.starts_with("```") {
+        return trimmed
+            .trim_start_matches("```json")
+            .trim_start_matches("```JSON")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim()
+            .to_string();
+    }
+
+    trimmed.to_string()
+}
+
+fn parse_api_error_message(body: &str) -> String {
+    if let Ok(parsed) = serde_json::from_str::<ChatCompletionErrorEnvelope>(body) {
+        if let Some(kind) = parsed.error.r#type.filter(|value| !value.trim().is_empty()) {
+            return format!("{} ({})", parsed.error.message, kind);
+        }
+
+        return parsed.error.message;
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<Value>(body) {
+        if let Some(message) = parsed
+            .get("errorMessage")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            return message.to_string();
+        }
+    }
+
+    body.to_string()
 }

@@ -517,6 +517,60 @@ impl WhatsAppFlowService {
                 .await;
         }
 
+        if state != ConversationState::Idle {
+            if let Some(kimi) = self.state.kimi_client.clone() {
+                let context = build_kimi_swap_context(&state, &draft);
+                match kimi
+                    .classify_swap_message_with_context(trimmed, &context)
+                    .await
+                {
+                    Ok(KimiIntent::SwapRequest {
+                        amount,
+                        amount_mode,
+                        from_asset,
+                        to_asset,
+                        recipient_address,
+                        refund_address,
+                    }) if has_swap_fields(
+                        amount,
+                        amount_mode,
+                        from_asset.as_deref(),
+                        to_asset.as_deref(),
+                        recipient_address.as_deref(),
+                        refund_address.as_deref(),
+                    ) =>
+                    {
+                        return self
+                            .handle_parsed_swap_intent(
+                                wa_id,
+                                phone_number_id,
+                                session_id.as_deref(),
+                                &locale,
+                                draft,
+                                inbound_message_id,
+                                trimmed,
+                                ParsedSwapIntent {
+                                    amount,
+                                    amount_mode: amount_mode.map(AmountInputMode::from),
+                                    from_phrase: from_asset,
+                                    to_phrase: to_asset,
+                                    recipient_address,
+                                    refund_address,
+                                },
+                            )
+                            .await;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            "Kimi contextual classification failed, continuing with deterministic WhatsApp handling: {}",
+                            error
+                        );
+                    }
+                }
+            }
+        }
+
         match state {
             ConversationState::Idle => {
                 if lowered == "swap" {
@@ -2284,11 +2338,46 @@ impl WhatsAppFlowService {
             && !looks_like_usd_amount(trimmed)
             && looks_like_asset_correction(&sanitized_correction)
         {
+            if let Some(intent) = parse_partial_swap_intent(trimmed)
+                .map(|intent| rebalance_intent_asset_sides(trimmed, intent))
+            {
+                if let Some(to_phrase) = meaningful_asset_phrase(intent.to_phrase.as_deref()) {
+                    return self
+                        .handle_asset_search_input(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            locale,
+                            draft,
+                            inbound_message_id,
+                            &to_phrase,
+                            AssetSide::To,
+                        )
+                        .await;
+                }
+
+                if let Some(from_phrase) = meaningful_asset_phrase(intent.from_phrase.as_deref()) {
+                    return self
+                        .handle_asset_search_input(
+                            wa_id,
+                            phone_number_id,
+                            session_id,
+                            locale,
+                            draft,
+                            inbound_message_id,
+                            &from_phrase,
+                            AssetSide::From,
+                        )
+                        .await;
+                }
+            }
+
             let catalog = self.fetch_currency_catalog().await?;
             let correction_plan = self
                 .resolve_asset_input(&catalog, &sanitized_correction)
                 .await?;
             if !matches!(correction_plan, AssetInputPlan::Error(_)) {
+                let correction_side = infer_asset_correction_side(trimmed, &draft);
                 return self
                     .handle_asset_search_input(
                         wa_id,
@@ -2298,7 +2387,7 @@ impl WhatsAppFlowService {
                         draft,
                         inbound_message_id,
                         &sanitized_correction,
-                        AssetSide::From,
+                        correction_side,
                     )
                     .await;
             }
@@ -4728,6 +4817,191 @@ fn set_pending_currency_options(
     match side {
         AssetSide::From => draft.pending_from_currency_options = value,
         AssetSide::To => draft.pending_to_currency_options = value,
+    }
+}
+
+fn build_kimi_swap_context(state: &ConversationState, draft: &SwapDraft) -> String {
+    let mut lines = vec![format!(
+        "conversation_state: {}",
+        conversation_state_label(state)
+    )];
+
+    if let Some(from) = draft.from.as_ref() {
+        lines.push(format!(
+            "send_asset: {} on {}",
+            from.ticker.to_uppercase(),
+            from.network
+        ));
+    }
+
+    if let Some(to) = draft.to.as_ref() {
+        lines.push(format!(
+            "receive_asset: {} on {}",
+            to.ticker.to_uppercase(),
+            to.network
+        ));
+    }
+
+    if let Some(amount) = draft.amount {
+        let ticker = draft
+            .from
+            .as_ref()
+            .map(|asset| asset.ticker.to_uppercase())
+            .unwrap_or_else(|| "source asset".to_string());
+        lines.push(format!("source_amount: {} {}", trim_f64(amount), ticker));
+    }
+
+    if let Some(usd_amount) = draft.requested_amount_usd {
+        lines.push(format!("requested_amount_usd: ${}", trim_f64(usd_amount)));
+    }
+
+    if let Some(mode) = draft.amount_input_mode.as_ref() {
+        lines.push(format!(
+            "amount_mode: {}",
+            match mode {
+                AmountInputMode::SourceAsset => "source_asset",
+                AmountInputMode::Usd => "usd",
+            }
+        ));
+    }
+
+    if let Some(address) = draft.recipient_address.as_ref() {
+        lines.push(format!(
+            "recipient_address_present: {}",
+            !address.trim().is_empty()
+        ));
+    }
+
+    if let Some(address) = draft.refund_address.as_ref() {
+        lines.push(format!(
+            "refund_address_present: {}",
+            !address.trim().is_empty()
+        ));
+    }
+
+    if let Some(quote) = draft.selected_quote.as_ref() {
+        lines.push(format!("selected_provider: {}", quote.provider_name));
+    }
+
+    if let Some(family) = draft.pending_from_family.as_ref() {
+        lines.push(format!(
+            "pending_send_family: {} ({})",
+            family.name,
+            family.ticker.to_uppercase()
+        ));
+    }
+
+    if let Some(family) = draft.pending_to_family.as_ref() {
+        lines.push(format!(
+            "pending_receive_family: {} ({})",
+            family.name,
+            family.ticker.to_uppercase()
+        ));
+    }
+
+    if !draft.pending_from_currency_options.is_empty() {
+        lines.push(format!(
+            "pending_send_options: {}",
+            summarize_pending_currency_options(&draft.pending_from_currency_options)
+        ));
+    }
+
+    if !draft.pending_to_currency_options.is_empty() {
+        lines.push(format!(
+            "pending_receive_options: {}",
+            summarize_pending_currency_options(&draft.pending_to_currency_options)
+        ));
+    }
+
+    lines.push(format!(
+        "next_required_step: {}",
+        next_required_step_label(state, draft)
+    ));
+
+    lines.join("\n")
+}
+
+fn conversation_state_label(state: &ConversationState) -> &'static str {
+    match state {
+        ConversationState::Idle => "idle",
+        ConversationState::AwaitingFromAssetSearch => "awaiting_send_asset_search",
+        ConversationState::AwaitingFromAssetChoice => "awaiting_send_asset_choice",
+        ConversationState::AwaitingFromNetworkChoice => "awaiting_send_network_choice",
+        ConversationState::AwaitingToAssetSearch => "awaiting_receive_asset_search",
+        ConversationState::AwaitingToAssetChoice => "awaiting_receive_asset_choice",
+        ConversationState::AwaitingToNetworkChoice => "awaiting_receive_network_choice",
+        ConversationState::AwaitingAmountMode => "awaiting_amount_mode",
+        ConversationState::AwaitingAmount => "awaiting_amount",
+        ConversationState::AwaitingQuoteSelection => "awaiting_quote_selection",
+        ConversationState::AwaitingRecipientAddress => "awaiting_recipient_address",
+        ConversationState::AwaitingRecipientExtraId => "awaiting_recipient_extra_id",
+        ConversationState::AwaitingRefundAddress => "awaiting_refund_address",
+        ConversationState::AwaitingRefundExtraId => "awaiting_refund_extra_id",
+        ConversationState::AwaitingConfirmation => "awaiting_confirmation",
+    }
+}
+
+fn next_required_step_label(state: &ConversationState, draft: &SwapDraft) -> &'static str {
+    match state {
+        ConversationState::Idle => "start or describe the swap",
+        ConversationState::AwaitingFromAssetSearch | ConversationState::AwaitingFromAssetChoice => {
+            "identify the asset and network the user will send"
+        }
+        ConversationState::AwaitingFromNetworkChoice => {
+            "choose the network for the asset the user will send"
+        }
+        ConversationState::AwaitingToAssetSearch | ConversationState::AwaitingToAssetChoice => {
+            "identify the asset and network the user wants to receive"
+        }
+        ConversationState::AwaitingToNetworkChoice => {
+            "choose the network for the asset the user wants to receive"
+        }
+        ConversationState::AwaitingAmountMode | ConversationState::AwaitingAmount => {
+            "provide the send amount"
+        }
+        ConversationState::AwaitingQuoteSelection => {
+            "choose a provider route or continue with the recommended route"
+        }
+        ConversationState::AwaitingRecipientAddress => "provide the receiving address",
+        ConversationState::AwaitingRecipientExtraId => "provide the destination extra ID or memo",
+        ConversationState::AwaitingRefundAddress => "provide a refund address or skip it",
+        ConversationState::AwaitingRefundExtraId => "provide the refund extra ID or memo",
+        ConversationState::AwaitingConfirmation => {
+            if draft.selected_quote.is_some() {
+                "confirm or cancel the prepared swap"
+            } else {
+                "confirm or cancel the swap setup"
+            }
+        }
+    }
+}
+
+fn summarize_pending_currency_options(options: &[CurrencySelection]) -> String {
+    options
+        .iter()
+        .take(8)
+        .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn infer_asset_correction_side(input: &str, draft: &SwapDraft) -> AssetSide {
+    let normalized = normalize_phrase(input);
+    let prefers_destination = message_prefers_destination_asset(&normalized);
+    let prefers_source = message_prefers_source_asset(&normalized);
+
+    if prefers_destination && !prefers_source {
+        return AssetSide::To;
+    }
+
+    if prefers_source && !prefers_destination {
+        return AssetSide::From;
+    }
+
+    match (draft.from.is_some(), draft.to.is_some()) {
+        (true, true) => AssetSide::To,
+        (false, true) => AssetSide::To,
+        _ => AssetSide::From,
     }
 }
 
