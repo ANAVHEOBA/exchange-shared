@@ -1623,6 +1623,27 @@ impl WhatsAppFlowService {
                 .await;
         }
 
+        let network_options = family_catalog
+            .iter()
+            .cloned()
+            .map(CurrencySelection::from)
+            .collect::<Vec<_>>();
+
+        if let Some(selection) = match_pending_network_option(&network_options, input) {
+            return self
+                .continue_after_asset_selected(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
+                    locale,
+                    draft,
+                    inbound_message_id,
+                    side,
+                    selection,
+                )
+                .await;
+        }
+
         match resolve_currency_phrase(&family_catalog, input)? {
             AssetResolution {
                 selected: Some(selection),
@@ -4452,7 +4473,7 @@ fn group_asset_families(options: &[CurrencySelection]) -> Vec<AssetFamilySelecti
     for option in options {
         let family = AssetFamilySelection {
             ticker: option.ticker.clone(),
-            name: option.name.clone(),
+            name: display_asset_family_name(&option.name),
         };
         let key = build_family_selection_id(&family);
         if seen.insert(key) {
@@ -4469,11 +4490,11 @@ fn find_family_selection(
 ) -> Option<AssetFamilySelection> {
     catalog.iter().find_map(|currency| {
         let ticker = normalize_phrase(&currency.ticker).replace(' ', "_");
-        let name = normalize_phrase(&currency.name).replace(' ', "_");
+        let name = normalized_asset_family_name(&currency.name).replace(' ', "_");
 
         (ticker == family_key.ticker && name == family_key.name).then(|| AssetFamilySelection {
             ticker: currency.ticker.clone(),
-            name: currency.name.clone(),
+            name: display_asset_family_name(&currency.name),
         })
     })
 }
@@ -4486,7 +4507,8 @@ fn find_family_currencies(
         .iter()
         .filter(|currency| {
             normalize_phrase(&currency.ticker) == normalize_phrase(&family.ticker)
-                && normalize_phrase(&currency.name) == normalize_phrase(&family.name)
+                && normalized_asset_family_name(&currency.name)
+                    == normalized_asset_family_name(&family.name)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -4515,6 +4537,42 @@ fn network_sort_key(network: &str) -> (u8, String) {
     };
 
     (priority, normalized)
+}
+
+fn display_asset_family_name(name: &str) -> String {
+    let mut current = name.trim().to_string();
+
+    loop {
+        let trimmed = current.trim_end();
+        if !trimmed.ends_with(')') {
+            break;
+        }
+
+        let Some(open_index) = trimmed.rfind('(') else {
+            break;
+        };
+
+        if open_index == 0 {
+            break;
+        }
+
+        let inner = trimmed[open_index + 1..trimmed.len() - 1].trim();
+        if inner.is_empty() {
+            break;
+        }
+
+        current = trimmed[..open_index].trim_end().to_string();
+    }
+
+    if current.is_empty() {
+        name.trim().to_string()
+    } else {
+        current
+    }
+}
+
+fn normalized_asset_family_name(name: &str) -> String {
+    normalize_phrase(&display_asset_family_name(name))
 }
 
 fn parse_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
@@ -4673,6 +4731,109 @@ fn build_network_aliases(catalog: &[CurrencyResponse]) -> HashMap<String, String
     }
 
     aliases
+}
+
+fn build_scoped_network_aliases(options: &[CurrencySelection]) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    let available_networks = options
+        .iter()
+        .map(|option| option.network.clone())
+        .collect::<Vec<_>>();
+
+    for network in &available_networks {
+        aliases
+            .entry(normalize_phrase(network))
+            .or_insert_with(|| network.clone());
+    }
+
+    for (alias, canonical) in [
+        ("stellar", "XLM"),
+        ("xlm", "XLM"),
+        ("solana", "SOL"),
+        ("sol", "SOL"),
+        ("erc20", "ERC20"),
+        ("eth", "ERC20"),
+        ("ethereum", "ERC20"),
+        ("eth mainnet", "ERC20"),
+        ("tron", "TRC20"),
+        ("trc20", "TRC20"),
+        ("bep20", "BEP20"),
+        ("bsc", "BEP20"),
+        ("bnb chain", "BEP20"),
+        ("bnb smart chain", "BEP20"),
+        ("binance smart chain", "BEP20"),
+        ("avax c", "AVAXC"),
+        ("avaxc", "AVAXC"),
+        ("avalanche", "AVAXC"),
+        ("avax", "AVAXC"),
+        ("arb", "Arbitrum"),
+        ("polygon", "Polygon"),
+        ("matic", "Polygon"),
+        ("arbitrum", "Arbitrum"),
+        ("op", "Optimism"),
+        ("optimism", "Optimism"),
+        ("base", "Base"),
+        ("mainnet", "Mainnet"),
+        ("lightning", "Lightning"),
+        ("omni", "OMNI"),
+    ] {
+        if available_networks
+            .iter()
+            .any(|network| network.eq_ignore_ascii_case(canonical))
+        {
+            aliases
+                .entry(normalize_phrase(alias))
+                .or_insert_with(|| canonical.to_string());
+        }
+    }
+
+    aliases
+}
+
+fn normalized_phrase_contains_alias(normalized_phrase: &str, alias: &str) -> bool {
+    normalized_phrase == alias
+        || normalized_phrase.starts_with(&format!("{} ", alias))
+        || normalized_phrase.ends_with(&format!(" {}", alias))
+        || normalized_phrase.contains(&format!(" {} ", alias))
+}
+
+fn match_pending_network_option(
+    options: &[CurrencySelection],
+    input: &str,
+) -> Option<CurrencySelection> {
+    let sanitized = sanitize_asset_phrase(input).unwrap_or_else(|| input.trim().to_string());
+    let normalized_input = normalize_phrase(&sanitized);
+    if normalized_input.is_empty() || options.is_empty() {
+        return None;
+    }
+
+    let aliases = build_scoped_network_aliases(options);
+    let mut matched_networks = aliases
+        .iter()
+        .filter_map(|(alias, canonical)| {
+            normalized_phrase_contains_alias(&normalized_input, alias).then_some(canonical.clone())
+        })
+        .collect::<Vec<_>>();
+
+    matched_networks.sort();
+    matched_networks.dedup();
+
+    if matched_networks.len() != 1 {
+        return None;
+    }
+
+    let canonical = matched_networks.pop()?;
+    let mut matches = options
+        .iter()
+        .filter(|option| option.network.eq_ignore_ascii_case(&canonical))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if matches.len() == 1 {
+        return matches.pop();
+    }
+
+    None
 }
 
 fn split_explicit_network_phrase(
@@ -4916,10 +5077,13 @@ fn resolve_ranked_matches(
     });
 
     if explicit_network.is_none() && exact_asset_match {
-        if let Some(mainnet_currency) = top
-            .iter()
-            .find(|currency| currency.network.eq_ignore_ascii_case("Mainnet"))
-        {
+        if let Some(mainnet_currency) = top.iter().find(|currency| {
+            currency.network.eq_ignore_ascii_case("Mainnet")
+                || currency.network.eq_ignore_ascii_case("MAINNET")
+                || normalize_phrase(&currency.name)
+                    .split_whitespace()
+                    .any(|token| token == "mainnet")
+        }) {
             return AssetResolution {
                 selected: Some(CurrencySelection::from(mainnet_currency.clone())),
                 ambiguous_options: Vec::new(),
@@ -5108,11 +5272,12 @@ fn whatsapp_outbound_idempotency_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        amount_out_of_range_message, is_generic_swap_start, meaningful_asset_phrase,
-        parse_amount_mode, parse_asset_selection_id, parse_confirmation_decision,
-        parse_quote_selection, parse_usd_amount, resolve_currency_phrase, sanitize_asset_phrase,
+        amount_out_of_range_message, is_generic_swap_start, match_pending_network_option,
+        meaningful_asset_phrase, parse_amount_mode, parse_asset_selection_id,
+        parse_confirmation_decision, parse_quote_selection, parse_usd_amount, plan_asset_input,
+        resolve_currency_phrase, sanitize_asset_phrase,
         should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
-        CurrencySelection,
+        AssetInputPlan, CurrencySelection,
     };
     use crate::modules::swap::schema::CurrencyResponse;
     use crate::services::kimi::KimiConfirmation;
@@ -5132,10 +5297,10 @@ mod tests {
 
     fn sample_catalog() -> Vec<CurrencyResponse> {
         vec![
-            currency("Ethereum", "eth", "Mainnet"),
-            currency("USD Coin", "usdc", "ERC20"),
-            currency("USD Coin", "usdc", "Arbitrum"),
-            currency("Bitcoin", "btc", "Mainnet"),
+            currency("Ethereum (Mainnet)", "eth", "ERC20"),
+            currency("USDC (ERC20)", "usdc", "ERC20"),
+            currency("USDC (Arbitrum One)", "usdc", "Arbitrum"),
+            currency("Bitcoin (Mainnet)", "btc", "Mainnet"),
         ]
     }
 
@@ -5240,7 +5405,7 @@ mod tests {
         let selected = resolution.selected.expect("selected asset");
 
         assert_eq!(selected.ticker, "eth");
-        assert_eq!(selected.network, "Mainnet");
+        assert_eq!(selected.network, "ERC20");
     }
 
     #[test]
@@ -5260,6 +5425,38 @@ mod tests {
 
         assert_eq!(selected.ticker, "xlm");
         assert_eq!(selected.network, "Mainnet");
+    }
+
+    #[test]
+    fn matches_network_choice_from_freeform_phrase() {
+        let options = vec![
+            selection("Ethereum", "eth", "Arbitrum"),
+            selection("Ethereum", "eth", "Base"),
+            selection("Ethereum", "eth", "Mainnet"),
+        ];
+
+        let selected =
+            match_pending_network_option(&options, "Ethereum mainnet eth, that what I need here")
+                .expect("network selection");
+
+        assert_eq!(selected.ticker, "eth");
+        assert_eq!(selected.network, "Mainnet");
+    }
+
+    #[test]
+    fn decorated_network_names_collapse_into_one_family_choice() {
+        let plan = plan_asset_input(&sample_catalog(), "usdc").expect("plan");
+
+        match plan {
+            AssetInputPlan::ChooseNetwork { family, options } => {
+                assert_eq!(family.ticker, "usdc");
+                assert_eq!(family.name, "USDC");
+                assert_eq!(options.len(), 2);
+                assert!(options.iter().any(|option| option.network == "ERC20"));
+                assert!(options.iter().any(|option| option.network == "Arbitrum"));
+            }
+            other => panic!("expected network choice, got {:?}", other),
+        }
     }
 
     #[test]
