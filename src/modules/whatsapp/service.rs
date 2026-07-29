@@ -155,7 +155,7 @@ struct SwapDraft {
     refund_extra_id: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ParsedSwapIntent {
     amount: Option<f64>,
     amount_mode: Option<AmountInputMode>,
@@ -498,69 +498,21 @@ impl WhatsAppFlowService {
             };
         }
 
-        if should_use_contextual_kimi(&state) {
-            if let Some(kimi) = self.state.kimi_client.clone() {
-                let context = build_swap_context_summary(&draft, &state);
-                match kimi
-                    .classify_swap_message_with_context(trimmed, &context)
-                    .await
-                {
-                    Ok(KimiIntent::SwapRequest {
-                        amount,
-                        amount_mode,
-                        from_asset,
-                        to_asset,
-                        recipient_address,
-                        refund_address,
-                    }) if has_swap_fields(
-                        amount,
-                        amount_mode,
-                        from_asset.as_deref(),
-                        to_asset.as_deref(),
-                        recipient_address.as_deref(),
-                        refund_address.as_deref(),
-                    ) =>
-                    {
-                        return self
-                            .handle_parsed_swap_intent(
-                                wa_id,
-                                phone_number_id,
-                                session_id.as_deref(),
-                                &locale,
-                                draft,
-                                inbound_message_id,
-                                trimmed,
-                                ParsedSwapIntent {
-                                    amount,
-                                    amount_mode: amount_mode.map(AmountInputMode::from),
-                                    from_phrase: from_asset,
-                                    to_phrase: to_asset,
-                                    recipient_address,
-                                    refund_address,
-                                },
-                            )
-                            .await;
-                    }
-                    Ok(KimiIntent::FriendlyReply(message)) => {
-                        return self
-                            .reply_to_inbound(
-                                wa_id,
-                                phone_number_id,
-                                session_id.as_deref(),
-                                inbound_message_id,
-                                &message,
-                            )
-                            .await;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(
-                            "Context-aware Kimi classification failed, falling back to deterministic state handlers: {}",
-                            error
-                        );
-                    }
-                }
-            }
+        let deterministic_intent =
+            parse_swap_intent(trimmed).or_else(|| parse_partial_swap_intent(trimmed));
+        if let Some(intent) = deterministic_intent {
+            return self
+                .handle_parsed_swap_intent(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    &locale,
+                    draft,
+                    inbound_message_id,
+                    trimmed,
+                    intent,
+                )
+                .await;
         }
 
         match state {
@@ -587,7 +539,15 @@ impl WhatsAppFlowService {
                             to_asset,
                             recipient_address,
                             refund_address,
-                        }) => {
+                        }) if has_swap_fields(
+                            amount,
+                            amount_mode,
+                            from_asset.as_deref(),
+                            to_asset.as_deref(),
+                            recipient_address.as_deref(),
+                            refund_address.as_deref(),
+                        ) =>
+                        {
                             return self
                                 .handle_parsed_swap_intent(
                                     wa_id,
@@ -613,43 +573,14 @@ impl WhatsAppFlowService {
                                 .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                                 .await;
                         }
+                        Ok(_) => {}
                         Err(error) => {
                             tracing::warn!(
-                                "Kimi classification failed, falling back to deterministic parsing: {}",
+                                "Kimi classification failed, falling back to idle WhatsApp handling: {}",
                                 error
                             );
                         }
                     }
-                }
-
-                if let Some(intent) = parse_swap_intent(trimmed) {
-                    return self
-                        .handle_parsed_swap_intent(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            &locale,
-                            draft,
-                            inbound_message_id,
-                            trimmed,
-                            intent,
-                        )
-                        .await;
-                }
-
-                if let Some(intent) = parse_partial_swap_intent(trimmed) {
-                    return self
-                        .handle_parsed_swap_intent(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            &locale,
-                            draft,
-                            inbound_message_id,
-                            trimmed,
-                            intent,
-                        )
-                        .await;
                 }
 
                 let message = self
@@ -3575,23 +3506,6 @@ fn session_parts(
     ))
 }
 
-fn should_use_contextual_kimi(state: &ConversationState) -> bool {
-    matches!(
-        state,
-        ConversationState::AwaitingFromAssetSearch
-            | ConversationState::AwaitingFromAssetChoice
-            | ConversationState::AwaitingFromNetworkChoice
-            | ConversationState::AwaitingToAssetSearch
-            | ConversationState::AwaitingToAssetChoice
-            | ConversationState::AwaitingToNetworkChoice
-            | ConversationState::AwaitingAmountMode
-            | ConversationState::AwaitingAmount
-            | ConversationState::AwaitingQuoteSelection
-            | ConversationState::AwaitingRecipientAddress
-            | ConversationState::AwaitingRefundAddress
-    )
-}
-
 fn has_swap_fields(
     amount: Option<f64>,
     amount_mode: Option<KimiAmountMode>,
@@ -3606,157 +3520,6 @@ fn has_swap_fields(
         || normalize_optional_text(to_asset).is_some()
         || normalize_optional_text(recipient_address).is_some()
         || normalize_optional_text(refund_address).is_some()
-}
-
-fn build_swap_context_summary(draft: &SwapDraft, state: &ConversationState) -> String {
-    let mut lines = vec![
-        "Conversation objective: help the user finish the current swap in as few messages as possible, unless they want to cancel it."
-            .to_string(),
-        format!("Current step: {}", conversation_state_label(state)),
-    ];
-
-    if let Some(next_needed) = next_needed_user_input(state, draft) {
-        lines.push(format!("Still needed right now: {}", next_needed));
-    }
-
-    if let Some(from) = draft.from.as_ref() {
-        lines.push(format!(
-            "Known source asset: {} on {}",
-            from.ticker.to_uppercase(),
-            from.network
-        ));
-    } else if let Some(family) = draft.pending_from_family.as_ref() {
-        lines.push(format!(
-            "Source asset family is known but the network is still needed: {} ({})",
-            family.name,
-            family.ticker.to_uppercase()
-        ));
-    }
-
-    if let Some(to) = draft.to.as_ref() {
-        lines.push(format!(
-            "Known destination asset: {} on {}",
-            to.ticker.to_uppercase(),
-            to.network
-        ));
-    } else if let Some(family) = draft.pending_to_family.as_ref() {
-        lines.push(format!(
-            "Destination asset family is known but the network is still needed: {} ({})",
-            family.name,
-            family.ticker.to_uppercase()
-        ));
-    }
-
-    if !draft.pending_from_currency_options.is_empty() {
-        lines.push(format!(
-            "Source network options: {}",
-            draft
-                .pending_from_currency_options
-                .iter()
-                .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    if !draft.pending_to_currency_options.is_empty() {
-        lines.push(format!(
-            "Destination network options: {}",
-            draft
-                .pending_to_currency_options
-                .iter()
-                .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    if let Some(amount) = draft.amount {
-        lines.push(format!("Known source amount: {}", trim_f64(amount)));
-    }
-
-    if let Some(usd_amount) = draft.requested_amount_usd {
-        lines.push(format!(
-            "Requested dollar amount: ${}",
-            trim_f64(usd_amount)
-        ));
-    }
-
-    if let Some(quote) = draft.selected_quote.as_ref() {
-        lines.push(format!("Selected provider: {}", quote.provider_name));
-    }
-
-    if let Some(address) = draft.recipient_address.as_ref() {
-        lines.push(format!("Recipient address already known: {}", address));
-    } else {
-        lines.push("Recipient address is still missing.".to_string());
-    }
-
-    if let Some(address) = draft.refund_address.as_ref() {
-        lines.push(format!("Refund address already known: {}", address));
-    }
-
-    lines.join("\n")
-}
-
-fn conversation_state_label(state: &ConversationState) -> &'static str {
-    match state {
-        ConversationState::Idle => "idle",
-        ConversationState::AwaitingFromAssetSearch | ConversationState::AwaitingFromAssetChoice => {
-            "waiting for source asset"
-        }
-        ConversationState::AwaitingFromNetworkChoice => "waiting for source network",
-        ConversationState::AwaitingToAssetSearch | ConversationState::AwaitingToAssetChoice => {
-            "waiting for destination asset"
-        }
-        ConversationState::AwaitingToNetworkChoice => "waiting for destination network",
-        ConversationState::AwaitingAmountMode | ConversationState::AwaitingAmount => {
-            "waiting for amount"
-        }
-        ConversationState::AwaitingQuoteSelection => "waiting for provider choice",
-        ConversationState::AwaitingRecipientAddress => "waiting for destination address",
-        ConversationState::AwaitingRecipientExtraId => "waiting for destination extra ID",
-        ConversationState::AwaitingRefundAddress => "waiting for refund address",
-        ConversationState::AwaitingRefundExtraId => "waiting for refund extra ID",
-        ConversationState::AwaitingConfirmation => "waiting for final confirmation",
-    }
-}
-
-fn next_needed_user_input(state: &ConversationState, draft: &SwapDraft) -> Option<String> {
-    match state {
-        ConversationState::AwaitingFromAssetSearch | ConversationState::AwaitingFromAssetChoice => {
-            Some("the source coin or network".to_string())
-        }
-        ConversationState::AwaitingFromNetworkChoice => Some("the source network".to_string()),
-        ConversationState::AwaitingToAssetSearch | ConversationState::AwaitingToAssetChoice => {
-            Some("the destination coin or network".to_string())
-        }
-        ConversationState::AwaitingToNetworkChoice => Some("the destination network".to_string()),
-        ConversationState::AwaitingAmountMode | ConversationState::AwaitingAmount => {
-            Some("the amount to swap".to_string())
-        }
-        ConversationState::AwaitingQuoteSelection => {
-            Some("which provider to use, or a message to keep the recommended route".to_string())
-        }
-        ConversationState::AwaitingRecipientAddress => draft.to.as_ref().map(|asset| {
-            format!(
-                "the {} receiving address on {}",
-                asset.ticker.to_uppercase(),
-                asset.network
-            )
-        }),
-        ConversationState::AwaitingRecipientExtraId => {
-            Some("the destination extra ID or memo".to_string())
-        }
-        ConversationState::AwaitingRefundAddress => {
-            Some("the refund address, or they can say skip".to_string())
-        }
-        ConversationState::AwaitingRefundExtraId => Some("the refund extra ID or memo".to_string()),
-        ConversationState::AwaitingConfirmation => {
-            Some("a final confirm or cancel decision".to_string())
-        }
-        ConversationState::Idle => None,
-    }
 }
 
 fn to_quote_choice(index: usize, rate: &RateResponse, trade_id: &str) -> QuoteChoice {
@@ -5484,8 +5247,8 @@ fn whatsapp_outbound_idempotency_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        amount_out_of_range_message, is_generic_swap_start, looks_like_asset_correction,
-        is_cancel_request, match_pending_network_option, meaningful_asset_phrase,
+        amount_out_of_range_message, is_cancel_request, is_generic_swap_start,
+        looks_like_asset_correction, match_pending_network_option, meaningful_asset_phrase,
         parse_amount_mode, parse_asset_selection_id, parse_confirmation_decision,
         parse_partial_swap_intent, parse_quote_selection, parse_usd_amount, plan_asset_input,
         rebalance_intent_asset_sides, resolve_currency_phrase, sanitize_asset_phrase,
@@ -5635,8 +5398,7 @@ mod tests {
     fn parses_partial_swap_intent_for_source_asset_requests() {
         let intent = parse_partial_swap_intent("i want to send xlm on mainnet man")
             .expect("partial source intent");
-        let rebalanced =
-            rebalance_intent_asset_sides("i want to send xlm on mainnet man", intent);
+        let rebalanced = rebalance_intent_asset_sides("i want to send xlm on mainnet man", intent);
 
         assert_eq!(rebalanced.from_phrase, Some("xlm on mainnet".to_string()));
         assert_eq!(rebalanced.to_phrase, None);
