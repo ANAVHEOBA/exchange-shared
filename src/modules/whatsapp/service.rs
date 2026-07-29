@@ -435,7 +435,7 @@ impl WhatsAppFlowService {
             crud.upsert_session_state(
                 wa_id,
                 phone_number_id,
-                &ConversationState::Idle,
+                &ConversationState::AwaitingFromAssetSearch,
                 &locale,
                 &SwapDraft::default(),
                 inbound_message_id,
@@ -443,13 +443,15 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-            return self
-                .reply(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    "Tell me the pair and amount in one message, like: swap 100 USDT to XMR. If you already have the receiving address, include it too.",
+            let prompt = self
+                .narrate_or(
+                    AssetSide::From.asset_prompt_situation(),
+                    AssetSide::From.asset_prompt(),
                 )
+                .await;
+
+            return self
+                .reply(wa_id, phone_number_id, session_id.as_deref(), &prompt)
                 .await;
         }
 
@@ -501,13 +503,26 @@ impl WhatsAppFlowService {
         match state {
             ConversationState::Idle => {
                 if lowered == "swap" {
-                    return self
-                        .reply(
-                            wa_id,
-                            phone_number_id,
-                            session_id.as_deref(),
-                            "Tell me the pair and amount in one message, like: swap 100 USDT to XMR. If you already have the receiving address, include it too.",
+                    crud.upsert_session_state(
+                        wa_id,
+                        phone_number_id,
+                        &ConversationState::AwaitingFromAssetSearch,
+                        &locale,
+                        &SwapDraft::default(),
+                        inbound_message_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+
+                    let prompt = self
+                        .narrate_or(
+                            AssetSide::From.asset_prompt_situation(),
+                            AssetSide::From.asset_prompt(),
                         )
+                        .await;
+
+                    return self
+                        .reply(wa_id, phone_number_id, session_id.as_deref(), &prompt)
                         .await;
                 }
 
