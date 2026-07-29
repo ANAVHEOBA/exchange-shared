@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DEFAULT_MOONSHOT_API_BASE_URL: &str = "https://api.moonshot.ai/v1";
-const DEFAULT_KIMI_MODEL: &str = "kimi-k2-thinking-turbo";
+const DEFAULT_KIMI_MODEL: &str = "kimi-k2.6";
 
 /// Shared grounding prepended to every Kimi call so the model always knows
 /// what Assetar is and how it should sound, instead of relying on a bare
@@ -29,12 +29,12 @@ const SWAP_INTENT_INSTRUCTIONS: &str = "\
 You must always respond by calling exactly one of the two tools you're given:
 
 1. If the user is expressing intent to swap crypto, even vaguely (\"swap some usdt for monero\", \
-\"change my btc to xmr\", \"100 usdc to bitcoin\"), call extract_swap_request with only the values \
+\"change my btc to xmr\", \"100 usdc to bitcoin\", \"i need eth on base\", \"i want btc on mainnet\"), call extract_swap_request with only the values \
 they actually stated. Never guess a value they did not say - leave it out instead. Generic words \
 like \"crypto\", \"coin\", \"token\", quantifiers like \"some\", \"a\", or \"an\", and phrases \
 like \"some crypto\" or \"any coin\" are not asset names; leave from_asset and to_asset empty for \
 those. If the user says they want to buy, get, receive, or cash \
-out into an asset, treat that asset as to_asset unless they explicitly say it is what they are sending. \
+out into an asset, or say they need or want a specific asset/network, treat that asset as to_asset unless they explicitly say it is what they are sending. \
 If the user says they want to send, sell, swap from, or use an asset, treat that asset as from_asset \
 unless they explicitly say it is what they want to receive. Ignore casual filler words like man, bro, \
 baba, abeg, please, or pls when extracting asset names and networks.

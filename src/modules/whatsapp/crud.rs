@@ -182,6 +182,26 @@ impl WhatsAppCrud {
         }))
     }
 
+    pub async fn get_last_inbound_message_id(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+    ) -> Result<Option<String>, Error> {
+        sqlx::query_scalar(
+            r#"
+            SELECT last_inbound_message_id
+            FROM whatsapp_sessions
+            WHERE wa_id = ? AND phone_number_id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(wa_id)
+        .bind(phone_number_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|value| value.flatten())
+    }
+
     pub async fn list_admin_conversations(
         &self,
         query: &AdminConversationQuery,

@@ -637,6 +637,21 @@ impl WhatsAppFlowService {
                         .await;
                 }
 
+                if let Some(intent) = parse_partial_swap_intent(trimmed) {
+                    return self
+                        .handle_parsed_swap_intent(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            &locale,
+                            draft,
+                            inbound_message_id,
+                            trimmed,
+                            intent,
+                        )
+                        .await;
+                }
+
                 let message = self
                     .narrate_or(
                         "The user's message was not enough to start a swap or check status. Reply naturally and ask what they want to swap or which swap ID they want checked. Do not show commands or a menu.",
@@ -3294,6 +3309,30 @@ impl WhatsAppFlowService {
         session_id: Option<&str>,
         body: &str,
     ) -> Result<(), String> {
+        let crud = WhatsAppCrud::new(self.state.db.clone());
+        let inferred_inbound_message_id = crud
+            .get_last_inbound_message_id(wa_id, phone_number_id)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        self.send_reply(
+            wa_id,
+            phone_number_id,
+            session_id,
+            inferred_inbound_message_id.as_deref(),
+            body,
+        )
+        .await
+    }
+
+    async fn send_reply(
+        &self,
+        wa_id: &str,
+        phone_number_id: &str,
+        session_id: Option<&str>,
+        inbound_message_id: Option<&str>,
+        body: &str,
+    ) -> Result<(), String> {
         let service = self
             .state
             .whatsapp_service
@@ -3301,6 +3340,48 @@ impl WhatsAppFlowService {
             .ok_or_else(|| "WhatsApp is not configured".to_string())?;
 
         let crud = WhatsAppCrud::new(self.state.db.clone());
+        if let Some(inbound_message_id) = inbound_message_id {
+            let idempotency_key =
+                whatsapp_outbound_idempotency_key(phone_number_id, wa_id, inbound_message_id, body);
+
+            let reservation = crud
+                .record_outbound_message_once(
+                    session_id,
+                    wa_id,
+                    phone_number_id,
+                    "text",
+                    body,
+                    &idempotency_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            if !reservation.should_send {
+                tracing::info!(
+                    "Skipping duplicate WhatsApp reply for inbound message {}",
+                    inbound_message_id
+                );
+                return Ok(());
+            }
+
+            return match service.send_text_message(wa_id, body).await {
+                Ok(response) => {
+                    let provider_message_id =
+                        response.messages.first().map(|message| message.id.as_str());
+                    crud.mark_outbound_sent(&reservation.id, provider_message_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = crud
+                        .mark_outbound_failed(&reservation.id, &error.to_string())
+                        .await;
+                    Err(error.to_string())
+                }
+            };
+        }
+
         let outbound_id = crud
             .record_outbound_message(session_id, wa_id, phone_number_id, "text", body)
             .await
@@ -3332,55 +3413,8 @@ impl WhatsAppFlowService {
         inbound_message_id: Option<&str>,
         body: &str,
     ) -> Result<(), String> {
-        let Some(inbound_message_id) = inbound_message_id else {
-            return self.reply(wa_id, phone_number_id, session_id, body).await;
-        };
-
-        let service = self
-            .state
-            .whatsapp_service
-            .as_ref()
-            .ok_or_else(|| "WhatsApp is not configured".to_string())?;
-        let idempotency_key =
-            whatsapp_outbound_idempotency_key(phone_number_id, wa_id, inbound_message_id, body);
-
-        let crud = WhatsAppCrud::new(self.state.db.clone());
-        let reservation = crud
-            .record_outbound_message_once(
-                session_id,
-                wa_id,
-                phone_number_id,
-                "text",
-                body,
-                &idempotency_key,
-            )
+        self.send_reply(wa_id, phone_number_id, session_id, inbound_message_id, body)
             .await
-            .map_err(|error| error.to_string())?;
-
-        if !reservation.should_send {
-            tracing::info!(
-                "Skipping duplicate WhatsApp reply for inbound message {}",
-                inbound_message_id
-            );
-            return Ok(());
-        }
-
-        match service.send_text_message(wa_id, body).await {
-            Ok(response) => {
-                let provider_message_id =
-                    response.messages.first().map(|message| message.id.as_str());
-                crud.mark_outbound_sent(&reservation.id, provider_message_id)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = crud
-                    .mark_outbound_failed(&reservation.id, &error.to_string())
-                    .await;
-                Err(error.to_string())
-            }
-        }
     }
 
     async fn reply_image(
@@ -4003,7 +4037,16 @@ fn sanitize_asset_phrase(value: &str) -> Option<String> {
         "i said i want to buy ",
         "i said i want to buy some ",
         "i said i want to send ",
+        "i said i need ",
+        "i said i need some ",
         "i said i want ",
+        "i need to buy some ",
+        "i need to buy ",
+        "i need to get some ",
+        "i need to get ",
+        "i need to receive ",
+        "i need some ",
+        "i need ",
         "i want to buy some ",
         "i want to buy ",
         "i want to get ",
@@ -4012,6 +4055,8 @@ fn sanitize_asset_phrase(value: &str) -> Option<String> {
         "i want to send ",
         "i want some ",
         "i want ",
+        "need some ",
+        "need ",
         "im buying ",
         "i am buying ",
         "im sending ",
@@ -4101,10 +4146,19 @@ fn meaningful_asset_phrase(value: Option<&str>) -> Option<String> {
             | "i want to buy"
             | "i want to send"
             | "i want"
+            | "i need to buy"
+            | "i need to get"
+            | "i need to receive"
+            | "i need"
             | "buy"
+            | "need"
             | "send"
             | "receive"
             | "get"
+            | "swap"
+            | "trade"
+            | "convert"
+            | "change"
     ) {
         return None;
     }
@@ -4672,6 +4726,45 @@ fn parse_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
     })
 }
 
+fn parse_partial_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
+    let normalized = normalize_phrase(input);
+    if normalized.is_empty()
+        || is_generic_swap_start(input)
+        || is_cancel_request(input)
+        || parse_status_lookup_input(input).is_some()
+    {
+        return None;
+    }
+
+    let has_swap_signal = normalized.contains("swap")
+        || normalized.contains("trade")
+        || normalized.contains("convert")
+        || normalized.contains("change")
+        || normalized.contains("buy")
+        || normalized.contains("receive")
+        || normalized.contains("get")
+        || normalized.contains("need")
+        || normalized.contains("want")
+        || normalized.contains("send")
+        || normalized.contains("sell")
+        || normalized.contains("cash out")
+        || normalized.contains("cashout");
+
+    if !has_swap_signal {
+        return None;
+    }
+
+    let phrase = meaningful_asset_phrase(Some(input))?;
+    Some(ParsedSwapIntent {
+        amount: None,
+        amount_mode: None,
+        from_phrase: Some(phrase),
+        to_phrase: None,
+        recipient_address: None,
+        refund_address: None,
+    })
+}
+
 fn rebalance_intent_asset_sides(raw_text: &str, mut intent: ParsedSwapIntent) -> ParsedSwapIntent {
     let normalized = normalize_phrase(raw_text);
     if normalized.is_empty() {
@@ -4702,6 +4795,8 @@ fn message_prefers_destination_asset(normalized_text: &str) -> bool {
     normalized_text.contains("buy")
         || normalized_text.contains("receive")
         || normalized_text.contains("get")
+        || normalized_text.contains("need")
+        || normalized_text.contains("want")
         || normalized_text.contains("cash out")
         || normalized_text.contains("cashout")
 }
@@ -5390,11 +5485,12 @@ fn whatsapp_outbound_idempotency_key(
 mod tests {
     use super::{
         amount_out_of_range_message, is_generic_swap_start, looks_like_asset_correction,
-        match_pending_network_option, meaningful_asset_phrase, parse_amount_mode,
-        parse_asset_selection_id, parse_confirmation_decision, parse_quote_selection,
-        parse_usd_amount, plan_asset_input, rebalance_intent_asset_sides, resolve_currency_phrase,
-        sanitize_asset_phrase, should_restart_asset_search_from_network_choice, AmountInputMode,
-        AssetFamilySelection, AssetInputPlan, CurrencySelection, ParsedSwapIntent,
+        is_cancel_request, match_pending_network_option, meaningful_asset_phrase,
+        parse_amount_mode, parse_asset_selection_id, parse_confirmation_decision,
+        parse_partial_swap_intent, parse_quote_selection, parse_usd_amount, plan_asset_input,
+        rebalance_intent_asset_sides, resolve_currency_phrase, sanitize_asset_phrase,
+        should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
+        AssetInputPlan, CurrencySelection, ParsedSwapIntent,
     };
     use crate::modules::swap::schema::CurrencyResponse;
     use crate::services::kimi::KimiConfirmation;
@@ -5474,6 +5570,10 @@ mod tests {
             Some("btc".to_string())
         );
         assert_eq!(
+            sanitize_asset_phrase("i need some eth on base"),
+            Some("eth on base".to_string())
+        );
+        assert_eq!(
             sanitize_asset_phrase("i am sending xlm on mainnet man"),
             Some("xlm on mainnet".to_string())
         );
@@ -5502,6 +5602,44 @@ mod tests {
 
         assert_eq!(rebalanced.from_phrase, None);
         assert_eq!(rebalanced.to_phrase, Some("eth in mainnet".to_string()));
+    }
+
+    #[test]
+    fn rebalances_need_intent_into_destination_side() {
+        let intent = ParsedSwapIntent {
+            amount: None,
+            amount_mode: None,
+            from_phrase: Some("eth on base".to_string()),
+            to_phrase: None,
+            recipient_address: None,
+            refund_address: None,
+        };
+
+        let rebalanced = rebalance_intent_asset_sides("i need some eth on base", intent);
+
+        assert_eq!(rebalanced.from_phrase, None);
+        assert_eq!(rebalanced.to_phrase, Some("eth on base".to_string()));
+    }
+
+    #[test]
+    fn parses_partial_swap_intent_for_destination_asset_requests() {
+        let intent = parse_partial_swap_intent("i need some eth on base")
+            .expect("partial destination intent");
+        let rebalanced = rebalance_intent_asset_sides("i need some eth on base", intent);
+
+        assert_eq!(rebalanced.from_phrase, None);
+        assert_eq!(rebalanced.to_phrase, Some("eth on base".to_string()));
+    }
+
+    #[test]
+    fn parses_partial_swap_intent_for_source_asset_requests() {
+        let intent = parse_partial_swap_intent("i want to send xlm on mainnet man")
+            .expect("partial source intent");
+        let rebalanced =
+            rebalance_intent_asset_sides("i want to send xlm on mainnet man", intent);
+
+        assert_eq!(rebalanced.from_phrase, Some("xlm on mainnet".to_string()));
+        assert_eq!(rebalanced.to_phrase, None);
     }
 
     #[test]
