@@ -14,7 +14,7 @@ use crate::modules::swap::schema::{
     ValidateAddressRequest,
 };
 use crate::modules::whatsapp::crud::{SessionRecord, WhatsAppCrud};
-use crate::services::kimi::{KimiAmountMode, KimiConfirmation, KimiIntent};
+use crate::services::kimi::{KimiAmountMode, KimiConfirmation};
 use crate::services::pricing::CommissionService;
 use crate::services::trocador::TrocadorGateway;
 use crate::services::whatsapp::{
@@ -443,41 +443,39 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-            let prompt = self
-                .narrate_or(
-                    "The user wants to start a crypto swap but has not given the pair or amount yet. Ask them to send the swap in one message, with an example like: swap 100 USDT to XMR. Mention they can include the receiving address too if they have it. Do not show menu options.",
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
                     "Tell me the pair and amount in one message, like: swap 100 USDT to XMR. If you already have the receiving address, include it too.",
                 )
-                .await;
-
-            return self
-                .reply(wa_id, phone_number_id, session_id.as_deref(), &prompt)
                 .await;
         }
 
         if lowered == "examples" {
-            let examples = self
-                .narrate_or(
-                    "Give the user two short examples of natural WhatsApp swap messages: one crypto amount example and one USD amount example. Mention they can include the receiving address if they have it. Do not show a menu.",
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
                     "You can say: swap 100 USDT to XMR, or swap $250 of BTC to Monero. If you already have the receiving address, add it in the same message.",
                 )
                 .await;
-
-            return self
-                .reply(wa_id, phone_number_id, session_id.as_deref(), &examples)
-                .await;
         }
 
-        if lowered == "help" || lowered == "menu" || lowered == "start" {
-            let message = self
-                .narrate_or(
-                    "Welcome the user to Assetar as a conversational WhatsApp swap assistant. Tell them they can write what they want naturally, like swap 100 USDT to XMR or paste a swap ID to check status. Do not show commands or a menu.",
+        if lowered == "help"
+            || lowered == "menu"
+            || lowered == "start"
+            || matches!(lowered.as_str(), "hi" | "hello" | "hey" | "yo" | "sup")
+        {
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
                     "I'm here. Tell me the swap you want, like: swap 100 USDT to XMR. Or paste a swap ID and I'll check it.",
                 )
-                .await;
-
-            return self
-                .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
                 .await;
         }
 
@@ -500,154 +498,41 @@ impl WhatsAppFlowService {
             };
         }
 
-        let deterministic_intent =
-            parse_swap_intent(trimmed).or_else(|| parse_partial_swap_intent(trimmed));
-        if let Some(intent) = deterministic_intent {
-            return self
-                .handle_parsed_swap_intent(
-                    wa_id,
-                    phone_number_id,
-                    session_id.as_deref(),
-                    &locale,
-                    draft,
-                    inbound_message_id,
-                    trimmed,
-                    intent,
-                )
-                .await;
-        }
-
-        if state != ConversationState::Idle {
-            if let Some(kimi) = self.state.kimi_client.clone() {
-                let context = build_kimi_swap_context(&state, &draft);
-                match kimi
-                    .classify_swap_message_with_context(trimmed, &context)
-                    .await
-                {
-                    Ok(KimiIntent::SwapRequest {
-                        amount,
-                        amount_mode,
-                        from_asset,
-                        to_asset,
-                        recipient_address,
-                        refund_address,
-                    }) if has_swap_fields(
-                        amount,
-                        amount_mode,
-                        from_asset.as_deref(),
-                        to_asset.as_deref(),
-                        recipient_address.as_deref(),
-                        refund_address.as_deref(),
-                    ) =>
-                    {
-                        return self
-                            .handle_parsed_swap_intent(
-                                wa_id,
-                                phone_number_id,
-                                session_id.as_deref(),
-                                &locale,
-                                draft,
-                                inbound_message_id,
-                                trimmed,
-                                ParsedSwapIntent {
-                                    amount,
-                                    amount_mode: amount_mode.map(AmountInputMode::from),
-                                    from_phrase: from_asset,
-                                    to_phrase: to_asset,
-                                    recipient_address,
-                                    refund_address,
-                                },
-                            )
-                            .await;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(
-                            "Kimi contextual classification failed, continuing with deterministic WhatsApp handling: {}",
-                            error
-                        );
-                    }
-                }
-            }
-        }
-
         match state {
             ConversationState::Idle => {
                 if lowered == "swap" {
-                    let prompt = self
-                        .narrate_or(
-                            "The user wants to start a crypto swap but has not given the pair or amount yet. Ask them to send the swap in one message, with an example like: swap 100 USDT to XMR. Mention they can include the receiving address too if they have it.",
+                    return self
+                        .reply(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
                             "Tell me the pair and amount in one message, like: swap 100 USDT to XMR. If you already have the receiving address, include it too.",
                         )
                         .await;
+                }
 
+                if let Some(intent) = parse_swap_intent(trimmed) {
                     return self
-                        .reply(wa_id, phone_number_id, session_id.as_deref(), &prompt)
+                        .handle_parsed_swap_intent(
+                            wa_id,
+                            phone_number_id,
+                            session_id.as_deref(),
+                            &locale,
+                            draft,
+                            inbound_message_id,
+                            trimmed,
+                            intent,
+                        )
                         .await;
                 }
 
-                if let Some(kimi) = self.state.kimi_client.clone() {
-                    match kimi.classify_swap_message(trimmed).await {
-                        Ok(KimiIntent::SwapRequest {
-                            amount,
-                            amount_mode,
-                            from_asset,
-                            to_asset,
-                            recipient_address,
-                            refund_address,
-                        }) if has_swap_fields(
-                            amount,
-                            amount_mode,
-                            from_asset.as_deref(),
-                            to_asset.as_deref(),
-                            recipient_address.as_deref(),
-                            refund_address.as_deref(),
-                        ) =>
-                        {
-                            return self
-                                .handle_parsed_swap_intent(
-                                    wa_id,
-                                    phone_number_id,
-                                    session_id.as_deref(),
-                                    &locale,
-                                    draft,
-                                    inbound_message_id,
-                                    trimmed,
-                                    ParsedSwapIntent {
-                                        amount,
-                                        amount_mode: amount_mode.map(AmountInputMode::from),
-                                        from_phrase: from_asset,
-                                        to_phrase: to_asset,
-                                        recipient_address,
-                                        refund_address,
-                                    },
-                                )
-                                .await;
-                        }
-                        Ok(KimiIntent::FriendlyReply(message)) => {
-                            return self
-                                .reply(wa_id, phone_number_id, session_id.as_deref(), &message)
-                                .await;
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            tracing::warn!(
-                                "Kimi classification failed, falling back to idle WhatsApp handling: {}",
-                                error
-                            );
-                        }
-                    }
-                }
-
-                let message = self
-                    .narrate_or(
-                        "The user's message was not enough to start a swap or check status. Reply naturally and ask what they want to swap or which swap ID they want checked. Do not show commands or a menu.",
-                        "I'm here. Tell me what you want to swap, or paste a swap ID for me to check.",
-                    )
-                    .await;
-
-                self.reply(wa_id, phone_number_id, session_id.as_deref(), &message)
-                    .await
+                self.reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id.as_deref(),
+                    "I'm here. Tell me what you want to swap, or paste a swap ID for me to check.",
+                )
+                .await
             }
             ConversationState::AwaitingFromAssetSearch => {
                 self.handle_asset_search_input(
@@ -1928,11 +1813,10 @@ impl WhatsAppFlowService {
         locale: &str,
         mut draft: SwapDraft,
         inbound_message_id: Option<&str>,
-        raw_text: &str,
+        _raw_text: &str,
         intent: ParsedSwapIntent,
     ) -> Result<(), String> {
         let crud = WhatsAppCrud::new(self.state.db.clone());
-        let intent = rebalance_intent_asset_sides(raw_text, intent);
 
         let from_phrase = meaningful_asset_phrase(intent.from_phrase.as_deref());
         let to_phrase = meaningful_asset_phrase(intent.to_phrase.as_deref());
@@ -1945,15 +1829,13 @@ impl WhatsAppFlowService {
             && recipient_address.is_none()
             && refund_address.is_none()
         {
-            let prompt = self
-                .narrate_or(
-                    "The user wants to swap crypto but has not given the coin pair, amount, or address. Ask for the pair and amount in one natural message. Keep it short and do not show menu options.",
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
                     "Sure. Send the pair and amount in one message, like: swap 100 USDT to XMR.",
                 )
-                .await;
-
-            return self
-                .reply(wa_id, phone_number_id, session_id, &prompt)
                 .await;
         }
 
@@ -2331,88 +2213,15 @@ impl WhatsAppFlowService {
             })?
             .clone();
 
-        let sanitized_correction =
-            sanitize_asset_phrase(trimmed).unwrap_or_else(|| trimmed.trim().to_string());
-
-        if parse_amount_from_text(trimmed).is_none()
-            && !looks_like_usd_amount(trimmed)
-            && looks_like_asset_correction(&sanitized_correction)
-        {
-            if let Some(intent) = parse_partial_swap_intent(trimmed)
-                .map(|intent| rebalance_intent_asset_sides(trimmed, intent))
-            {
-                if let Some(to_phrase) = meaningful_asset_phrase(intent.to_phrase.as_deref()) {
-                    return self
-                        .handle_asset_search_input(
-                            wa_id,
-                            phone_number_id,
-                            session_id,
-                            locale,
-                            draft,
-                            inbound_message_id,
-                            &to_phrase,
-                            AssetSide::To,
-                        )
-                        .await;
+        let mode = parse_amount_mode(trimmed, &from)
+            .or_else(|| {
+                if looks_like_usd_amount(trimmed) {
+                    Some(AmountInputMode::Usd)
+                } else {
+                    None
                 }
-
-                if let Some(from_phrase) = meaningful_asset_phrase(intent.from_phrase.as_deref()) {
-                    return self
-                        .handle_asset_search_input(
-                            wa_id,
-                            phone_number_id,
-                            session_id,
-                            locale,
-                            draft,
-                            inbound_message_id,
-                            &from_phrase,
-                            AssetSide::From,
-                        )
-                        .await;
-                }
-            }
-
-            let catalog = self.fetch_currency_catalog().await?;
-            let correction_plan = self
-                .resolve_asset_input(&catalog, &sanitized_correction)
-                .await?;
-            if !matches!(correction_plan, AssetInputPlan::Error(_)) {
-                let correction_side = infer_asset_correction_side(trimmed, &draft);
-                return self
-                    .handle_asset_search_input(
-                        wa_id,
-                        phone_number_id,
-                        session_id,
-                        locale,
-                        draft,
-                        inbound_message_id,
-                        &sanitized_correction,
-                        correction_side,
-                    )
-                    .await;
-            }
-        }
-
-        let mode = if looks_like_usd_amount(trimmed) {
-            Some(AmountInputMode::Usd)
-        } else {
-            parse_amount_mode(trimmed, &from).or_else(|| draft.amount_input_mode.clone())
-        }
-        .or_else(|| {
-            if parse_amount_from_text(trimmed).is_some() {
-                Some(AmountInputMode::SourceAsset)
-            } else {
-                None
-            }
-        });
-
-        let mode = match mode {
-            Some(mode) => mode,
-            None => self
-                .extract_amount_mode_via_kimi(trimmed, &from)
-                .await
-                .unwrap_or(AmountInputMode::SourceAsset),
-        };
+            })
+            .unwrap_or(AmountInputMode::SourceAsset);
 
         let parsed_amount = match mode {
             AmountInputMode::SourceAsset => {
@@ -2437,23 +2246,16 @@ impl WhatsAppFlowService {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-
-            let prompt = self
-                .narrate_or(
-                    &format!(
-                        "The user's amount was not readable. Ask them to send only the amount for {} on {}. They may send a coin amount like 0.25 or a dollar amount like $100. Do not mention commands or menus.",
-                        from.ticker.to_uppercase(),
-                        from.network
-                    ),
+            return self
+                .reply(
+                    wa_id,
+                    phone_number_id,
+                    session_id,
                     &format!(
                         "I couldn't read the amount. Send something like 0.25 {} or $100.",
                         from.ticker.to_uppercase()
                     ),
                 )
-                .await;
-
-            return self
-                .reply(wa_id, phone_number_id, session_id, &prompt)
                 .await;
         };
 
@@ -2508,7 +2310,7 @@ impl WhatsAppFlowService {
             .unwrap_or_default();
 
         draft.amount = None;
-        draft.amount_input_mode = Some(AmountInputMode::SourceAsset);
+        draft.amount_input_mode = None;
         draft.requested_amount_usd = None;
 
         WhatsAppCrud::new(self.state.db.clone())
@@ -2523,24 +2325,18 @@ impl WhatsAppFlowService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let body = self
-            .narrate_or(
-                &format!(
-                    "Ask the user how much {} on {} they want to send{}. Tell them they can write a coin amount like 0.25 or a dollar value like $100. Do not show a menu.",
-                    from.ticker.to_uppercase(),
-                    from.network,
-                    destination_context
-                ),
-                &format!(
-                    "How much {} on {} do you want to send{}? You can write a coin amount like 0.25 or a dollar value like $100.",
-                    from.ticker.to_uppercase(),
-                    from.network,
-                    destination_context
-                ),
-            )
-            .await;
-
-        self.reply(wa_id, phone_number_id, session_id, &body).await
+        self.reply(
+            wa_id,
+            phone_number_id,
+            session_id,
+            &format!(
+                "How much {} on {} do you want to send{}? You can write a coin amount like 0.25 or a dollar value like $100.",
+                from.ticker.to_uppercase(),
+                from.network,
+                destination_context
+            ),
+        )
+        .await
     }
 
     /// Falls back to Kimi when the deterministic amount parser can't make sense of the
