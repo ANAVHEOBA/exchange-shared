@@ -168,6 +168,12 @@ struct ParsedSwapIntent {
 }
 
 #[derive(Debug, Clone)]
+struct ParsedAmountInput {
+    amount: f64,
+    mode: AmountInputMode,
+}
+
+#[derive(Debug, Clone)]
 struct AssetResolution {
     selected: Option<CurrencySelection>,
     ambiguous_options: Vec<CurrencySelection>,
@@ -2228,28 +2234,10 @@ impl WhatsAppFlowService {
             })?
             .clone();
 
-        let mode = parse_amount_mode(trimmed, &from)
-            .or_else(|| {
-                if looks_like_usd_amount(trimmed) {
-                    Some(AmountInputMode::Usd)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(AmountInputMode::SourceAsset);
-
-        let parsed_amount = match mode {
-            AmountInputMode::SourceAsset => {
-                parse_amount(trimmed).or_else(|| parse_amount_from_text(trimmed))
-            }
-            AmountInputMode::Usd => parse_usd_amount(trimmed),
-        };
-        let parsed_amount = match parsed_amount {
-            Some(amount) => Some(amount),
-            None => self.extract_amount_via_kimi(trimmed).await,
-        };
-
-        let Some(input_amount) = parsed_amount else {
+        let Some(parsed_input) = self
+            .parse_amount_input(trimmed, &from, draft.to.as_ref())
+            .await
+        else {
             WhatsAppCrud::new(self.state.db.clone())
                 .upsert_session_state(
                     wa_id,
@@ -2274,20 +2262,20 @@ impl WhatsAppFlowService {
                 .await;
         };
 
-        let amount = match mode {
+        let amount = match parsed_input.mode {
             AmountInputMode::SourceAsset => {
                 draft.requested_amount_usd = None;
-                input_amount
+                parsed_input.amount
             }
             AmountInputMode::Usd => {
-                draft.requested_amount_usd = Some(input_amount);
-                self.resolve_source_amount_from_usd(&from, input_amount)
+                draft.requested_amount_usd = Some(parsed_input.amount);
+                self.resolve_source_amount_from_usd(&from, parsed_input.amount)
                     .await
                     .map_err(|error| error.to_string())?
             }
         };
 
-        draft.amount_input_mode = Some(mode);
+        draft.amount_input_mode = Some(parsed_input.mode);
         draft.amount = Some(amount);
 
         match self
@@ -2354,38 +2342,75 @@ impl WhatsAppFlowService {
         .await
     }
 
-    /// Falls back to Kimi when the deterministic amount parser can't make sense of the
-    /// message (e.g. "just send 100 bucks"). Returns `None` if Kimi isn't configured,
-    /// errors, or isn't confident - callers then show the same "not recognized" reply
-    /// as before this fallback existed.
-    async fn extract_amount_via_kimi(&self, text: &str) -> Option<f64> {
-        let kimi = self.state.kimi_client.as_ref()?;
-
-        match kimi.extract_amount(text).await {
-            Ok(amount) => amount,
-            Err(error) => {
-                tracing::warn!("Kimi amount extraction failed: {}", error);
-                None
-            }
-        }
-    }
-
-    async fn extract_amount_mode_via_kimi(
+    async fn parse_amount_input(
         &self,
         text: &str,
         from: &CurrencySelection,
-    ) -> Option<AmountInputMode> {
+        to: Option<&CurrencySelection>,
+    ) -> Option<ParsedAmountInput> {
+        let deterministic_mode = parse_amount_mode(text, from).or_else(|| {
+            if looks_like_usd_amount(text) {
+                Some(AmountInputMode::Usd)
+            } else {
+                None
+            }
+        });
+        let deterministic_amount = match deterministic_mode {
+            Some(AmountInputMode::Usd) => parse_usd_amount(text),
+            _ => parse_amount(text).or_else(|| parse_amount_from_text(text)),
+        };
+
+        if let Some(kimi_result) = self.extract_amount_input_via_kimi(text, from, to).await {
+            return Some(kimi_result);
+        }
+
+        deterministic_amount.map(|amount| ParsedAmountInput {
+            amount,
+            mode: deterministic_mode.unwrap_or(AmountInputMode::SourceAsset),
+        })
+    }
+
+    async fn extract_amount_input_via_kimi(
+        &self,
+        text: &str,
+        from: &CurrencySelection,
+        to: Option<&CurrencySelection>,
+    ) -> Option<ParsedAmountInput> {
+        if is_plain_amount_input(text) {
+            return None;
+        }
+
         let kimi = self.state.kimi_client.as_ref()?;
+        let destination_ticker = to.map(|asset| asset.ticker.as_str());
+        let destination_network = to.map(|asset| asset.network.as_str());
 
         match kimi
-            .choose_amount_mode(text, &from.ticker, &from.network)
+            .extract_amount_with_mode(
+                text,
+                &from.ticker,
+                &from.network,
+                destination_ticker,
+                destination_network,
+            )
             .await
         {
-            Ok(Some(KimiAmountMode::SourceAsset)) => Some(AmountInputMode::SourceAsset),
-            Ok(Some(KimiAmountMode::Usd)) => Some(AmountInputMode::Usd),
-            Ok(None) => None,
+            Ok((Some(amount), mode)) => Some(ParsedAmountInput {
+                amount,
+                mode: mode
+                    .map(AmountInputMode::from)
+                    .or_else(|| parse_amount_mode(text, from))
+                    .or_else(|| {
+                        if looks_like_usd_amount(text) {
+                            Some(AmountInputMode::Usd)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(AmountInputMode::SourceAsset),
+            }),
+            Ok((None, _)) => None,
             Err(error) => {
-                tracing::warn!("Kimi amount-mode extraction failed: {}", error);
+                tracing::warn!("Kimi contextual amount extraction failed: {}", error);
                 None
             }
         }
@@ -3967,22 +3992,6 @@ fn session_parts(
     ))
 }
 
-fn has_swap_fields(
-    amount: Option<f64>,
-    amount_mode: Option<KimiAmountMode>,
-    from_asset: Option<&str>,
-    to_asset: Option<&str>,
-    recipient_address: Option<&str>,
-    refund_address: Option<&str>,
-) -> bool {
-    amount.is_some()
-        || amount_mode.is_some()
-        || normalize_optional_text(from_asset).is_some()
-        || normalize_optional_text(to_asset).is_some()
-        || normalize_optional_text(recipient_address).is_some()
-        || normalize_optional_text(refund_address).is_some()
-}
-
 fn to_quote_choice(index: usize, rate: &RateResponse, trade_id: &str) -> QuoteChoice {
     QuoteChoice {
         index,
@@ -4383,6 +4392,7 @@ fn meaningful_asset_phrase(value: Option<&str>) -> Option<String> {
     Some(sanitized)
 }
 
+#[cfg(test)]
 fn looks_like_asset_correction(value: &str) -> bool {
     let normalized = normalize_phrase(value);
     if normalized.is_empty() {
@@ -4599,6 +4609,10 @@ fn parse_amount_from_text(input: &str) -> Option<f64> {
     })
 }
 
+fn is_plain_amount_input(input: &str) -> bool {
+    parse_amount(input).is_some()
+}
+
 fn looks_like_usd_amount(input: &str) -> bool {
     if input.contains('$') {
         return true;
@@ -4712,191 +4726,6 @@ fn set_pending_currency_options(
     match side {
         AssetSide::From => draft.pending_from_currency_options = value,
         AssetSide::To => draft.pending_to_currency_options = value,
-    }
-}
-
-fn build_kimi_swap_context(state: &ConversationState, draft: &SwapDraft) -> String {
-    let mut lines = vec![format!(
-        "conversation_state: {}",
-        conversation_state_label(state)
-    )];
-
-    if let Some(from) = draft.from.as_ref() {
-        lines.push(format!(
-            "send_asset: {} on {}",
-            from.ticker.to_uppercase(),
-            from.network
-        ));
-    }
-
-    if let Some(to) = draft.to.as_ref() {
-        lines.push(format!(
-            "receive_asset: {} on {}",
-            to.ticker.to_uppercase(),
-            to.network
-        ));
-    }
-
-    if let Some(amount) = draft.amount {
-        let ticker = draft
-            .from
-            .as_ref()
-            .map(|asset| asset.ticker.to_uppercase())
-            .unwrap_or_else(|| "source asset".to_string());
-        lines.push(format!("source_amount: {} {}", trim_f64(amount), ticker));
-    }
-
-    if let Some(usd_amount) = draft.requested_amount_usd {
-        lines.push(format!("requested_amount_usd: ${}", trim_f64(usd_amount)));
-    }
-
-    if let Some(mode) = draft.amount_input_mode.as_ref() {
-        lines.push(format!(
-            "amount_mode: {}",
-            match mode {
-                AmountInputMode::SourceAsset => "source_asset",
-                AmountInputMode::Usd => "usd",
-            }
-        ));
-    }
-
-    if let Some(address) = draft.recipient_address.as_ref() {
-        lines.push(format!(
-            "recipient_address_present: {}",
-            !address.trim().is_empty()
-        ));
-    }
-
-    if let Some(address) = draft.refund_address.as_ref() {
-        lines.push(format!(
-            "refund_address_present: {}",
-            !address.trim().is_empty()
-        ));
-    }
-
-    if let Some(quote) = draft.selected_quote.as_ref() {
-        lines.push(format!("selected_provider: {}", quote.provider_name));
-    }
-
-    if let Some(family) = draft.pending_from_family.as_ref() {
-        lines.push(format!(
-            "pending_send_family: {} ({})",
-            family.name,
-            family.ticker.to_uppercase()
-        ));
-    }
-
-    if let Some(family) = draft.pending_to_family.as_ref() {
-        lines.push(format!(
-            "pending_receive_family: {} ({})",
-            family.name,
-            family.ticker.to_uppercase()
-        ));
-    }
-
-    if !draft.pending_from_currency_options.is_empty() {
-        lines.push(format!(
-            "pending_send_options: {}",
-            summarize_pending_currency_options(&draft.pending_from_currency_options)
-        ));
-    }
-
-    if !draft.pending_to_currency_options.is_empty() {
-        lines.push(format!(
-            "pending_receive_options: {}",
-            summarize_pending_currency_options(&draft.pending_to_currency_options)
-        ));
-    }
-
-    lines.push(format!(
-        "next_required_step: {}",
-        next_required_step_label(state, draft)
-    ));
-
-    lines.join("\n")
-}
-
-fn conversation_state_label(state: &ConversationState) -> &'static str {
-    match state {
-        ConversationState::Idle => "idle",
-        ConversationState::AwaitingFromAssetSearch => "awaiting_send_asset_search",
-        ConversationState::AwaitingFromAssetChoice => "awaiting_send_asset_choice",
-        ConversationState::AwaitingFromNetworkChoice => "awaiting_send_network_choice",
-        ConversationState::AwaitingToAssetSearch => "awaiting_receive_asset_search",
-        ConversationState::AwaitingToAssetChoice => "awaiting_receive_asset_choice",
-        ConversationState::AwaitingToNetworkChoice => "awaiting_receive_network_choice",
-        ConversationState::AwaitingAmountMode => "awaiting_amount_mode",
-        ConversationState::AwaitingAmount => "awaiting_amount",
-        ConversationState::AwaitingQuoteSelection => "awaiting_quote_selection",
-        ConversationState::AwaitingRecipientAddress => "awaiting_recipient_address",
-        ConversationState::AwaitingRecipientExtraId => "awaiting_recipient_extra_id",
-        ConversationState::AwaitingRefundAddress => "awaiting_refund_address",
-        ConversationState::AwaitingRefundExtraId => "awaiting_refund_extra_id",
-        ConversationState::AwaitingConfirmation => "awaiting_confirmation",
-    }
-}
-
-fn next_required_step_label(state: &ConversationState, draft: &SwapDraft) -> &'static str {
-    match state {
-        ConversationState::Idle => "start or describe the swap",
-        ConversationState::AwaitingFromAssetSearch | ConversationState::AwaitingFromAssetChoice => {
-            "identify the asset and network the user will send"
-        }
-        ConversationState::AwaitingFromNetworkChoice => {
-            "choose the network for the asset the user will send"
-        }
-        ConversationState::AwaitingToAssetSearch | ConversationState::AwaitingToAssetChoice => {
-            "identify the asset and network the user wants to receive"
-        }
-        ConversationState::AwaitingToNetworkChoice => {
-            "choose the network for the asset the user wants to receive"
-        }
-        ConversationState::AwaitingAmountMode | ConversationState::AwaitingAmount => {
-            "provide the send amount"
-        }
-        ConversationState::AwaitingQuoteSelection => {
-            "choose a provider route or continue with the recommended route"
-        }
-        ConversationState::AwaitingRecipientAddress => "provide the receiving address",
-        ConversationState::AwaitingRecipientExtraId => "provide the destination extra ID or memo",
-        ConversationState::AwaitingRefundAddress => "provide a refund address or skip it",
-        ConversationState::AwaitingRefundExtraId => "provide the refund extra ID or memo",
-        ConversationState::AwaitingConfirmation => {
-            if draft.selected_quote.is_some() {
-                "confirm or cancel the prepared swap"
-            } else {
-                "confirm or cancel the swap setup"
-            }
-        }
-    }
-}
-
-fn summarize_pending_currency_options(options: &[CurrencySelection]) -> String {
-    options
-        .iter()
-        .take(8)
-        .map(|option| format!("{} on {}", option.ticker.to_uppercase(), option.network))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn infer_asset_correction_side(input: &str, draft: &SwapDraft) -> AssetSide {
-    let normalized = normalize_phrase(input);
-    let prefers_destination = message_prefers_destination_asset(&normalized);
-    let prefers_source = message_prefers_source_asset(&normalized);
-
-    if prefers_destination && !prefers_source {
-        return AssetSide::To;
-    }
-
-    if prefers_source && !prefers_destination {
-        return AssetSide::From;
-    }
-
-    match (draft.from.is_some(), draft.to.is_some()) {
-        (true, true) => AssetSide::To,
-        (false, true) => AssetSide::To,
-        _ => AssetSide::From,
     }
 }
 
@@ -5122,6 +4951,7 @@ fn parse_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
     })
 }
 
+#[cfg(test)]
 fn parse_partial_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
     let normalized = normalize_phrase(input);
     if normalized.is_empty()
@@ -5161,6 +4991,7 @@ fn parse_partial_swap_intent(input: &str) -> Option<ParsedSwapIntent> {
     })
 }
 
+#[cfg(test)]
 fn rebalance_intent_asset_sides(raw_text: &str, mut intent: ParsedSwapIntent) -> ParsedSwapIntent {
     let normalized = normalize_phrase(raw_text);
     if normalized.is_empty() {
@@ -5187,6 +5018,7 @@ fn rebalance_intent_asset_sides(raw_text: &str, mut intent: ParsedSwapIntent) ->
     intent
 }
 
+#[cfg(test)]
 fn message_prefers_destination_asset(normalized_text: &str) -> bool {
     normalized_text.contains("buy")
         || normalized_text.contains("receive")
@@ -5197,6 +5029,7 @@ fn message_prefers_destination_asset(normalized_text: &str) -> bool {
         || normalized_text.contains("cashout")
 }
 
+#[cfg(test)]
 fn message_prefers_source_asset(normalized_text: &str) -> bool {
     normalized_text.contains("send")
         || normalized_text.contains("selling")
@@ -5881,10 +5714,11 @@ fn whatsapp_outbound_idempotency_key(
 mod tests {
     use super::{
         amount_out_of_range_message, is_cancel_request, is_generic_swap_start,
-        looks_like_asset_correction, match_pending_network_option, meaningful_asset_phrase,
-        parse_amount_mode, parse_asset_selection_id, parse_confirmation_decision,
-        parse_partial_swap_intent, parse_quote_selection, parse_usd_amount, plan_asset_input,
-        rebalance_intent_asset_sides, resolve_currency_phrase, sanitize_asset_phrase,
+        is_plain_amount_input, looks_like_asset_correction, match_pending_network_option,
+        meaningful_asset_phrase, parse_amount_from_text, parse_amount_mode,
+        parse_asset_selection_id, parse_confirmation_decision, parse_partial_swap_intent,
+        parse_quote_selection, parse_usd_amount, plan_asset_input, rebalance_intent_asset_sides,
+        resolve_currency_phrase, sanitize_asset_phrase,
         should_restart_asset_search_from_network_choice, AmountInputMode, AssetFamilySelection,
         AssetInputPlan, CurrencySelection, ParsedSwapIntent,
     };
@@ -6182,6 +6016,21 @@ mod tests {
         assert_eq!(parse_usd_amount("$1000"), Some(1000.0));
         assert_eq!(parse_usd_amount("1,250 usd"), Some(1250.0));
         assert_eq!(parse_usd_amount("USD 50"), Some(50.0));
+    }
+
+    #[test]
+    fn parses_natural_amount_phrases() {
+        assert_eq!(parse_amount_from_text("I want 10 eth"), Some(10.0));
+        assert_eq!(parse_amount_from_text("na 10 eth me want"), Some(10.0));
+        assert_eq!(parse_amount_from_text("I am sending 0.1 BTC"), Some(0.1));
+    }
+
+    #[test]
+    fn only_bare_numeric_values_skip_contextual_kimi_amount_parser() {
+        assert!(is_plain_amount_input("10"));
+        assert!(is_plain_amount_input("0.25"));
+        assert!(!is_plain_amount_input("I want 10 eth"));
+        assert!(!is_plain_amount_input("$100"));
     }
 
     #[test]

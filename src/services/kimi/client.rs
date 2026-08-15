@@ -60,15 +60,16 @@ plus the given context.";
 
 const AMOUNT_INSTRUCTIONS: &str = "\
 The user is replying to a prompt asking how much they want to swap. Their message may be messy \
-(\"just send 100 bucks\", \"0.25 pls\", \"around 50\"). If you can confidently identify the single \
-numeric amount they mean, return it. If there is no clear number, or the message is about something \
-else entirely, return amount=null. Never guess a number that isn't clearly implied by the message.";
-
-const AMOUNT_MODE_INSTRUCTIONS: &str = "\
-The user is replying to a prompt asking whether they want to enter the send amount in the source \
-coin or in USD. Return mode=usd only when the user's wording clearly chooses USD. If they mention \
-dollars, usd, bucks, or use a dollar sign, choose usd. If they mention the source ticker, source \
-coin, token amount, or coin amount, choose source_asset. If the message is unclear, return mode=null.";
+(\"just send 100 bucks\", \"0.25 pls\", \"around 50\", \"na 10 eth me want\"). You may be given \
+the source asset and destination asset context. If you can confidently identify the single numeric \
+amount they mean, return it. Return amount_mode=usd only when the wording clearly means dollars, \
+USD, bucks, cash, or uses a dollar sign. Return amount_mode=source_asset when they mention the \
+source ticker/network, say coin/token amount, or provide only a bare number while the prompt is \
+asking for the send amount. If they mention the destination ticker as the amount unit while the \
+source asset is different, do not convert or guess; return amount=null and amount_mode=null so the \
+backend can ask a clarifying question. If there is no clear number, or the message is about \
+something else entirely, return amount=null. Never guess a number that isn't clearly implied by the \
+message, and never calculate rates or conversions.";
 
 const QUOTE_SELECTION_INSTRUCTIONS: &str = "\
 The user is replying to a list of numbered exchange routes. Return the selected route index only when \
@@ -176,12 +177,8 @@ struct StructuredIntentResponse {
 struct StructuredAmountResponse {
     #[serde(default)]
     amount: Option<f64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct StructuredAmountModeResponse {
     #[serde(default)]
-    mode: Option<KimiAmountMode>,
+    amount_mode: Option<KimiAmountMode>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,6 +233,8 @@ struct ChatCompletionErrorBody {
 struct KimiRequestProfile {
     temperature: Option<f64>,
     thinking_type: Option<&'static str>,
+    thinking_keep: Option<&'static str>,
+    reasoning_effort: Option<&'static str>,
     max_tokens: u32,
 }
 
@@ -338,27 +337,40 @@ impl KimiClient {
         Ok(response.amount.filter(|amount| *amount > 0.0))
     }
 
-    pub async fn choose_amount_mode(
+    pub async fn extract_amount_with_mode(
         &self,
         user_text: &str,
         source_ticker: &str,
         source_network: &str,
-    ) -> Result<Option<KimiAmountMode>, KimiError> {
+        destination_ticker: Option<&str>,
+        destination_network: Option<&str>,
+    ) -> Result<(Option<f64>, Option<KimiAmountMode>), KimiError> {
+        let destination_context = match (destination_ticker, destination_network) {
+            (Some(ticker), Some(network)) => {
+                format!("{} on {}", ticker.to_uppercase(), network)
+            }
+            (Some(ticker), None) => ticker.to_uppercase(),
+            _ => "not selected yet".to_string(),
+        };
         let prompt = format!(
-            "Source asset: {} on {}\nUser message: {}",
+            "Source asset: {} on {}\nDestination asset: {}\nLatest user message: {}",
             source_ticker.to_uppercase(),
             source_network,
+            destination_context,
             user_text
         );
         let response = self
-            .typed_prompt::<StructuredAmountModeResponse>(
-                AMOUNT_MODE_INSTRUCTIONS,
+            .typed_prompt::<StructuredAmountResponse>(
+                AMOUNT_INSTRUCTIONS,
                 &prompt,
-                "amount mode",
+                "amount extraction",
             )
             .await?;
 
-        Ok(response.mode)
+        Ok((
+            response.amount.filter(|amount| *amount > 0.0),
+            response.amount_mode,
+        ))
     }
 
     pub async fn choose_quote_index(
@@ -442,26 +454,42 @@ impl KimiClient {
     fn request_profile(&self) -> KimiRequestProfile {
         let normalized_model = self.model.to_ascii_lowercase();
 
+        if normalized_model.starts_with("kimi-k3") {
+            return KimiRequestProfile {
+                temperature: None,
+                thinking_type: None,
+                thinking_keep: None,
+                reasoning_effort: Some("high"),
+                max_tokens: 16_384,
+            };
+        }
+
         if normalized_model.starts_with("kimi-k2.7-code") {
             return KimiRequestProfile {
-                temperature: Some(1.0),
-                thinking_type: Some("enabled"),
-                max_tokens: 256,
+                temperature: None,
+                thinking_type: None,
+                thinking_keep: None,
+                reasoning_effort: None,
+                max_tokens: 16_384,
             };
         }
 
         if normalized_model == "kimi-k2.6" {
             return KimiRequestProfile {
-                temperature: Some(0.6),
-                thinking_type: None,
-                max_tokens: 256,
+                temperature: None,
+                thinking_type: Some("enabled"),
+                thinking_keep: Some("all"),
+                reasoning_effort: None,
+                max_tokens: 16_384,
             };
         }
 
         KimiRequestProfile {
             temperature: None,
             thinking_type: None,
-            max_tokens: 256,
+            thinking_keep: None,
+            reasoning_effort: None,
+            max_tokens: 2_048,
         }
     }
 
@@ -497,8 +525,19 @@ impl KimiClient {
             payload["temperature"] = json!(temperature);
         }
 
-        if let Some(thinking_type) = profile.thinking_type {
-            payload["thinking"] = json!({ "type": thinking_type });
+        if profile.thinking_type.is_some() || profile.thinking_keep.is_some() {
+            let mut thinking = json!({});
+            if let Some(thinking_type) = profile.thinking_type {
+                thinking["type"] = json!(thinking_type);
+            }
+            if let Some(thinking_keep) = profile.thinking_keep {
+                thinking["keep"] = json!(thinking_keep);
+            }
+            payload["thinking"] = thinking;
+        }
+
+        if let Some(reasoning_effort) = profile.reasoning_effort {
+            payload["reasoning_effort"] = json!(reasoning_effort);
         }
 
         let response = self
